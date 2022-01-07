@@ -1,0 +1,416 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | Apply all AD operators in the program, leaving AD-free code.</span><span>
+</span><span id="line-4"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Pass.AD</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Pass.AD.html#algebraicDifferentiation"><span class="hs-identifier">algebraicDifferentiation</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.AD.Fwd.html"><span class="hs-identifier">Futhark.AD.Fwd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.AD.Fwd.html#fwdJVP"><span class="hs-identifier">fwdJVP</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.html"><span class="hs-identifier">Futhark.AD.Rev</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.AD.Rev.html#revVJP"><span class="hs-identifier">revVJP</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Builder.html"><span class="hs-identifier">Futhark.Builder</span></a></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html"><span class="hs-identifier">Futhark.IR.SOACS</span></a></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pass.html"><span class="hs-identifier">Futhark.Pass</span></a></span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span id="local-6989586621684467953"><span class="annot"><a href="Futhark.Pass.AD.html#bindLambda"><span class="hs-identifier hs-type">bindLambda</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-14"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684467953"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684467953"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-15"></span><span>  </span><span class="annot"><a href="Futhark.IR.SOACS.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-16"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-17"></span><span>  </span><span class="annot"><a href="Futhark.IR.SOACS.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-18"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-19"></span><span>  </span><span class="annot"><a href="#local-6989586621684467953"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-20"></span><span id="bindLambda"><span class="annot"><span class="annottext">bindLambda :: forall (m :: * -&gt; *).
+(MonadBuilder m, Rep m ~ SOACS) =&gt;
+Pat -&gt; StmAux (ExpDec SOACS) -&gt; Lambda -&gt; [SubExp] -&gt; m ()
+</span><a href="Futhark.Pass.AD.html#bindLambda"><span class="hs-identifier hs-var hs-var">bindLambda</span></a></span></span><span> </span><span id="local-6989586621684467764"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684467764"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684467763"><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684467763"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span id="local-6989586621684467761"><span class="annot"><span class="annottext">[LParam SOACS]
+</span><a href="#local-6989586621684467761"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span id="local-6989586621684467760"><span class="annot"><span class="annottext">BodyT SOACS
+</span><a href="#local-6989586621684467760"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684467759"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467759"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-21"></span><span>  </span><span class="annot"><span class="annottext">StmAux () -&gt; m () -&gt; m ()
+forall (m :: * -&gt; *) anyrep a.
+MonadBuilder m =&gt;
+StmAux anyrep -&gt; m a -&gt; m a
+</span><a href="Futhark.Builder.Class.html#auxing"><span class="hs-identifier hs-var">auxing</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684467763"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(m () -&gt; m ())
+-&gt; (((Param Type, SubExp) -&gt; m ()) -&gt; m ())
+-&gt; ((Param Type, SubExp) -&gt; m ())
+-&gt; m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[(Param Type, SubExp)] -&gt; ((Param Type, SubExp) -&gt; m ()) -&gt; m ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m ()
+</span><span class="hs-identifier hs-var">forM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param Type] -&gt; [SubExp] -&gt; [(Param Type, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[Param Type]
+[LParam SOACS]
+</span><a href="#local-6989586621684467761"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467759"><span class="hs-identifier hs-var">args</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(((Param Type, SubExp) -&gt; m ()) -&gt; m ())
+-&gt; ((Param Type, SubExp) -&gt; m ()) -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684467755"><span class="annot"><span class="annottext">Param Type
+</span><a href="#local-6989586621684467755"><span class="hs-identifier hs-var">param</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684467754"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684467754"><span class="hs-identifier hs-var">arg</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-22"></span><span>    </span><span class="annot"><span class="annottext">[VName] -&gt; Exp (Rep m) -&gt; m ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Param Type -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">Param Type
+</span><a href="#local-6989586621684467755"><span class="hs-identifier hs-var">param</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m ()) -&gt; Exp (Rep m) -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-23"></span><span>      </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT SOACS
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT SOACS) -&gt; BasicOp -&gt; ExpT SOACS
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">case</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Param Type -&gt; Type
+forall dec. Typed dec =&gt; Param dec -&gt; Type
+</span><a href="Futhark.IR.Prop.Patterns.html#paramType"><span class="hs-identifier hs-var">paramType</span></a></span><span> </span><span class="annot"><span class="annottext">Param Type
+</span><a href="#local-6989586621684467755"><span class="hs-identifier hs-var">param</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684467754"><span class="hs-identifier hs-var">arg</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-24"></span><span>        </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Array"><span class="hs-identifier hs-type">Array</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684467747"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684467747"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">VName -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Copy"><span class="hs-identifier hs-var">Copy</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684467747"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-25"></span><span>        </span><span class="annot"><span class="annottext">(Type, SubExp)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#SubExp"><span class="hs-identifier hs-var">SubExp</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684467754"><span class="hs-identifier hs-var">arg</span></a></span><span>
+</span><span id="line-26"></span><span>  </span><span id="local-6989586621684467744"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684467744"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Body (Rep m) -&gt; m Result
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Body (Rep m) -&gt; m Result
+</span><a href="Futhark.Builder.Class.html#bodyBind"><span class="hs-identifier hs-var">bodyBind</span></a></span><span> </span><span class="annot"><span class="annottext">Body (Rep m)
+BodyT SOACS
+</span><a href="#local-6989586621684467760"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-27"></span><span>  </span><span class="annot"><span class="annottext">[(VName, SubExpRes)] -&gt; ((VName, SubExpRes) -&gt; m ()) -&gt; m ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m ()
+</span><span class="hs-identifier hs-var">forM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; Result -&gt; [(VName, SubExpRes)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT Type -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+Pat
+</span><a href="#local-6989586621684467764"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684467744"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(((VName, SubExpRes) -&gt; m ()) -&gt; m ())
+-&gt; ((VName, SubExpRes) -&gt; m ()) -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684467741"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684467741"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#SubExpRes"><span class="hs-identifier hs-type">SubExpRes</span></a></span><span> </span><span id="local-6989586621684467739"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684467739"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span id="local-6989586621684467738"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684467738"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-28"></span><span>    </span><span class="annot"><span class="annottext">Certs -&gt; m () -&gt; m ()
+forall (m :: * -&gt; *) a. MonadBuilder m =&gt; Certs -&gt; m a -&gt; m a
+</span><a href="Futhark.Builder.Class.html#certifying"><span class="hs-identifier hs-var">certifying</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684467739"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">(m () -&gt; m ()) -&gt; m () -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; Exp (Rep m) -&gt; m ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684467741"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m ()) -&gt; Exp (Rep m) -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT SOACS
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT SOACS) -&gt; BasicOp -&gt; ExpT SOACS
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#SubExp"><span class="hs-identifier hs-var">SubExp</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684467738"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="annot"><a href="Futhark.Pass.AD.html#onStm"><span class="hs-identifier hs-type">onStm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span id="onStm"><span class="annot"><span class="annottext">onStm :: Scope SOACS -&gt; Stm -&gt; PassM (Stms SOACS)
+</span><a href="Futhark.Pass.AD.html#onStm"><span class="hs-identifier hs-var hs-var">onStm</span></a></span></span><span> </span><span id="local-6989586621684467735"><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467735"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684467733"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684467733"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684467732"><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684467732"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#VJP"><span class="hs-identifier hs-type">VJP</span></a></span><span> </span><span id="local-6989586621684467729"><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467729"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span id="local-6989586621684467728"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467728"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span id="local-6989586621684467727"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467727"><span class="hs-identifier hs-var">vec</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-32"></span><span>  </span><span id="local-6989586621684467726"><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467726"><span class="hs-identifier hs-var">lam'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Lambda -&gt; PassM Lambda
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Scope SOACS -&gt; Lambda -&gt; m Lambda
+</span><a href="Futhark.AD.Rev.html#revVJP"><span class="hs-identifier hs-var">revVJP</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467735"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">(Lambda -&gt; PassM Lambda) -&gt; PassM Lambda -&gt; PassM Lambda
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Lambda -&gt; PassM Lambda
+</span><a href="Futhark.Pass.AD.html#onLambda"><span class="hs-identifier hs-var">onLambda</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467735"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467729"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-33"></span><span>  </span><span class="annot"><span class="annottext">BuilderT SOACS PassM () -&gt; Scope SOACS -&gt; PassM (Stms SOACS)
+forall (m :: * -&gt; *) rep.
+MonadFreshNames m =&gt;
+BuilderT rep m () -&gt; Scope rep -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT_"><span class="hs-identifier hs-var">runBuilderT_</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat
+-&gt; StmAux (ExpDec SOACS)
+-&gt; Lambda
+-&gt; [SubExp]
+-&gt; BuilderT SOACS PassM ()
+forall (m :: * -&gt; *).
+(MonadBuilder m, Rep m ~ SOACS) =&gt;
+Pat -&gt; StmAux (ExpDec SOACS) -&gt; Lambda -&gt; [SubExp] -&gt; m ()
+</span><a href="Futhark.Pass.AD.html#bindLambda"><span class="hs-identifier hs-var">bindLambda</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684467733"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684467732"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467726"><span class="hs-identifier hs-var">lam'</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; BuilderT SOACS PassM ())
+-&gt; [SubExp] -&gt; BuilderT SOACS PassM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467728"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; [SubExp]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467727"><span class="hs-identifier hs-var">vec</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467735"><span class="hs-identifier hs-var">scope</span></a></span><span>
+</span><span id="line-34"></span><span class="annot"><a href="Futhark.Pass.AD.html#onStm"><span class="hs-identifier hs-var">onStm</span></a></span><span> </span><span id="local-6989586621684467722"><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467722"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684467721"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684467721"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684467720"><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684467720"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#JVP"><span class="hs-identifier hs-type">JVP</span></a></span><span> </span><span id="local-6989586621684467718"><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467718"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span id="local-6989586621684467717"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467717"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span id="local-6989586621684467716"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467716"><span class="hs-identifier hs-var">vec</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-35"></span><span>  </span><span id="local-6989586621684467715"><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467715"><span class="hs-identifier hs-var">lam'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Lambda -&gt; PassM Lambda
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Scope SOACS -&gt; Lambda -&gt; m Lambda
+</span><a href="Futhark.AD.Fwd.html#fwdJVP"><span class="hs-identifier hs-var">fwdJVP</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467722"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">(Lambda -&gt; PassM Lambda) -&gt; PassM Lambda -&gt; PassM Lambda
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Lambda -&gt; PassM Lambda
+</span><a href="Futhark.Pass.AD.html#onLambda"><span class="hs-identifier hs-var">onLambda</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467722"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467718"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-36"></span><span>  </span><span class="annot"><span class="annottext">BuilderT SOACS PassM () -&gt; Scope SOACS -&gt; PassM (Stms SOACS)
+forall (m :: * -&gt; *) rep.
+MonadFreshNames m =&gt;
+BuilderT rep m () -&gt; Scope rep -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT_"><span class="hs-identifier hs-var">runBuilderT_</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat
+-&gt; StmAux (ExpDec SOACS)
+-&gt; Lambda
+-&gt; [SubExp]
+-&gt; BuilderT SOACS PassM ()
+forall (m :: * -&gt; *).
+(MonadBuilder m, Rep m ~ SOACS) =&gt;
+Pat -&gt; StmAux (ExpDec SOACS) -&gt; Lambda -&gt; [SubExp] -&gt; m ()
+</span><a href="Futhark.Pass.AD.html#bindLambda"><span class="hs-identifier hs-var">bindLambda</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684467721"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684467720"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467715"><span class="hs-identifier hs-var">lam'</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; BuilderT SOACS PassM ())
+-&gt; [SubExp] -&gt; BuilderT SOACS PassM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467717"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; [SubExp]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684467716"><span class="hs-identifier hs-var">vec</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467722"><span class="hs-identifier hs-var">scope</span></a></span><span>
+</span><span id="line-37"></span><span class="annot"><a href="Futhark.Pass.AD.html#onStm"><span class="hs-identifier hs-var">onStm</span></a></span><span> </span><span id="local-6989586621684467714"><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467714"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684467713"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684467713"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684467712"><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684467712"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span id="local-6989586621684467711"><span class="annot"><span class="annottext">ExpT SOACS
+</span><a href="#local-6989586621684467711"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stm -&gt; Stms SOACS
+forall rep. Stm rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#oneStm"><span class="hs-identifier hs-var">oneStm</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm -&gt; Stms SOACS)
+-&gt; (ExpT SOACS -&gt; Stm) -&gt; ExpT SOACS -&gt; Stms SOACS
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; StmAux (ExpDec SOACS) -&gt; ExpT SOACS -&gt; Stm
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684467713"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684467712"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(ExpT SOACS -&gt; Stms SOACS)
+-&gt; PassM (ExpT SOACS) -&gt; PassM (Stms SOACS)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Mapper SOACS SOACS PassM -&gt; ExpT SOACS -&gt; PassM (ExpT SOACS)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+Mapper frep trep m -&gt; Exp frep -&gt; m (Exp trep)
+</span><a href="Futhark.IR.Traversals.html#mapExpM"><span class="hs-identifier hs-var">mapExpM</span></a></span><span> </span><span class="annot"><span class="annottext">Mapper SOACS SOACS PassM
+</span><a href="#local-6989586621684467707"><span class="hs-identifier hs-var">mapper</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT SOACS
+</span><a href="#local-6989586621684467711"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-38"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-39"></span><span>    </span><span id="local-6989586621684467707"><span class="annot"><span class="annottext">mapper :: Mapper SOACS SOACS PassM
+</span><a href="#local-6989586621684467707"><span class="hs-identifier hs-var hs-var">mapper</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-40"></span><span>      </span><span class="annot"><span class="annottext">Mapper SOACS SOACS PassM
+forall (m :: * -&gt; *) rep. Monad m =&gt; Mapper rep rep m
+</span><a href="Futhark.IR.Traversals.html#identityMapper"><span class="hs-identifier hs-var">identityMapper</span></a></span><span>
+</span><span id="line-41"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnBody :: Scope SOACS -&gt; BodyT SOACS -&gt; PassM (BodyT SOACS)
+</span><a href="Futhark.IR.Traversals.html#mapOnBody"><span class="hs-identifier hs-var">mapOnBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684467704"><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467704"><span class="hs-identifier hs-var">bscope</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; BodyT SOACS -&gt; PassM (BodyT SOACS)
+</span><a href="Futhark.Pass.AD.html#onBody"><span class="hs-identifier hs-var">onBody</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467704"><span class="hs-identifier hs-var">bscope</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Scope SOACS -&gt; Scope SOACS
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467714"><span class="hs-identifier hs-var">scope</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-42"></span><span>          </span><span class="annot"><span class="annottext">mapOnOp :: Op SOACS -&gt; PassM (Op SOACS)
+</span><a href="Futhark.IR.Traversals.html#mapOnOp"><span class="hs-identifier hs-var">mapOnOp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SOACMapper SOACS SOACS PassM -&gt; SOAC SOACS -&gt; PassM (SOAC SOACS)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+SOACMapper frep trep m -&gt; SOAC frep -&gt; m (SOAC trep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapSOACM"><span class="hs-identifier hs-var">mapSOACM</span></a></span><span> </span><span class="annot"><span class="annottext">SOACMapper SOACS SOACS PassM
+</span><a href="#local-6989586621684467700"><span class="hs-identifier hs-var">soac_mapper</span></a></span><span>
+</span><span id="line-43"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-44"></span><span>    </span><span id="local-6989586621684467700"><span class="annot"><span class="annottext">soac_mapper :: SOACMapper SOACS SOACS PassM
+</span><a href="#local-6989586621684467700"><span class="hs-identifier hs-var hs-var">soac_mapper</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SOACMapper Any Any PassM
+forall (m :: * -&gt; *) rep. Monad m =&gt; SOACMapper rep rep m
+</span><a href="Futhark.IR.SOACS.SOAC.html#identitySOACMapper"><span class="hs-identifier hs-var">identitySOACMapper</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">mapOnSOACLambda :: Lambda -&gt; PassM Lambda
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapOnSOACLambda"><span class="hs-identifier hs-var">mapOnSOACLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Lambda -&gt; PassM Lambda
+</span><a href="Futhark.Pass.AD.html#onLambda"><span class="hs-identifier hs-var">onLambda</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467714"><span class="hs-identifier hs-var">scope</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="annot"><a href="Futhark.Pass.AD.html#onStms"><span class="hs-identifier hs-type">onStms</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span id="onStms"><span class="annot"><span class="annottext">onStms :: Scope SOACS -&gt; Stms SOACS -&gt; PassM (Stms SOACS)
+</span><a href="Futhark.Pass.AD.html#onStms"><span class="hs-identifier hs-var hs-var">onStms</span></a></span></span><span> </span><span id="local-6989586621684467696"><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467696"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span id="local-6989586621684467695"><span class="annot"><span class="annottext">Stms SOACS
+</span><a href="#local-6989586621684467695"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Stms SOACS] -&gt; Stms SOACS
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([Stms SOACS] -&gt; Stms SOACS)
+-&gt; PassM [Stms SOACS] -&gt; PassM (Stms SOACS)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Stm -&gt; PassM (Stms SOACS)) -&gt; [Stm] -&gt; PassM [Stms SOACS]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Scope SOACS -&gt; Stm -&gt; PassM (Stms SOACS)
+</span><a href="Futhark.Pass.AD.html#onStm"><span class="hs-identifier hs-var">onStm</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467693"><span class="hs-identifier hs-var">scope'</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms SOACS -&gt; [Stm]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">Stms SOACS
+</span><a href="#local-6989586621684467695"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-49"></span><span>    </span><span id="local-6989586621684467693"><span class="annot"><span class="annottext">scope' :: Scope SOACS
+</span><a href="#local-6989586621684467693"><span class="hs-identifier hs-var hs-var">scope'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stms SOACS -&gt; Scope SOACS
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms SOACS
+</span><a href="#local-6989586621684467695"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Scope SOACS -&gt; Scope SOACS
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467696"><span class="hs-identifier hs-var">scope</span></a></span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="annot"><a href="Futhark.Pass.AD.html#onBody"><span class="hs-identifier hs-type">onBody</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span>
+</span><span id="line-52"></span><span id="onBody"><span class="annot"><span class="annottext">onBody :: Scope SOACS -&gt; BodyT SOACS -&gt; PassM (BodyT SOACS)
+</span><a href="Futhark.Pass.AD.html#onBody"><span class="hs-identifier hs-var hs-var">onBody</span></a></span></span><span> </span><span id="local-6989586621684467689"><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467689"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span id="local-6989586621684467688"><span class="annot"><span class="annottext">BodyT SOACS
+</span><a href="#local-6989586621684467688"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>  </span><span id="local-6989586621684467687"><span class="annot"><span class="annottext">Stms SOACS
+</span><a href="#local-6989586621684467687"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Stms SOACS -&gt; PassM (Stms SOACS)
+</span><a href="Futhark.Pass.AD.html#onStms"><span class="hs-identifier hs-var">onStms</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467689"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms SOACS -&gt; PassM (Stms SOACS))
+-&gt; Stms SOACS -&gt; PassM (Stms SOACS)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BodyT SOACS -&gt; Stms SOACS
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT SOACS
+</span><a href="#local-6989586621684467688"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-54"></span><span>  </span><span class="annot"><span class="annottext">BodyT SOACS -&gt; PassM (BodyT SOACS)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(BodyT SOACS -&gt; PassM (BodyT SOACS))
+-&gt; BodyT SOACS -&gt; PassM (BodyT SOACS)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BodyT SOACS
+</span><a href="#local-6989586621684467688"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">bodyStms :: Stms SOACS
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var">bodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stms SOACS
+</span><a href="#local-6989586621684467687"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span class="annot"><a href="Futhark.Pass.AD.html#onLambda"><span class="hs-identifier hs-type">onLambda</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span>
+</span><span id="line-57"></span><span id="onLambda"><span class="annot"><span class="annottext">onLambda :: Scope SOACS -&gt; Lambda -&gt; PassM Lambda
+</span><a href="Futhark.Pass.AD.html#onLambda"><span class="hs-identifier hs-var hs-var">onLambda</span></a></span></span><span> </span><span id="local-6989586621684467685"><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467685"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span id="local-6989586621684467684"><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467684"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-58"></span><span>  </span><span id="local-6989586621684467683"><span class="annot"><span class="annottext">BodyT SOACS
+</span><a href="#local-6989586621684467683"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; BodyT SOACS -&gt; PassM (BodyT SOACS)
+</span><a href="Futhark.Pass.AD.html#onBody"><span class="hs-identifier hs-var">onBody</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param Type] -&gt; Scope SOACS
+forall rep dec. (LParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-var">scopeOfLParams</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda -&gt; [LParam SOACS]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467684"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Scope SOACS -&gt; Scope SOACS
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+</span><a href="#local-6989586621684467685"><span class="hs-identifier hs-var">scope</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(BodyT SOACS -&gt; PassM (BodyT SOACS))
+-&gt; BodyT SOACS -&gt; PassM (BodyT SOACS)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda -&gt; BodyT SOACS
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467684"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><span class="annottext">Lambda -&gt; PassM Lambda
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Lambda -&gt; PassM Lambda) -&gt; Lambda -&gt; PassM Lambda
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda
+</span><a href="#local-6989586621684467684"><span class="hs-identifier hs-var">lam</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">lambdaBody :: BodyT SOACS
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var">lambdaBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BodyT SOACS
+</span><a href="#local-6989586621684467683"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="annot"><a href="Futhark.Pass.AD.html#onFun"><span class="hs-identifier hs-type">onFun</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span id="onFun"><span class="annot"><span class="annottext">onFun :: Stms SOACS -&gt; FunDef SOACS -&gt; PassM (FunDef SOACS)
+</span><a href="Futhark.Pass.AD.html#onFun"><span class="hs-identifier hs-var hs-var">onFun</span></a></span></span><span> </span><span id="local-6989586621684467678"><span class="annot"><span class="annottext">Stms SOACS
+</span><a href="#local-6989586621684467678"><span class="hs-identifier hs-var">consts</span></a></span></span><span> </span><span id="local-6989586621684467677"><span class="annot"><span class="annottext">FunDef SOACS
+</span><a href="#local-6989586621684467677"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-63"></span><span>  </span><span id="local-6989586621684467676"><span class="annot"><span class="annottext">BodyT SOACS
+</span><a href="#local-6989586621684467676"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; BodyT SOACS -&gt; PassM (BodyT SOACS)
+</span><a href="Futhark.Pass.AD.html#onBody"><span class="hs-identifier hs-var">onBody</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms SOACS -&gt; Scope SOACS
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms SOACS
+</span><a href="#local-6989586621684467678"><span class="hs-identifier hs-var">consts</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Scope SOACS -&gt; Scope SOACS
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS -&gt; Scope SOACS
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS
+</span><a href="#local-6989586621684467677"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(BodyT SOACS -&gt; PassM (BodyT SOACS))
+-&gt; BodyT SOACS -&gt; PassM (BodyT SOACS)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS -&gt; BodyT SOACS
+forall rep. FunDef rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var hs-var">funDefBody</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS
+</span><a href="#local-6989586621684467677"><span class="hs-identifier hs-var">fd</span></a></span><span>
+</span><span id="line-64"></span><span>  </span><span class="annot"><span class="annottext">FunDef SOACS -&gt; PassM (FunDef SOACS)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(FunDef SOACS -&gt; PassM (FunDef SOACS))
+-&gt; FunDef SOACS -&gt; PassM (FunDef SOACS)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS
+</span><a href="#local-6989586621684467677"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">funDefBody :: BodyT SOACS
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var">funDefBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BodyT SOACS
+</span><a href="#local-6989586621684467676"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span class="annot"><a href="Futhark.Pass.AD.html#algebraicDifferentiation"><span class="hs-identifier hs-type">algebraicDifferentiation</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span>
+</span><span id="line-67"></span><span id="algebraicDifferentiation"><span class="annot"><span class="annottext">algebraicDifferentiation :: Pass SOACS SOACS
+</span><a href="Futhark.Pass.AD.html#algebraicDifferentiation"><span class="hs-identifier hs-var hs-var">algebraicDifferentiation</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><span class="annottext">Pass :: forall fromrep torep.
+String
+-&gt; String
+-&gt; (Prog fromrep -&gt; PassM (Prog torep))
+-&gt; Pass fromrep torep
+</span><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span>
+</span><span id="line-69"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">passName :: String
+</span><a href="Futhark.Pass.html#passName"><span class="hs-identifier hs-var">passName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;ad&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-70"></span><span>      </span><span class="annot"><span class="annottext">passDescription :: String
+</span><a href="Futhark.Pass.html#passDescription"><span class="hs-identifier hs-var">passDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Apply AD operators&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-71"></span><span>      </span><span class="annot"><span class="annottext">passFunction :: Prog SOACS -&gt; PassM (Prog SOACS)
+</span><a href="Futhark.Pass.html#passFunction"><span class="hs-identifier hs-var">passFunction</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Stms SOACS -&gt; PassM (Stms SOACS))
+-&gt; (Stms SOACS -&gt; FunDef SOACS -&gt; PassM (FunDef SOACS))
+-&gt; Prog SOACS
+-&gt; PassM (Prog SOACS)
+forall fromrep torep.
+(Stms fromrep -&gt; PassM (Stms torep))
+-&gt; (Stms torep -&gt; FunDef fromrep -&gt; PassM (FunDef torep))
+-&gt; Prog fromrep
+-&gt; PassM (Prog torep)
+</span><a href="Futhark.Pass.html#intraproceduralTransformationWithConsts"><span class="hs-identifier hs-var">intraproceduralTransformationWithConsts</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Scope SOACS -&gt; Stms SOACS -&gt; PassM (Stms SOACS)
+</span><a href="Futhark.Pass.AD.html#onStms"><span class="hs-identifier hs-var">onStms</span></a></span><span> </span><span class="annot"><span class="annottext">Scope SOACS
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms SOACS -&gt; FunDef SOACS -&gt; PassM (FunDef SOACS)
+</span><a href="Futhark.Pass.AD.html#onFun"><span class="hs-identifier hs-var">onFun</span></a></span><span>
+</span><span id="line-72"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-73"></span></pre></body></html>

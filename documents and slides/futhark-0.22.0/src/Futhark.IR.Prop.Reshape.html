@@ -1,0 +1,452 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | Facilities for creating, inspecting, and simplifying reshape and</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- coercion operations.</span><span>
+</span><span id="line-3"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.IR.Prop.Reshape</span><span>
+</span><span id="line-4"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * Basic tools</span></span><span>
+</span><span id="line-5"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#newDim"><span class="hs-identifier">newDim</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#newDims"><span class="hs-identifier">newDims</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#newShape"><span class="hs-identifier">newShape</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Construction</span></span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#shapeCoerce"><span class="hs-identifier">shapeCoerce</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Execution</span></span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#reshapeOuter"><span class="hs-identifier">reshapeOuter</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#reshapeInner"><span class="hs-identifier">reshapeInner</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Inspection</span></span><span>
+</span><span id="line-17"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#shapeCoercion"><span class="hs-identifier">shapeCoercion</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Simplification</span></span><span>
+</span><span id="line-20"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#fuseReshape"><span class="hs-identifier">fuseReshape</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#informReshape"><span class="hs-identifier">informReshape</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Shape calculations</span></span><span>
+</span><span id="line-24"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#reshapeIndex"><span class="hs-identifier">reshapeIndex</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#flattenIndex"><span class="hs-identifier">flattenIndex</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#unflattenIndex"><span class="hs-identifier">unflattenIndex</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-27"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#sliceSizes"><span class="hs-identifier">sliceSizes</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-28"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Foldable</span></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html"><span class="hs-identifier">Futhark.IR.Syntax</span></a></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.IntegralExp.html"><span class="hs-identifier">Futhark.Util.IntegralExp</span></a></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">product</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">quot</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">sum</span></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- | The new dimension.</span><span>
+</span><span id="line-37"></span><span id="local-6989586621684334696"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#newDim"><span class="hs-identifier hs-type">newDim</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#DimChange"><span class="hs-identifier hs-type">DimChange</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334696"><span class="hs-identifier hs-type">d</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684334696"><span class="hs-identifier hs-type">d</span></a></span></span><span>
+</span><span id="line-38"></span><span id="newDim"><span class="annot"><span class="annottext">newDim :: forall d. DimChange d -&gt; d
+</span><a href="Futhark.IR.Prop.Reshape.html#newDim"><span class="hs-identifier hs-var hs-var">newDim</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DimCoercion"><span class="hs-identifier hs-type">DimCoercion</span></a></span><span> </span><span id="local-6989586621684334614"><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334614"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334614"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-39"></span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#newDim"><span class="hs-identifier hs-var">newDim</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-type">DimNew</span></a></span><span> </span><span id="local-6989586621684334612"><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334612"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334612"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- | The new dimensions resulting from a reshape operation.</span><span>
+</span><span id="line-42"></span><span id="local-6989586621684334693"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#newDims"><span class="hs-identifier hs-type">newDims</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334693"><span class="hs-identifier hs-type">d</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334693"><span class="hs-identifier hs-type">d</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-43"></span><span id="newDims"><span class="annot"><span class="annottext">newDims :: forall d. ShapeChange d -&gt; [d]
+</span><a href="Futhark.IR.Prop.Reshape.html#newDims"><span class="hs-identifier hs-var hs-var">newDims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(DimChange d -&gt; d) -&gt; [DimChange d] -&gt; [d]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">DimChange d -&gt; d
+forall d. DimChange d -&gt; d
+</span><a href="Futhark.IR.Prop.Reshape.html#newDim"><span class="hs-identifier hs-var">newDim</span></a></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- | The new shape resulting from a reshape operation.</span><span>
+</span><span id="line-46"></span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#newShape"><span class="hs-identifier hs-type">newShape</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span>
+</span><span id="line-47"></span><span id="newShape"><span class="annot"><span class="annottext">newShape :: ShapeChange SubExp -&gt; Shape
+</span><a href="Futhark.IR.Prop.Reshape.html#newShape"><span class="hs-identifier hs-var hs-var">newShape</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Shape
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; Shape)
+-&gt; (ShapeChange SubExp -&gt; [SubExp]) -&gt; ShapeChange SubExp -&gt; Shape
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange SubExp -&gt; [SubExp]
+forall d. ShapeChange d -&gt; [d]
+</span><a href="Futhark.IR.Prop.Reshape.html#newDims"><span class="hs-identifier hs-var">newDims</span></a></span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- | Construct a 'Reshape' where all dimension changes are</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- 'DimCoercion's.</span><span>
+</span><span id="line-51"></span><span id="local-6989586621684334680"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#shapeCoerce"><span class="hs-identifier hs-type">shapeCoerce</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334680"><span class="hs-identifier hs-type">rep</span></a></span></span><span>
+</span><span id="line-52"></span><span id="shapeCoerce"><span class="annot"><span class="annottext">shapeCoerce :: forall rep. [SubExp] -&gt; VName -&gt; Exp rep
+</span><a href="Futhark.IR.Prop.Reshape.html#shapeCoerce"><span class="hs-identifier hs-var hs-var">shapeCoerce</span></a></span></span><span> </span><span id="local-6989586621684334609"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684334609"><span class="hs-identifier hs-var">newdims</span></a></span></span><span> </span><span id="local-6989586621684334608"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684334608"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-53"></span><span>  </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT rep
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT rep) -&gt; BasicOp -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange SubExp -&gt; VName -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Reshape"><span class="hs-identifier hs-var">Reshape</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SubExp -&gt; DimChange SubExp) -&gt; [SubExp] -&gt; ShapeChange SubExp
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; DimChange SubExp
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimCoercion"><span class="hs-identifier hs-var">DimCoercion</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684334609"><span class="hs-identifier hs-var">newdims</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684334608"><span class="hs-identifier hs-var">arr</span></a></span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- | @reshapeOuter newshape n oldshape@ returns a 'Reshape' expression</span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- that replaces the outer @n@ dimensions of @oldshape@ with @newshape@.</span><span>
+</span><span id="line-57"></span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#reshapeOuter"><span class="hs-identifier hs-type">reshapeOuter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span>
+</span><span id="line-58"></span><span id="reshapeOuter"><span class="annot"><span class="annottext">reshapeOuter :: ShapeChange SubExp -&gt; Int -&gt; Shape -&gt; ShapeChange SubExp
+</span><a href="Futhark.IR.Prop.Reshape.html#reshapeOuter"><span class="hs-identifier hs-var hs-var">reshapeOuter</span></a></span></span><span> </span><span id="local-6989586621684334605"><span class="annot"><span class="annottext">ShapeChange SubExp
+</span><a href="#local-6989586621684334605"><span class="hs-identifier hs-var">newshape</span></a></span></span><span> </span><span id="local-6989586621684334604"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684334604"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621684334603"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684334603"><span class="hs-identifier hs-var">oldshape</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><span class="annottext">ShapeChange SubExp
+</span><a href="#local-6989586621684334605"><span class="hs-identifier hs-var">newshape</span></a></span><span> </span><span class="annot"><span class="annottext">ShapeChange SubExp -&gt; ShapeChange SubExp -&gt; ShapeChange SubExp
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; DimChange SubExp) -&gt; [SubExp] -&gt; ShapeChange SubExp
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; DimChange SubExp
+forall d. d -&gt; DimChange d
+</span><a href="#local-6989586621684334602"><span class="hs-identifier hs-var">coercion_or_new</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; [SubExp] -&gt; [SubExp]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">drop</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684334604"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape -&gt; [SubExp]
+forall d. ShapeBase d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#shapeDims"><span class="hs-identifier hs-var hs-var">shapeDims</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684334603"><span class="hs-identifier hs-var">oldshape</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-61"></span><span>    </span><span id="local-6989586621684334602"><span class="annot"><span class="annottext">coercion_or_new :: d -&gt; DimChange d
+</span><a href="#local-6989586621684334602"><span class="hs-identifier hs-var hs-var">coercion_or_new</span></a></span></span><span>
+</span><span id="line-62"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ShapeChange SubExp -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange SubExp
+</span><a href="#local-6989586621684334605"><span class="hs-identifier hs-var">newshape</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684334604"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d -&gt; DimChange d
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimCoercion"><span class="hs-identifier hs-var">DimCoercion</span></a></span><span>
+</span><span id="line-63"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d -&gt; DimChange d
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-var">DimNew</span></a></span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- | @reshapeInner newshape n oldshape@ returns a 'Reshape' expression</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- that replaces the inner @m-n@ dimensions (where @m@ is the rank of</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- @oldshape@) of @src@ with @newshape@.</span><span>
+</span><span id="line-68"></span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#reshapeInner"><span class="hs-identifier hs-type">reshapeInner</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span>
+</span><span id="line-69"></span><span id="reshapeInner"><span class="annot"><span class="annottext">reshapeInner :: ShapeChange SubExp -&gt; Int -&gt; Shape -&gt; ShapeChange SubExp
+</span><a href="Futhark.IR.Prop.Reshape.html#reshapeInner"><span class="hs-identifier hs-var hs-var">reshapeInner</span></a></span></span><span> </span><span id="local-6989586621684334594"><span class="annot"><span class="annottext">ShapeChange SubExp
+</span><a href="#local-6989586621684334594"><span class="hs-identifier hs-var">newshape</span></a></span></span><span> </span><span id="local-6989586621684334593"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684334593"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621684334592"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684334592"><span class="hs-identifier hs-var">oldshape</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-70"></span><span>  </span><span class="annot"><span class="annottext">(SubExp -&gt; DimChange SubExp) -&gt; [SubExp] -&gt; ShapeChange SubExp
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; DimChange SubExp
+forall d. d -&gt; DimChange d
+</span><a href="#local-6989586621684334591"><span class="hs-identifier hs-var">coercion_or_new</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; [SubExp] -&gt; [SubExp]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">take</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684334593"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape -&gt; [SubExp]
+forall d. ShapeBase d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#shapeDims"><span class="hs-identifier hs-var hs-var">shapeDims</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684334592"><span class="hs-identifier hs-var">oldshape</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ShapeChange SubExp -&gt; ShapeChange SubExp -&gt; ShapeChange SubExp
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange SubExp
+</span><a href="#local-6989586621684334594"><span class="hs-identifier hs-var">newshape</span></a></span><span>
+</span><span id="line-71"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-72"></span><span>    </span><span id="local-6989586621684334591"><span class="annot"><span class="annottext">coercion_or_new :: d -&gt; DimChange d
+</span><a href="#local-6989586621684334591"><span class="hs-identifier hs-var hs-var">coercion_or_new</span></a></span></span><span>
+</span><span id="line-73"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ShapeChange SubExp -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange SubExp
+</span><a href="#local-6989586621684334594"><span class="hs-identifier hs-var">newshape</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684334585"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684334593"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d -&gt; DimChange d
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimCoercion"><span class="hs-identifier hs-var">DimCoercion</span></a></span><span>
+</span><span id="line-74"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d -&gt; DimChange d
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-var">DimNew</span></a></span><span>
+</span><span id="line-75"></span><span>    </span><span id="local-6989586621684334585"><span class="annot"><span class="annottext">m :: Int
+</span><a href="#local-6989586621684334585"><span class="hs-identifier hs-var hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Shape -&gt; Int
+forall a. ArrayShape a =&gt; a -&gt; Int
+</span><a href="Futhark.IR.Syntax.Core.html#shapeRank"><span class="hs-identifier hs-var">shapeRank</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684334592"><span class="hs-identifier hs-var">oldshape</span></a></span><span>
+</span><span id="line-76"></span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- | If the shape change is nothing but shape coercions, return the new dimensions.  Otherwise, return</span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- 'Nothing'.</span><span>
+</span><span id="line-79"></span><span id="local-6989586621684334660"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#shapeCoercion"><span class="hs-identifier hs-type">shapeCoercion</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334660"><span class="hs-identifier hs-type">d</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334660"><span class="hs-identifier hs-type">d</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-80"></span><span id="shapeCoercion"><span class="annot"><span class="annottext">shapeCoercion :: forall d. ShapeChange d -&gt; Maybe [d]
+</span><a href="Futhark.IR.Prop.Reshape.html#shapeCoercion"><span class="hs-identifier hs-var hs-var">shapeCoercion</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(DimChange d -&gt; Maybe d) -&gt; [DimChange d] -&gt; Maybe [d]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">DimChange d -&gt; Maybe d
+forall {a}. DimChange a -&gt; Maybe a
+</span><a href="#local-6989586621684334576"><span class="hs-identifier hs-var">dimCoercion</span></a></span><span>
+</span><span id="line-81"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-82"></span><span>    </span><span id="local-6989586621684334576"><span class="annot"><span class="annottext">dimCoercion :: DimChange a -&gt; Maybe a
+</span><a href="#local-6989586621684334576"><span class="hs-identifier hs-var hs-var">dimCoercion</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DimCoercion"><span class="hs-identifier hs-type">DimCoercion</span></a></span><span> </span><span id="local-6989586621684334575"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684334575"><span class="hs-identifier hs-var">d</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684334575"><span class="hs-identifier hs-var">d</span></a></span><span>
+</span><span id="line-83"></span><span>    </span><span class="annot"><a href="#local-6989586621684334576"><span class="hs-identifier hs-var">dimCoercion</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-type">DimNew</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-84"></span><span>
+</span><span id="line-85"></span><span class="hs-comment">-- | @fuseReshape s1 s2@ creates a new 'ShapeChange' that is</span><span>
+</span><span id="line-86"></span><span class="hs-comment">-- semantically the same as first applying @s1@ and then @s2@.  This</span><span>
+</span><span id="line-87"></span><span class="hs-comment">-- may take advantage of properties of 'DimCoercion' versus 'DimNew'</span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- to preserve information.</span><span>
+</span><span id="line-89"></span><span id="local-6989586621684334652"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#fuseReshape"><span class="hs-identifier hs-type">fuseReshape</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Eq</span></span><span> </span><span class="annot"><a href="#local-6989586621684334652"><span class="hs-identifier hs-type">d</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334652"><span class="hs-identifier hs-type">d</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334652"><span class="hs-identifier hs-type">d</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334652"><span class="hs-identifier hs-type">d</span></a></span></span><span>
+</span><span id="line-90"></span><span id="fuseReshape"><span class="annot"><span class="annottext">fuseReshape :: forall d. Eq d =&gt; ShapeChange d -&gt; ShapeChange d -&gt; ShapeChange d
+</span><a href="Futhark.IR.Prop.Reshape.html#fuseReshape"><span class="hs-identifier hs-var hs-var">fuseReshape</span></a></span></span><span> </span><span id="local-6989586621684334569"><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334569"><span class="hs-identifier hs-var">s1</span></a></span></span><span> </span><span id="local-6989586621684334568"><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334568"><span class="hs-identifier hs-var">s2</span></a></span></span><span>
+</span><span id="line-91"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ShapeChange d -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334569"><span class="hs-identifier hs-var">s1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange d -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334568"><span class="hs-identifier hs-var">s2</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-92"></span><span>    </span><span class="annot"><span class="annottext">(DimChange d -&gt; DimChange d -&gt; DimChange d)
+-&gt; ShapeChange d -&gt; ShapeChange d -&gt; ShapeChange d
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">DimChange d -&gt; DimChange d -&gt; DimChange d
+forall {d}. Eq d =&gt; DimChange d -&gt; DimChange d -&gt; DimChange d
+</span><a href="#local-6989586621684334566"><span class="hs-identifier hs-var">comb</span></a></span><span> </span><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334569"><span class="hs-identifier hs-var">s1</span></a></span><span> </span><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334568"><span class="hs-identifier hs-var">s2</span></a></span><span>
+</span><span id="line-93"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-94"></span><span>    </span><span id="local-6989586621684334566"><span class="annot"><span class="annottext">comb :: DimChange d -&gt; DimChange d -&gt; DimChange d
+</span><a href="#local-6989586621684334566"><span class="hs-identifier hs-var hs-var">comb</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-type">DimNew</span></a></span><span> </span><span class="annot"><span class="annottext">d
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DimCoercion"><span class="hs-identifier hs-type">DimCoercion</span></a></span><span> </span><span id="local-6989586621684334563"><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334563"><span class="hs-identifier hs-var">d2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-95"></span><span>      </span><span class="annot"><span class="annottext">d -&gt; DimChange d
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-var">DimNew</span></a></span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334563"><span class="hs-identifier hs-var">d2</span></a></span><span>
+</span><span id="line-96"></span><span>    </span><span class="annot"><a href="#local-6989586621684334566"><span class="hs-identifier hs-var">comb</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DimCoercion"><span class="hs-identifier hs-type">DimCoercion</span></a></span><span> </span><span id="local-6989586621684334562"><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334562"><span class="hs-identifier hs-var">d1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-type">DimNew</span></a></span><span> </span><span id="local-6989586621684334561"><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334561"><span class="hs-identifier hs-var">d2</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334562"><span class="hs-identifier hs-var">d1</span></a></span><span> </span><span class="annot"><span class="annottext">d -&gt; d -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334561"><span class="hs-identifier hs-var">d2</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d -&gt; DimChange d
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimCoercion"><span class="hs-identifier hs-var">DimCoercion</span></a></span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334561"><span class="hs-identifier hs-var">d2</span></a></span><span>
+</span><span id="line-98"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d -&gt; DimChange d
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-var">DimNew</span></a></span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334561"><span class="hs-identifier hs-var">d2</span></a></span><span>
+</span><span id="line-99"></span><span>    </span><span class="annot"><a href="#local-6989586621684334566"><span class="hs-identifier hs-var">comb</span></a></span><span> </span><span class="annot"><span class="annottext">DimChange d
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684334560"><span class="annot"><span class="annottext">DimChange d
+</span><a href="#local-6989586621684334560"><span class="hs-identifier hs-var">d2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-100"></span><span>      </span><span class="annot"><span class="annottext">DimChange d
+</span><a href="#local-6989586621684334560"><span class="hs-identifier hs-var">d2</span></a></span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- TODO: intelligently handle case where s1 is a prefix of s2.</span><span>
+</span><span id="line-102"></span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#fuseReshape"><span class="hs-identifier hs-var">fuseReshape</span></a></span><span> </span><span class="annot"><span class="annottext">ShapeChange d
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684334559"><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334559"><span class="hs-identifier hs-var">s2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334559"><span class="hs-identifier hs-var">s2</span></a></span><span>
+</span><span id="line-103"></span><span>
+</span><span id="line-104"></span><span class="hs-comment">-- | Given concrete information about the shape of the source array,</span><span>
+</span><span id="line-105"></span><span class="hs-comment">-- convert some 'DimNew's into 'DimCoercion's.</span><span>
+</span><span id="line-106"></span><span id="local-6989586621684334646"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#informReshape"><span class="hs-identifier hs-type">informReshape</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Eq</span></span><span> </span><span class="annot"><a href="#local-6989586621684334646"><span class="hs-identifier hs-type">d</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334646"><span class="hs-identifier hs-type">d</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334646"><span class="hs-identifier hs-type">d</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#ShapeChange"><span class="hs-identifier hs-type">ShapeChange</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334646"><span class="hs-identifier hs-type">d</span></a></span></span><span>
+</span><span id="line-107"></span><span id="informReshape"><span class="annot"><span class="annottext">informReshape :: forall d. Eq d =&gt; [d] -&gt; ShapeChange d -&gt; ShapeChange d
+</span><a href="Futhark.IR.Prop.Reshape.html#informReshape"><span class="hs-identifier hs-var hs-var">informReshape</span></a></span></span><span> </span><span id="local-6989586621684334553"><span class="annot"><span class="annottext">[d]
+</span><a href="#local-6989586621684334553"><span class="hs-identifier hs-var">shape</span></a></span></span><span> </span><span id="local-6989586621684334552"><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334552"><span class="hs-identifier hs-var">sc</span></a></span></span><span>
+</span><span id="line-108"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">[d] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[d]
+</span><a href="#local-6989586621684334553"><span class="hs-identifier hs-var">shape</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange d -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334552"><span class="hs-identifier hs-var">sc</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-109"></span><span>    </span><span class="annot"><span class="annottext">(d -&gt; DimChange d -&gt; DimChange d)
+-&gt; [d] -&gt; ShapeChange d -&gt; ShapeChange d
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">d -&gt; DimChange d -&gt; DimChange d
+forall {d}. Eq d =&gt; d -&gt; DimChange d -&gt; DimChange d
+</span><a href="#local-6989586621684334551"><span class="hs-identifier hs-var">inform</span></a></span><span> </span><span class="annot"><span class="annottext">[d]
+</span><a href="#local-6989586621684334553"><span class="hs-identifier hs-var">shape</span></a></span><span> </span><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334552"><span class="hs-identifier hs-var">sc</span></a></span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-111"></span><span>    </span><span id="local-6989586621684334551"><span class="annot"><span class="annottext">inform :: d -&gt; DimChange d -&gt; DimChange d
+</span><a href="#local-6989586621684334551"><span class="hs-identifier hs-var hs-var">inform</span></a></span></span><span> </span><span id="local-6989586621684334548"><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334548"><span class="hs-identifier hs-var">d1</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-type">DimNew</span></a></span><span> </span><span id="local-6989586621684334547"><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334547"><span class="hs-identifier hs-var">d2</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334548"><span class="hs-identifier hs-var">d1</span></a></span><span> </span><span class="annot"><span class="annottext">d -&gt; d -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334547"><span class="hs-identifier hs-var">d2</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d -&gt; DimChange d
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimCoercion"><span class="hs-identifier hs-var">DimCoercion</span></a></span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684334547"><span class="hs-identifier hs-var">d2</span></a></span><span>
+</span><span id="line-113"></span><span>    </span><span class="annot"><a href="#local-6989586621684334551"><span class="hs-identifier hs-var">inform</span></a></span><span> </span><span class="annot"><span class="annottext">d
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684334546"><span class="annot"><span class="annottext">DimChange d
+</span><a href="#local-6989586621684334546"><span class="hs-identifier hs-var">dc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-114"></span><span>      </span><span class="annot"><span class="annottext">DimChange d
+</span><a href="#local-6989586621684334546"><span class="hs-identifier hs-var">dc</span></a></span><span>
+</span><span id="line-115"></span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#informReshape"><span class="hs-identifier hs-var">informReshape</span></a></span><span> </span><span class="annot"><span class="annottext">[d]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684334545"><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334545"><span class="hs-identifier hs-var">sc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ShapeChange d
+</span><a href="#local-6989586621684334545"><span class="hs-identifier hs-var">sc</span></a></span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span class="hs-comment">-- | @reshapeIndex to_dims from_dims is@ transforms the index list</span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- @is@ (which is into an array of shape @from_dims@) into an index</span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- list @is'@, which is into an array of shape @to_dims@.  @is@ must</span><span>
+</span><span id="line-120"></span><span class="hs-comment">-- have the same length as @from_dims@, and @is'@ will have the same</span><span>
+</span><span id="line-121"></span><span class="hs-comment">-- length as @to_dims@.</span><span>
+</span><span id="line-122"></span><span id="local-6989586621684334643"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#reshapeIndex"><span class="hs-identifier hs-type">reshapeIndex</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-123"></span><span>  </span><span class="annot"><a href="Futhark.Util.IntegralExp.html#IntegralExp"><span class="hs-identifier hs-type">IntegralExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334643"><span class="hs-identifier hs-type">num</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334643"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334643"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-126"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334643"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-127"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334643"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-128"></span><span id="reshapeIndex"><span class="annot"><span class="annottext">reshapeIndex :: forall num. IntegralExp num =&gt; [num] -&gt; [num] -&gt; [num] -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#reshapeIndex"><span class="hs-identifier hs-var hs-var">reshapeIndex</span></a></span></span><span> </span><span id="local-6989586621684334541"><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334541"><span class="hs-identifier hs-var">to_dims</span></a></span></span><span> </span><span id="local-6989586621684334540"><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334540"><span class="hs-identifier hs-var">from_dims</span></a></span></span><span> </span><span id="local-6989586621684334539"><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334539"><span class="hs-identifier hs-var">is</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-129"></span><span>  </span><span class="annot"><span class="annottext">[num] -&gt; num -&gt; [num]
+forall num. IntegralExp num =&gt; [num] -&gt; num -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#unflattenIndex"><span class="hs-identifier hs-var">unflattenIndex</span></a></span><span> </span><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334541"><span class="hs-identifier hs-var">to_dims</span></a></span><span> </span><span class="annot"><span class="annottext">(num -&gt; [num]) -&gt; num -&gt; [num]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[num] -&gt; [num] -&gt; num
+forall num. IntegralExp num =&gt; [num] -&gt; [num] -&gt; num
+</span><a href="Futhark.IR.Prop.Reshape.html#flattenIndex"><span class="hs-identifier hs-var">flattenIndex</span></a></span><span> </span><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334540"><span class="hs-identifier hs-var">from_dims</span></a></span><span> </span><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334539"><span class="hs-identifier hs-var">is</span></a></span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- | @unflattenIndex dims i@ computes a list of indices into an array</span><span>
+</span><span id="line-132"></span><span class="hs-comment">-- with dimension @dims@ given the flat index @i@.  The resulting list</span><span>
+</span><span id="line-133"></span><span class="hs-comment">-- will have the same size as @dims@.</span><span>
+</span><span id="line-134"></span><span id="local-6989586621684334640"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#unflattenIndex"><span class="hs-identifier hs-type">unflattenIndex</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-135"></span><span>  </span><span class="annot"><a href="Futhark.Util.IntegralExp.html#IntegralExp"><span class="hs-identifier hs-type">IntegralExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334640"><span class="hs-identifier hs-type">num</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-136"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334640"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-137"></span><span>  </span><span class="annot"><a href="#local-6989586621684334640"><span class="hs-identifier hs-type">num</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-138"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334640"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-139"></span><span id="unflattenIndex"><span class="annot"><span class="annottext">unflattenIndex :: forall num. IntegralExp num =&gt; [num] -&gt; num -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#unflattenIndex"><span class="hs-identifier hs-var hs-var">unflattenIndex</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[num] -&gt; num -&gt; [num]
+forall num. IntegralExp num =&gt; [num] -&gt; num -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#unflattenIndexFromSlices"><span class="hs-identifier hs-var">unflattenIndexFromSlices</span></a></span><span> </span><span class="annot"><span class="annottext">([num] -&gt; num -&gt; [num])
+-&gt; ([num] -&gt; [num]) -&gt; [num] -&gt; num -&gt; [num]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; [num] -&gt; [num]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">drop</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">([num] -&gt; [num]) -&gt; ([num] -&gt; [num]) -&gt; [num] -&gt; [num]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[num] -&gt; [num]
+forall num. IntegralExp num =&gt; [num] -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#sliceSizes"><span class="hs-identifier hs-var">sliceSizes</span></a></span><span>
+</span><span id="line-140"></span><span>
+</span><span id="line-141"></span><span id="local-6989586621684334534"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#unflattenIndexFromSlices"><span class="hs-identifier hs-type">unflattenIndexFromSlices</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-142"></span><span>  </span><span class="annot"><a href="Futhark.Util.IntegralExp.html#IntegralExp"><span class="hs-identifier hs-type">IntegralExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334534"><span class="hs-identifier hs-type">num</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-143"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334534"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-144"></span><span>  </span><span class="annot"><a href="#local-6989586621684334534"><span class="hs-identifier hs-type">num</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-145"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334534"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-146"></span><span id="unflattenIndexFromSlices"><span class="annot"><span class="annottext">unflattenIndexFromSlices :: forall num. IntegralExp num =&gt; [num] -&gt; num -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#unflattenIndexFromSlices"><span class="hs-identifier hs-var hs-var">unflattenIndexFromSlices</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">num
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-147"></span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#unflattenIndexFromSlices"><span class="hs-identifier hs-var">unflattenIndexFromSlices</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684334525"><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334525"><span class="hs-identifier hs-var">size</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684334524"><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334524"><span class="hs-identifier hs-var">slices</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684334523"><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334523"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-148"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334523"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">num -&gt; num -&gt; num
+forall e. IntegralExp e =&gt; e -&gt; e -&gt; e
+</span><a href="Futhark.Util.IntegralExp.html#quot"><span class="hs-operator hs-var">`quot`</span></a></span><span> </span><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334525"><span class="hs-identifier hs-var">size</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">num -&gt; [num] -&gt; [num]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[num] -&gt; num -&gt; [num]
+forall num. IntegralExp num =&gt; [num] -&gt; num -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#unflattenIndexFromSlices"><span class="hs-identifier hs-var">unflattenIndexFromSlices</span></a></span><span> </span><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334524"><span class="hs-identifier hs-var">slices</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334523"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">num -&gt; num -&gt; num
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334523"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">num -&gt; num -&gt; num
+forall e. IntegralExp e =&gt; e -&gt; e -&gt; e
+</span><a href="Futhark.Util.IntegralExp.html#quot"><span class="hs-operator hs-var">`quot`</span></a></span><span> </span><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334525"><span class="hs-identifier hs-var">size</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">num -&gt; num -&gt; num
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334525"><span class="hs-identifier hs-var">size</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span>
+</span><span id="line-150"></span><span class="hs-comment">-- | @flattenIndex dims is@ computes the flat index of @is@ into an</span><span>
+</span><span id="line-151"></span><span class="hs-comment">-- array with dimensions @dims@.  The length of @dims@ and @is@ must</span><span>
+</span><span id="line-152"></span><span class="hs-comment">-- be the same.</span><span>
+</span><span id="line-153"></span><span id="local-6989586621684334639"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#flattenIndex"><span class="hs-identifier hs-type">flattenIndex</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-154"></span><span>  </span><span class="annot"><a href="Futhark.Util.IntegralExp.html#IntegralExp"><span class="hs-identifier hs-type">IntegralExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334639"><span class="hs-identifier hs-type">num</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-155"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334639"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-156"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334639"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-157"></span><span>  </span><span class="annot"><a href="#local-6989586621684334639"><span class="hs-identifier hs-type">num</span></a></span></span><span>
+</span><span id="line-158"></span><span id="flattenIndex"><span class="annot"><span class="annottext">flattenIndex :: forall num. IntegralExp num =&gt; [num] -&gt; [num] -&gt; num
+</span><a href="Futhark.IR.Prop.Reshape.html#flattenIndex"><span class="hs-identifier hs-var hs-var">flattenIndex</span></a></span></span><span> </span><span id="local-6989586621684334515"><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334515"><span class="hs-identifier hs-var">dims</span></a></span></span><span> </span><span id="local-6989586621684334514"><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334514"><span class="hs-identifier hs-var">is</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-159"></span><span>  </span><span class="annot"><span class="annottext">[num] -&gt; num
+forall (t :: * -&gt; *) a. (Foldable t, Num a) =&gt; t a -&gt; a
+</span><span class="hs-identifier hs-var">sum</span></span><span> </span><span class="annot"><span class="annottext">([num] -&gt; num) -&gt; [num] -&gt; num
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(num -&gt; num -&gt; num) -&gt; [num] -&gt; [num] -&gt; [num]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">num -&gt; num -&gt; num
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(*)</span></span><span> </span><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334514"><span class="hs-identifier hs-var">is</span></a></span><span> </span><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334513"><span class="hs-identifier hs-var">slicesizes</span></a></span><span>
+</span><span id="line-160"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-161"></span><span>    </span><span id="local-6989586621684334513"><span class="annot"><span class="annottext">slicesizes :: [num]
+</span><a href="#local-6989586621684334513"><span class="hs-identifier hs-var hs-var">slicesizes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [num] -&gt; [num]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">drop</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">([num] -&gt; [num]) -&gt; [num] -&gt; [num]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[num] -&gt; [num]
+forall num. IntegralExp num =&gt; [num] -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#sliceSizes"><span class="hs-identifier hs-var">sliceSizes</span></a></span><span> </span><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334515"><span class="hs-identifier hs-var">dims</span></a></span><span>
+</span><span id="line-162"></span><span>
+</span><span id="line-163"></span><span class="hs-comment">-- | Given a length @n@ list of dimensions @dims@, @sizeSizes dims@</span><span>
+</span><span id="line-164"></span><span class="hs-comment">-- will compute a length @n+1@ list of the size of each possible array</span><span>
+</span><span id="line-165"></span><span class="hs-comment">-- slice.  The first element of this list will be the product of</span><span>
+</span><span id="line-166"></span><span class="hs-comment">-- @dims@, and the last element will be 1.</span><span>
+</span><span id="line-167"></span><span id="local-6989586621684334637"><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#sliceSizes"><span class="hs-identifier hs-type">sliceSizes</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-168"></span><span>  </span><span class="annot"><a href="Futhark.Util.IntegralExp.html#IntegralExp"><span class="hs-identifier hs-type">IntegralExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684334637"><span class="hs-identifier hs-type">num</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-169"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334637"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-170"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684334637"><span class="hs-identifier hs-type">num</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-171"></span><span id="sliceSizes"><span class="annot"><span class="annottext">sliceSizes :: forall num. IntegralExp num =&gt; [num] -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#sliceSizes"><span class="hs-identifier hs-var hs-var">sliceSizes</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">num
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span>
+</span><span id="line-172"></span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html#sliceSizes"><span class="hs-identifier hs-var">sliceSizes</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684334505"><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334505"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684334504"><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334504"><span class="hs-identifier hs-var">ns</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><span class="annottext">[num] -&gt; num
+forall (t :: * -&gt; *) a. (Foldable t, Num a) =&gt; t a -&gt; a
+</span><span class="hs-identifier hs-var">product</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">num
+</span><a href="#local-6989586621684334505"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">num -&gt; [num] -&gt; [num]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334504"><span class="hs-identifier hs-var">ns</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">num -&gt; [num] -&gt; [num]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[num] -&gt; [num]
+forall num. IntegralExp num =&gt; [num] -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#sliceSizes"><span class="hs-identifier hs-var">sliceSizes</span></a></span><span> </span><span class="annot"><span class="annottext">[num]
+</span><a href="#local-6989586621684334504"><span class="hs-identifier hs-var">ns</span></a></span><span>
+</span><span id="line-174"></span><span>
+</span><span id="line-175"></span><span class="hs-comment">{- HLINT ignore sliceSizes -}</span><span>
+</span><span id="line-176"></span></pre></body></html>

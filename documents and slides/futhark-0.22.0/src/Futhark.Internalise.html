@@ -1,0 +1,105 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE Strict #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-5"></span><span class="hs-comment">--</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- This module implements a transformation from source to core</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- Futhark.</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Internalise</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Internalise.html#internaliseProg"><span class="hs-identifier">internaliseProg</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-9"></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Compiler.Config.html"><span class="hs-identifier">Futhark.Compiler.Config</span></a></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html"><span class="hs-identifier">Futhark.IR.SOACS</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#stmPat"><span class="hs-identifier">stmPat</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.Defunctionalise.html"><span class="hs-identifier">Futhark.Internalise.Defunctionalise</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Defunctionalise</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.Defunctorise.html"><span class="hs-identifier">Futhark.Internalise.Defunctorise</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Defunctorise</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Internalise.Exps.html"><span class="hs-identifier">Futhark.Internalise.Exps</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Exps</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html"><span class="hs-identifier">Futhark.Internalise.LiftLambdas</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">LiftLambdas</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html"><span class="hs-identifier">Futhark.Internalise.Monad</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monomorphise.html"><span class="hs-identifier">Futhark.Internalise.Monomorphise</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Monomorphise</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Log.html"><span class="hs-identifier">Futhark.Util.Log</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.Semantic.html"><span class="hs-identifier">Language.Futhark.Semantic</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Semantic.html#Imports"><span class="hs-identifier">Imports</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- | Convert a program in source Futhark to a program in the Futhark</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- core language.</span><span>
+</span><span id="line-24"></span><span id="local-6989586621684555672"><span class="annot"><a href="Futhark.Internalise.html#internaliseProg"><span class="hs-identifier hs-type">internaliseProg</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-25"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684555672"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Util.Log.html#MonadLogger"><span class="hs-identifier hs-type">MonadLogger</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684555672"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-26"></span><span>  </span><span class="annot"><a href="Futhark.Compiler.Config.html#FutharkConfig"><span class="hs-identifier hs-type">FutharkConfig</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-27"></span><span>  </span><span class="annot"><a href="Language.Futhark.Semantic.html#Imports"><span class="hs-identifier hs-type">Imports</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-28"></span><span>  </span><span class="annot"><a href="#local-6989586621684555672"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">I.Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-29"></span><span id="internaliseProg"><span class="annot"><span class="annottext">internaliseProg :: forall (m :: * -&gt; *).
+(MonadFreshNames m, MonadLogger m) =&gt;
+FutharkConfig -&gt; Imports -&gt; m (Prog SOACS)
+</span><a href="Futhark.Internalise.html#internaliseProg"><span class="hs-identifier hs-var hs-var">internaliseProg</span></a></span></span><span> </span><span id="local-6989586621684555614"><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684555614"><span class="hs-identifier hs-var">config</span></a></span></span><span> </span><span id="local-6989586621684555613"><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684555613"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-30"></span><span>  </span><span class="annot"><span class="annottext">Text -&gt; m ()
+forall {m :: * -&gt; *}. MonadLogger m =&gt; Text -&gt; m ()
+</span><a href="#local-6989586621684555612"><span class="hs-identifier hs-var">maybeLog</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Defunctorising&quot;</span></span><span>
+</span><span id="line-31"></span><span>  </span><span id="local-6989586621684555611"><span class="annot"><span class="annottext">[Dec]
+</span><a href="#local-6989586621684555611"><span class="hs-identifier hs-var">prog_decs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Imports -&gt; m [Dec]
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; Imports -&gt; m [Dec]
+</span><a href="Futhark.Internalise.Defunctorise.html#transformProg"><span class="hs-identifier hs-var">Defunctorise.transformProg</span></a></span><span> </span><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684555613"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-32"></span><span>  </span><span class="annot"><span class="annottext">Text -&gt; m ()
+forall {m :: * -&gt; *}. MonadLogger m =&gt; Text -&gt; m ()
+</span><a href="#local-6989586621684555612"><span class="hs-identifier hs-var">maybeLog</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Monomorphising&quot;</span></span><span>
+</span><span id="line-33"></span><span>  </span><span id="local-6989586621684555609"><span class="annot"><span class="annottext">[ValBind]
+</span><a href="#local-6989586621684555609"><span class="hs-identifier hs-var">prog_decs'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Dec] -&gt; m [ValBind]
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Dec] -&gt; m [ValBind]
+</span><a href="Futhark.Internalise.Monomorphise.html#transformProg"><span class="hs-identifier hs-var">Monomorphise.transformProg</span></a></span><span> </span><span class="annot"><span class="annottext">[Dec]
+</span><a href="#local-6989586621684555611"><span class="hs-identifier hs-var">prog_decs</span></a></span><span>
+</span><span id="line-34"></span><span>  </span><span class="annot"><span class="annottext">Text -&gt; m ()
+forall {m :: * -&gt; *}. MonadLogger m =&gt; Text -&gt; m ()
+</span><a href="#local-6989586621684555612"><span class="hs-identifier hs-var">maybeLog</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Lifting lambdas&quot;</span></span><span>
+</span><span id="line-35"></span><span>  </span><span id="local-6989586621684555607"><span class="annot"><span class="annottext">[ValBind]
+</span><a href="#local-6989586621684555607"><span class="hs-identifier hs-var">prog_decs''</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[ValBind] -&gt; m [ValBind]
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [ValBind] -&gt; m [ValBind]
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformProg"><span class="hs-identifier hs-var">LiftLambdas.transformProg</span></a></span><span> </span><span class="annot"><span class="annottext">[ValBind]
+</span><a href="#local-6989586621684555609"><span class="hs-identifier hs-var">prog_decs'</span></a></span><span>
+</span><span id="line-36"></span><span>  </span><span class="annot"><span class="annottext">Text -&gt; m ()
+forall {m :: * -&gt; *}. MonadLogger m =&gt; Text -&gt; m ()
+</span><a href="#local-6989586621684555612"><span class="hs-identifier hs-var">maybeLog</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Defunctionalising&quot;</span></span><span>
+</span><span id="line-37"></span><span>  </span><span id="local-6989586621684555605"><span class="annot"><span class="annottext">[ValBind]
+</span><a href="#local-6989586621684555605"><span class="hs-identifier hs-var">prog_decs'''</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[ValBind] -&gt; m [ValBind]
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [ValBind] -&gt; m [ValBind]
+</span><a href="Futhark.Internalise.Defunctionalise.html#transformProg"><span class="hs-identifier hs-var">Defunctionalise.transformProg</span></a></span><span> </span><span class="annot"><span class="annottext">[ValBind]
+</span><a href="#local-6989586621684555607"><span class="hs-identifier hs-var">prog_decs''</span></a></span><span>
+</span><span id="line-38"></span><span>  </span><span class="annot"><span class="annottext">Text -&gt; m ()
+forall {m :: * -&gt; *}. MonadLogger m =&gt; Text -&gt; m ()
+</span><a href="#local-6989586621684555612"><span class="hs-identifier hs-var">maybeLog</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Converting to core IR&quot;</span></span><span>
+</span><span id="line-39"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; [ValBind] -&gt; m (Prog SOACS)
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Bool -&gt; [ValBind] -&gt; m (Prog SOACS)
+</span><a href="Futhark.Internalise.Exps.html#transformProg"><span class="hs-identifier hs-var">Exps.transformProg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FutharkConfig -&gt; Bool
+</span><a href="Futhark.Compiler.Config.html#futharkSafe"><span class="hs-identifier hs-var hs-var">futharkSafe</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684555614"><span class="hs-identifier hs-var">config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[ValBind]
+</span><a href="#local-6989586621684555605"><span class="hs-identifier hs-var">prog_decs'''</span></a></span><span>
+</span><span id="line-40"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-41"></span><span>    </span><span id="local-6989586621684555599"><span class="annot"><span class="annottext">verbose :: Bool
+</span><a href="#local-6989586621684555599"><span class="hs-identifier hs-var hs-var">verbose</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Verbosity, Maybe FilePath) -&gt; Verbosity
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FutharkConfig -&gt; (Verbosity, Maybe FilePath)
+</span><a href="Futhark.Compiler.Config.html#futharkVerbose"><span class="hs-identifier hs-var hs-var">futharkVerbose</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684555614"><span class="hs-identifier hs-var">config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Verbosity -&gt; Verbosity -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Verbosity
+</span><a href="Futhark.Pipeline.html#NotVerbose"><span class="hs-identifier hs-var">NotVerbose</span></a></span><span>
+</span><span id="line-42"></span><span>    </span><span id="local-6989586621684555612"><span class="annot"><span class="annottext">maybeLog :: Text -&gt; m ()
+</span><a href="#local-6989586621684555612"><span class="hs-identifier hs-var hs-var">maybeLog</span></a></span></span><span> </span><span id="local-6989586621684555588"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684555588"><span class="hs-identifier hs-var">s</span></a></span></span><span>
+</span><span id="line-43"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621684555599"><span class="hs-identifier hs-var">verbose</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; m ()
+forall (m :: * -&gt; *) a. (MonadLogger m, ToLog a) =&gt; a -&gt; m ()
+</span><a href="Futhark.Util.Log.html#logMsg"><span class="hs-identifier hs-var">logMsg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684555588"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; m ()
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span></pre></body></html>

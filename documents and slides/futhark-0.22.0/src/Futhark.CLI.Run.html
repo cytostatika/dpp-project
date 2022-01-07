@@ -1,0 +1,762 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- | @futhark run@</span><span>
+</span><span id="line-6"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CLI.Run</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CLI.Run.html#main"><span class="hs-identifier">main</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Except</span></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Free.Church</span></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text.IO</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Compiler.html"><span class="hs-identifier">Futhark.Compiler</span></a></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pipeline.html"><span class="hs-identifier">Futhark.Pipeline</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.html"><span class="hs-identifier">Futhark.Util</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.html#toPOSIX"><span class="hs-identifier">toPOSIX</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Options.html"><span class="hs-identifier">Futhark.Util.Options</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.html"><span class="hs-identifier">Language.Futhark</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Language.Futhark.Interpreter.html"><span class="hs-identifier">Language.Futhark.Interpreter</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.Parser.html"><span class="hs-identifier">Language.Futhark.Parser</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Parser.Lexer.html#EOF"><span class="hs-identifier">EOF</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Language.Futhark.Semantic.html"><span class="hs-identifier">Language.Futhark.Semantic</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.html"><span class="hs-identifier">Language.Futhark.TypeChecker</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Exit</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.FilePath</span></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- | Run @futhark run@.</span><span>
+</span><span id="line-30"></span><span class="annot"><a href="Futhark.CLI.Run.html#main"><span class="hs-identifier hs-type">main</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span id="main"><span class="annot"><span class="annottext">main :: String -&gt; [String] -&gt; IO ()
+</span><a href="Futhark.CLI.Run.html#main"><span class="hs-identifier hs-var hs-var">main</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InterpreterConfig
+-&gt; [FunOptDescr InterpreterConfig]
+-&gt; String
+-&gt; ([String] -&gt; InterpreterConfig -&gt; Maybe (IO ()))
+-&gt; String
+-&gt; [String]
+-&gt; IO ()
+forall cfg.
+cfg
+-&gt; [FunOptDescr cfg]
+-&gt; String
+-&gt; ([String] -&gt; cfg -&gt; Maybe (IO ()))
+-&gt; String
+-&gt; [String]
+-&gt; IO ()
+</span><a href="Futhark.Util.Options.html#mainWithOptions"><span class="hs-identifier hs-var">mainWithOptions</span></a></span><span> </span><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="Futhark.CLI.Run.html#interpreterConfig"><span class="hs-identifier hs-var">interpreterConfig</span></a></span><span> </span><span class="annot"><span class="annottext">[FunOptDescr InterpreterConfig]
+</span><a href="Futhark.CLI.Run.html#options"><span class="hs-identifier hs-var">options</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;options... &lt;program.fut&gt;&quot;</span></span><span> </span><span class="annot"><span class="annottext">[String] -&gt; InterpreterConfig -&gt; Maybe (IO ())
+</span><a href="#local-6989586621684572304"><span class="hs-identifier hs-var">run</span></a></span><span>
+</span><span id="line-32"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-33"></span><span>    </span><span id="local-6989586621684572304"><span class="annot"><span class="annottext">run :: [String] -&gt; InterpreterConfig -&gt; Maybe (IO ())
+</span><a href="#local-6989586621684572304"><span class="hs-identifier hs-var hs-var">run</span></a></span></span><span> </span><span class="hs-special">[</span><span id="local-6989586621684572303"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572303"><span class="hs-identifier hs-var">prog</span></a></span></span><span class="hs-special">]</span><span> </span><span id="local-6989586621684572302"><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572302"><span class="hs-identifier hs-var">config</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; Maybe (IO ())
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; Maybe (IO ())) -&gt; IO () -&gt; Maybe (IO ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">InterpreterConfig -&gt; String -&gt; IO ()
+</span><a href="Futhark.CLI.Run.html#interpret"><span class="hs-identifier hs-var">interpret</span></a></span><span> </span><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572302"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572303"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-34"></span><span>    </span><span class="annot"><a href="#local-6989586621684572304"><span class="hs-identifier hs-var">run</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">InterpreterConfig
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (IO ())
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="annot"><a href="Futhark.CLI.Run.html#interpret"><span class="hs-identifier hs-type">interpret</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CLI.Run.html#InterpreterConfig"><span class="hs-identifier hs-type">InterpreterConfig</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span id="interpret"><span class="annot"><span class="annottext">interpret :: InterpreterConfig -&gt; String -&gt; IO ()
+</span><a href="Futhark.CLI.Run.html#interpret"><span class="hs-identifier hs-var hs-var">interpret</span></a></span></span><span> </span><span id="local-6989586621684572299"><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572299"><span class="hs-identifier hs-var">config</span></a></span></span><span> </span><span id="local-6989586621684572298"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572298"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-38"></span><span>  </span><span id="local-6989586621684572297"><span class="annot"><span class="annottext">Either String (Env, Ctx)
+</span><a href="#local-6989586621684572297"><span class="hs-identifier hs-var">pr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">InterpreterConfig -&gt; String -&gt; IO (Either String (Env, Ctx))
+</span><a href="Futhark.CLI.Run.html#newFutharkiState"><span class="hs-identifier hs-var">newFutharkiState</span></a></span><span> </span><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572299"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572298"><span class="hs-identifier hs-var">fp</span></a></span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684572295"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684572295"><span class="hs-identifier hs-var">tenv</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684572294"><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572294"><span class="hs-identifier hs-var">ienv</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either String (Env, Ctx)
+</span><a href="#local-6989586621684572297"><span class="hs-identifier hs-var">pr</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-40"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684572293"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572293"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-41"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; String -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572293"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-42"></span><span>      </span><span class="annot"><span class="annottext">IO (Env, Ctx)
+forall a. IO a
+</span><span class="hs-identifier hs-var">exitFailure</span></span><span>
+</span><span id="line-43"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621684572289"><span class="annot"><span class="annottext">(Env, Ctx)
+</span><a href="#local-6989586621684572289"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Env, Ctx) -&gt; IO (Env, Ctx)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Env, Ctx)
+</span><a href="#local-6989586621684572289"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684572288"><span class="annot"><span class="annottext">entry :: Name
+</span><a href="#local-6989586621684572288"><span class="hs-identifier hs-var hs-var">entry</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InterpreterConfig -&gt; Name
+</span><a href="Futhark.CLI.Run.html#interpreterEntryPoint"><span class="hs-identifier hs-var hs-var">interpreterEntryPoint</span></a></span><span> </span><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572299"><span class="hs-identifier hs-var">config</span></a></span><span>
+</span><span id="line-46"></span><span>  </span><span id="local-6989586621684572286"><span class="annot"><span class="annottext">Either ParseError [Value]
+</span><a href="#local-6989586621684572286"><span class="hs-identifier hs-var">vr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; Text -&gt; Either ParseError [Value]
+</span><a href="Language.Futhark.Parser.html#parseValues"><span class="hs-identifier hs-var">parseValues</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;stdin&quot;</span></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Either ParseError [Value])
+-&gt; IO Text -&gt; IO (Either ParseError [Value])
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO Text
+</span><span class="hs-identifier hs-var">T.getContents</span></span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span>  </span><span id="local-6989586621684572282"><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621684572282"><span class="hs-identifier hs-var">inps</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-49"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either ParseError [Value]
+</span><a href="#local-6989586621684572286"><span class="hs-identifier hs-var">vr</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-50"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684572281"><span class="annot"><span class="annottext">ParseError
+</span><a href="#local-6989586621684572281"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-51"></span><span>        </span><span class="annot"><span class="annottext">Handle -&gt; String -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; String -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Error when reading input: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">ParseError -&gt; String
+forall a. Show a =&gt; a -&gt; String
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">ParseError
+</span><a href="#local-6989586621684572281"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-52"></span><span>        </span><span class="annot"><span class="annottext">IO [Value]
+forall a. IO a
+</span><span class="hs-identifier hs-var">exitFailure</span></span><span>
+</span><span id="line-53"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621684572279"><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621684572279"><span class="hs-identifier hs-var">vs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-54"></span><span>        </span><span class="annot"><span class="annottext">[Value] -&gt; IO [Value]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621684572279"><span class="hs-identifier hs-var">vs</span></a></span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684572278"><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684572278"><span class="hs-identifier hs-var">fname</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684572277"><span class="annot"><span class="annottext">TypeBase () ()
+</span><a href="#local-6989586621684572277"><span class="hs-identifier hs-var">ret</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">(Namespace, Name)
+-&gt; Map (Namespace, Name) (QualName VName) -&gt; Maybe (QualName VName)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Namespace
+</span><a href="Language.Futhark.Semantic.html#Term"><span class="hs-identifier hs-var">T.Term</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684572288"><span class="hs-identifier hs-var">entry</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Map (Namespace, Name) (QualName VName) -&gt; Maybe (QualName VName))
+-&gt; Map (Namespace, Name) (QualName VName) -&gt; Maybe (QualName VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Env -&gt; Map (Namespace, Name) (QualName VName)
+</span><a href="Language.Futhark.Semantic.html#envNameMap"><span class="hs-identifier hs-var hs-var">T.envNameMap</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684572295"><span class="hs-identifier hs-var">tenv</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-58"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684572273"><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684572273"><span class="hs-identifier hs-var">fname</span></a></span></span><span>
+</span><span id="line-59"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Semantic.html#BoundV"><span class="hs-identifier hs-type">T.BoundV</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeParam]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684572271"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684572271"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Map VName BoundV -&gt; Maybe BoundV
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QualName VName -&gt; VName
+forall vn. QualName vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#qualLeaf"><span class="hs-identifier hs-var hs-var">qualLeaf</span></a></span><span> </span><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684572273"><span class="hs-identifier hs-var">fname</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Map VName BoundV -&gt; Maybe BoundV)
+-&gt; Map VName BoundV -&gt; Maybe BoundV
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Env -&gt; Map VName BoundV
+</span><a href="Language.Futhark.Semantic.html#envVtable"><span class="hs-identifier hs-var hs-var">T.envVtable</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684572295"><span class="hs-identifier hs-var">tenv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-60"></span><span>          </span><span class="annot"><span class="annottext">(QualName VName, TypeBase () ())
+-&gt; IO (QualName VName, TypeBase () ())
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684572273"><span class="hs-identifier hs-var">fname</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">StructType -&gt; TypeBase () ()
+forall dim as. TypeBase dim as -&gt; TypeBase () ()
+</span><a href="Language.Futhark.Prop.html#toStructural"><span class="hs-identifier hs-var">toStructural</span></a></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; TypeBase () ()) -&gt; StructType -&gt; TypeBase () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">([StructType], StructType) -&gt; StructType
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">(([StructType], StructType) -&gt; StructType)
+-&gt; ([StructType], StructType) -&gt; StructType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">StructType -&gt; ([StructType], StructType)
+forall dim as.
+TypeBase dim as -&gt; ([TypeBase dim as], TypeBase dim as)
+</span><a href="Language.Futhark.Prop.html#unfoldFunType"><span class="hs-identifier hs-var">unfoldFunType</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684572271"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span>      </span><span class="annot"><span class="annottext">Maybe (QualName VName)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-62"></span><span>        </span><span class="annot"><span class="annottext">Handle -&gt; String -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; String -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Invalid entry point: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684572288"><span class="hs-identifier hs-var">entry</span></a></span><span>
+</span><span id="line-63"></span><span>        </span><span class="annot"><span class="annottext">IO (QualName VName, TypeBase () ())
+forall a. IO a
+</span><span class="hs-identifier hs-var">exitFailure</span></span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Ctx -&gt; VName -&gt; [Value] -&gt; Either String (F ExtOp Value)
+</span><a href="Language.Futhark.Interpreter.html#interpretFunction"><span class="hs-identifier hs-var">I.interpretFunction</span></a></span><span> </span><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572294"><span class="hs-identifier hs-var">ienv</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QualName VName -&gt; VName
+forall vn. QualName vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#qualLeaf"><span class="hs-identifier hs-var hs-var">qualLeaf</span></a></span><span> </span><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684572278"><span class="hs-identifier hs-var">fname</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621684572282"><span class="hs-identifier hs-var">inps</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684572264"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572264"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-67"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; String -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572264"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-68"></span><span>      </span><span class="annot"><span class="annottext">IO ()
+forall a. IO a
+</span><span class="hs-identifier hs-var">exitFailure</span></span><span>
+</span><span id="line-69"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621684572263"><span class="annot"><span class="annottext">F ExtOp Value
+</span><a href="#local-6989586621684572263"><span class="hs-identifier hs-var">run</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-70"></span><span>      </span><span id="local-6989586621684572262"><span class="annot"><span class="annottext">Either InterpreterError Value
+</span><a href="#local-6989586621684572262"><span class="hs-identifier hs-var">run'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">F ExtOp Value -&gt; IO (Either InterpreterError Value)
+forall (m :: * -&gt; *) a.
+MonadIO m =&gt;
+F ExtOp a -&gt; m (Either InterpreterError a)
+</span><a href="Futhark.CLI.Run.html#runInterpreter%27"><span class="hs-identifier hs-var">runInterpreter'</span></a></span><span> </span><span class="annot"><span class="annottext">F ExtOp Value
+</span><a href="#local-6989586621684572263"><span class="hs-identifier hs-var">run</span></a></span><span>
+</span><span id="line-71"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either InterpreterError Value
+</span><a href="#local-6989586621684572262"><span class="hs-identifier hs-var">run'</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-72"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684572260"><span class="annot"><span class="annottext">InterpreterError
+</span><a href="#local-6989586621684572260"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-73"></span><span>          </span><span class="annot"><span class="annottext">Handle -&gt; InterpreterError -&gt; IO ()
+forall a. Show a =&gt; Handle -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPrint</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">InterpreterError
+</span><a href="#local-6989586621684572260"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-74"></span><span>          </span><span class="annot"><span class="annottext">IO ()
+forall a. IO a
+</span><span class="hs-identifier hs-var">exitFailure</span></span><span>
+</span><span id="line-75"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621684572258"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621684572258"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-76"></span><span>          </span><span class="hs-keyword">case</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Value -&gt; Maybe [Value]
+</span><a href="Language.Futhark.Interpreter.html#fromTuple"><span class="hs-identifier hs-var">I.fromTuple</span></a></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621684572258"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">TypeBase () () -&gt; Maybe [TypeBase () ()]
+forall dim as. TypeBase dim as -&gt; Maybe [TypeBase dim as]
+</span><a href="Language.Futhark.Prop.html#isTupleRecord"><span class="hs-identifier hs-var">isTupleRecord</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase () ()
+</span><a href="#local-6989586621684572277"><span class="hs-identifier hs-var">ret</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-77"></span><span>            </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684572255"><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621684572255"><span class="hs-identifier hs-var">vs</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684572254"><span class="annot"><span class="annottext">[TypeBase () ()]
+</span><a href="#local-6989586621684572254"><span class="hs-identifier hs-var">ts</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Value -&gt; TypeBase () () -&gt; IO ())
+-&gt; [Value] -&gt; [TypeBase () ()] -&gt; IO ()
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m ()
+</span><span class="hs-identifier hs-var">zipWithM_</span></span><span> </span><span class="annot"><span class="annottext">Value -&gt; TypeBase () () -&gt; IO ()
+</span><a href="Futhark.CLI.Run.html#putValue"><span class="hs-identifier hs-var">putValue</span></a></span><span> </span><span class="annot"><span class="annottext">[Value]
+</span><a href="#local-6989586621684572255"><span class="hs-identifier hs-var">vs</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase () ()]
+</span><a href="#local-6989586621684572254"><span class="hs-identifier hs-var">ts</span></a></span><span>
+</span><span id="line-78"></span><span>            </span><span class="annot"><span class="annottext">(Maybe [Value], Maybe [TypeBase () ()])
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Value -&gt; TypeBase () () -&gt; IO ()
+</span><a href="Futhark.CLI.Run.html#putValue"><span class="hs-identifier hs-var">putValue</span></a></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621684572258"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase () ()
+</span><a href="#local-6989586621684572277"><span class="hs-identifier hs-var">ret</span></a></span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span class="annot"><a href="Futhark.CLI.Run.html#putValue"><span class="hs-identifier hs-type">putValue</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Interpreter.html#Value"><span class="hs-identifier hs-type">I.Value</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeBase"><span class="hs-identifier hs-type">TypeBase</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span id="putValue"><span class="annot"><span class="annottext">putValue :: Value -&gt; TypeBase () () -&gt; IO ()
+</span><a href="Futhark.CLI.Run.html#putValue"><span class="hs-identifier hs-var hs-var">putValue</span></a></span></span><span> </span><span id="local-6989586621684572251"><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621684572251"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684572250"><span class="annot"><span class="annottext">TypeBase () ()
+</span><a href="#local-6989586621684572250"><span class="hs-identifier hs-var">t</span></a></span></span><span>
+</span><span id="line-82"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Value -&gt; Bool
+</span><a href="Language.Futhark.Interpreter.html#isEmptyArray"><span class="hs-identifier hs-var">I.isEmptyArray</span></a></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621684572251"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO ()
+</span><span class="hs-identifier hs-var">putStrLn</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; String -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TypeBase () () -&gt; Value -&gt; String
+</span><a href="Language.Futhark.Interpreter.html#prettyEmptyArray"><span class="hs-identifier hs-var">I.prettyEmptyArray</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase () ()
+</span><a href="#local-6989586621684572250"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621684572251"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO ()
+</span><span class="hs-identifier hs-var">putStrLn</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; String -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Value -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">Value
+</span><a href="#local-6989586621684572251"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-84"></span><span>
+</span><span id="line-85"></span><span class="hs-keyword">data</span><span> </span><span id="InterpreterConfig"><span class="annot"><a href="Futhark.CLI.Run.html#InterpreterConfig"><span class="hs-identifier hs-var">InterpreterConfig</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="InterpreterConfig"><span class="annot"><a href="Futhark.CLI.Run.html#InterpreterConfig"><span class="hs-identifier hs-var">InterpreterConfig</span></a></span></span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="interpreterEntryPoint"><span class="annot"><span class="annottext">InterpreterConfig -&gt; Name
+</span><a href="Futhark.CLI.Run.html#interpreterEntryPoint"><span class="hs-identifier hs-var hs-var">interpreterEntryPoint</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-87"></span><span>    </span><span id="interpreterPrintWarnings"><span class="annot"><span class="annottext">InterpreterConfig -&gt; Bool
+</span><a href="Futhark.CLI.Run.html#interpreterPrintWarnings"><span class="hs-identifier hs-var hs-var">interpreterPrintWarnings</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-88"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-89"></span><span>
+</span><span id="line-90"></span><span class="annot"><a href="Futhark.CLI.Run.html#interpreterConfig"><span class="hs-identifier hs-type">interpreterConfig</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CLI.Run.html#InterpreterConfig"><span class="hs-identifier hs-type">InterpreterConfig</span></a></span><span>
+</span><span id="line-91"></span><span id="interpreterConfig"><span class="annot"><span class="annottext">interpreterConfig :: InterpreterConfig
+</span><a href="Futhark.CLI.Run.html#interpreterConfig"><span class="hs-identifier hs-var hs-var">interpreterConfig</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Name -&gt; Bool -&gt; InterpreterConfig
+</span><a href="Futhark.CLI.Run.html#InterpreterConfig"><span class="hs-identifier hs-var">InterpreterConfig</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="Language.Futhark.Core.html#defaultEntryPoint"><span class="hs-identifier hs-var">defaultEntryPoint</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span class="annot"><a href="Futhark.CLI.Run.html#options"><span class="hs-identifier hs-type">options</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Util.Options.html#FunOptDescr"><span class="hs-identifier hs-type">FunOptDescr</span></a></span><span> </span><span class="annot"><a href="Futhark.CLI.Run.html#InterpreterConfig"><span class="hs-identifier hs-type">InterpreterConfig</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-94"></span><span id="options"><span class="annot"><span class="annottext">options :: [FunOptDescr InterpreterConfig]
+</span><a href="Futhark.CLI.Run.html#options"><span class="hs-identifier hs-var hs-var">options</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-95"></span><span>  </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">String
+-&gt; [String]
+-&gt; ArgDescr
+     (Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig))
+-&gt; String
+-&gt; FunOptDescr InterpreterConfig
+forall a. String -&gt; [String] -&gt; ArgDescr a -&gt; String -&gt; OptDescr a
+</span><span class="hs-identifier hs-var">Option</span></span><span>
+</span><span id="line-96"></span><span>      </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;e&quot;</span></span><span>
+</span><span id="line-97"></span><span>      </span><span class="hs-special">[</span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;entry-point&quot;</span></span><span class="hs-special">]</span><span>
+</span><span id="line-98"></span><span>      </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig))
+-&gt; String
+-&gt; ArgDescr
+     (Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig))
+forall a. (String -&gt; a) -&gt; String -&gt; ArgDescr a
+</span><span class="hs-identifier hs-var">ReqArg</span></span><span>
+</span><span id="line-99"></span><span>          </span><span class="hs-special">(</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684572241"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572241"><span class="hs-identifier hs-var">entry</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(InterpreterConfig -&gt; InterpreterConfig)
+-&gt; Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig)
+forall a b. b -&gt; Either a b
+</span><span class="hs-identifier hs-var">Right</span></span><span> </span><span class="annot"><span class="annottext">((InterpreterConfig -&gt; InterpreterConfig)
+ -&gt; Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig))
+-&gt; (InterpreterConfig -&gt; InterpreterConfig)
+-&gt; Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684572240"><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572240"><span class="hs-identifier hs-var">config</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-100"></span><span>              </span><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572240"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">interpreterEntryPoint :: Name
+</span><a href="Futhark.CLI.Run.html#interpreterEntryPoint"><span class="hs-identifier hs-var">interpreterEntryPoint</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Name
+</span><a href="Language.Futhark.Core.html#nameFromString"><span class="hs-identifier hs-var">nameFromString</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572241"><span class="hs-identifier hs-var">entry</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-101"></span><span>          </span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>          </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;NAME&quot;</span></span><span>
+</span><span id="line-103"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-104"></span><span>      </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;The entry point to execute.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-105"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; [String]
+-&gt; ArgDescr
+     (Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig))
+-&gt; String
+-&gt; FunOptDescr InterpreterConfig
+forall a. String -&gt; [String] -&gt; ArgDescr a -&gt; String -&gt; OptDescr a
+</span><span class="hs-identifier hs-var">Option</span></span><span>
+</span><span id="line-106"></span><span>      </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;w&quot;</span></span><span>
+</span><span id="line-107"></span><span>      </span><span class="hs-special">[</span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;no-warnings&quot;</span></span><span class="hs-special">]</span><span>
+</span><span id="line-108"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig)
+-&gt; ArgDescr
+     (Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig))
+forall a. a -&gt; ArgDescr a
+</span><span class="hs-identifier hs-var">NoArg</span></span><span> </span><span class="annot"><span class="annottext">(Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig)
+ -&gt; ArgDescr
+      (Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig)))
+-&gt; Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig)
+-&gt; ArgDescr
+     (Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(InterpreterConfig -&gt; InterpreterConfig)
+-&gt; Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig)
+forall a b. b -&gt; Either a b
+</span><span class="hs-identifier hs-var">Right</span></span><span> </span><span class="annot"><span class="annottext">((InterpreterConfig -&gt; InterpreterConfig)
+ -&gt; Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig))
+-&gt; (InterpreterConfig -&gt; InterpreterConfig)
+-&gt; Either (IO ()) (InterpreterConfig -&gt; InterpreterConfig)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684572237"><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572237"><span class="hs-identifier hs-var">config</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572237"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">interpreterPrintWarnings :: Bool
+</span><a href="Futhark.CLI.Run.html#interpreterPrintWarnings"><span class="hs-identifier hs-var">interpreterPrintWarnings</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span>      </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Do not print warnings.&quot;</span></span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-special">]</span><span>
+</span><span id="line-111"></span><span>
+</span><span id="line-112"></span><span class="annot"><a href="Futhark.CLI.Run.html#newFutharkiState"><span class="hs-identifier hs-type">newFutharkiState</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-113"></span><span>  </span><span class="annot"><a href="Futhark.CLI.Run.html#InterpreterConfig"><span class="hs-identifier hs-type">InterpreterConfig</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-114"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-115"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Semantic.html#Env"><span class="hs-identifier hs-type">T.Env</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Interpreter.html#Ctx"><span class="hs-identifier hs-type">I.Ctx</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span id="newFutharkiState"><span class="annot"><span class="annottext">newFutharkiState :: InterpreterConfig -&gt; String -&gt; IO (Either String (Env, Ctx))
+</span><a href="Futhark.CLI.Run.html#newFutharkiState"><span class="hs-identifier hs-var hs-var">newFutharkiState</span></a></span></span><span> </span><span id="local-6989586621684572236"><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572236"><span class="hs-identifier hs-var">cfg</span></a></span></span><span> </span><span id="local-6989586621684572235"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572235"><span class="hs-identifier hs-var">file</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ExceptT String IO (Env, Ctx) -&gt; IO (Either String (Env, Ctx))
+forall e (m :: * -&gt; *) a. ExceptT e m a -&gt; m (Either e a)
+</span><span class="hs-identifier hs-var">runExceptT</span></span><span> </span><span class="annot"><span class="annottext">(ExceptT String IO (Env, Ctx) -&gt; IO (Either String (Env, Ctx)))
+-&gt; ExceptT String IO (Env, Ctx) -&gt; IO (Either String (Env, Ctx))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-117"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684572233"><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684572233"><span class="hs-identifier hs-var">ws</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684572232"><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684572232"><span class="hs-identifier hs-var">imports</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684572231"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684572231"><span class="hs-identifier hs-var">src</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-118"></span><span>    </span><span class="annot"><span class="annottext">(CompilerError -&gt; String)
+-&gt; Either CompilerError (Warnings, Imports, VNameSource)
+-&gt; ExceptT String IO (Warnings, Imports, VNameSource)
+forall err a.
+(err -&gt; String) -&gt; Either err a -&gt; ExceptT String IO a
+</span><a href="#local-6989586621684572230"><span class="hs-identifier hs-var">badOnLeft</span></a></span><span> </span><span class="annot"><span class="annottext">CompilerError -&gt; String
+forall a. Show a =&gt; a -&gt; String
+</span><span class="hs-identifier hs-var">show</span></span><span>
+</span><span id="line-119"></span><span>      </span><span class="annot"><span class="annottext">(Either CompilerError (Warnings, Imports, VNameSource)
+ -&gt; ExceptT String IO (Warnings, Imports, VNameSource))
+-&gt; ExceptT
+     String IO (Either CompilerError (Warnings, Imports, VNameSource))
+-&gt; ExceptT String IO (Warnings, Imports, VNameSource)
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">IO (Either CompilerError (Warnings, Imports, VNameSource))
+-&gt; ExceptT
+     String IO (Either CompilerError (Warnings, Imports, VNameSource))
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span>
+</span><span id="line-120"></span><span>        </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">ExceptT CompilerError IO (Warnings, Imports, VNameSource)
+-&gt; IO (Either CompilerError (Warnings, Imports, VNameSource))
+forall e (m :: * -&gt; *) a. ExceptT e m a -&gt; m (Either e a)
+</span><span class="hs-identifier hs-var">runExceptT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Name]
+-&gt; String
+-&gt; ExceptT CompilerError IO (Warnings, Imports, VNameSource)
+forall (m :: * -&gt; *).
+(MonadError CompilerError m, MonadIO m) =&gt;
+[Name] -&gt; String -&gt; m (Warnings, Imports, VNameSource)
+</span><a href="Futhark.Compiler.html#readProgram"><span class="hs-identifier hs-var">readProgram</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572235"><span class="hs-identifier hs-var">file</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-121"></span><span>            </span><span class="annot"><span class="annottext">IO (Either CompilerError (Warnings, Imports, VNameSource))
+-&gt; (IOException
+    -&gt; IO (Either CompilerError (Warnings, Imports, VNameSource)))
+-&gt; IO (Either CompilerError (Warnings, Imports, VNameSource))
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><span class="hs-operator hs-var">`catch`</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684572225"><span class="annot"><span class="annottext">IOException
+</span><a href="#local-6989586621684572225"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IOException</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-122"></span><span>              </span><span class="annot"><span class="annottext">Either CompilerError (Warnings, Imports, VNameSource)
+-&gt; IO (Either CompilerError (Warnings, Imports, VNameSource))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Either CompilerError (Warnings, Imports, VNameSource)
+forall (m :: * -&gt; *) a. MonadError CompilerError m =&gt; String -&gt; m a
+</span><a href="Futhark.Error.html#externalErrorS"><span class="hs-identifier hs-var">externalErrorS</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IOException -&gt; String
+forall a. Show a =&gt; a -&gt; String
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">IOException
+</span><a href="#local-6989586621684572225"><span class="hs-identifier hs-var">err</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>        </span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; ExceptT String IO () -&gt; ExceptT String IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InterpreterConfig -&gt; Bool
+</span><a href="Futhark.CLI.Run.html#interpreterPrintWarnings"><span class="hs-identifier hs-var hs-var">interpreterPrintWarnings</span></a></span><span> </span><span class="annot"><span class="annottext">InterpreterConfig
+</span><a href="#local-6989586621684572236"><span class="hs-identifier hs-var">cfg</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ExceptT String IO () -&gt; ExceptT String IO ())
+-&gt; ExceptT String IO () -&gt; ExceptT String IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-125"></span><span>    </span><span class="annot"><span class="annottext">IO () -&gt; ExceptT String IO ()
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; ExceptT String IO ()) -&gt; IO () -&gt; ExceptT String IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; String -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStr</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; String -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Warnings -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684572233"><span class="hs-identifier hs-var">ws</span></a></span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684572221"><span class="annot"><span class="annottext">imp :: ImportName
+</span><a href="#local-6989586621684572221"><span class="hs-identifier hs-var hs-var">imp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; ImportName
+</span><a href="Language.Futhark.Semantic.html#mkInitialImport"><span class="hs-identifier hs-var">T.mkInitialImport</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;.&quot;</span></span><span>
+</span><span id="line-128"></span><span>  </span><span id="local-6989586621684572219"><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572219"><span class="hs-identifier hs-var">ienv1</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-129"></span><span>    </span><span class="annot"><span class="annottext">(Ctx -&gt; (String, Prog) -&gt; ExceptT String IO Ctx)
+-&gt; Ctx -&gt; [(String, Prog)] -&gt; ExceptT String IO Ctx
+forall (t :: * -&gt; *) (m :: * -&gt; *) b a.
+(Foldable t, Monad m) =&gt;
+(b -&gt; a -&gt; m b) -&gt; b -&gt; t a -&gt; m b
+</span><span class="hs-identifier hs-var">foldM</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621684572217"><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572217"><span class="hs-identifier hs-var">ctx</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(InterpreterError -&gt; String)
+-&gt; Either InterpreterError Ctx -&gt; ExceptT String IO Ctx
+forall err a.
+(err -&gt; String) -&gt; Either err a -&gt; ExceptT String IO a
+</span><a href="#local-6989586621684572230"><span class="hs-identifier hs-var">badOnLeft</span></a></span><span> </span><span class="annot"><span class="annottext">InterpreterError -&gt; String
+forall a. Show a =&gt; a -&gt; String
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">(Either InterpreterError Ctx -&gt; ExceptT String IO Ctx)
+-&gt; ((String, Prog)
+    -&gt; ExceptT String IO (Either InterpreterError Ctx))
+-&gt; (String, Prog)
+-&gt; ExceptT String IO Ctx
+forall (m :: * -&gt; *) b c a.
+Monad m =&gt;
+(b -&gt; m c) -&gt; (a -&gt; m b) -&gt; a -&gt; m c
+</span><span class="hs-operator hs-var">&lt;=&lt;</span></span><span> </span><span class="annot"><span class="annottext">F ExtOp Ctx -&gt; ExceptT String IO (Either InterpreterError Ctx)
+forall (m :: * -&gt; *) a.
+MonadIO m =&gt;
+F ExtOp a -&gt; m (Either InterpreterError a)
+</span><a href="Futhark.CLI.Run.html#runInterpreter%27"><span class="hs-identifier hs-var">runInterpreter'</span></a></span><span> </span><span class="annot"><span class="annottext">(F ExtOp Ctx -&gt; ExceptT String IO (Either InterpreterError Ctx))
+-&gt; ((String, Prog) -&gt; F ExtOp Ctx)
+-&gt; (String, Prog)
+-&gt; ExceptT String IO (Either InterpreterError Ctx)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Ctx -&gt; (String, Prog) -&gt; F ExtOp Ctx
+</span><a href="Language.Futhark.Interpreter.html#interpretImport"><span class="hs-identifier hs-var">I.interpretImport</span></a></span><span> </span><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572217"><span class="hs-identifier hs-var">ctx</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ctx
+</span><a href="Language.Futhark.Interpreter.html#initialCtx"><span class="hs-identifier hs-var">I.initialCtx</span></a></span><span> </span><span class="annot"><span class="annottext">([(String, Prog)] -&gt; ExceptT String IO Ctx)
+-&gt; [(String, Prog)] -&gt; ExceptT String IO Ctx
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-130"></span><span>      </span><span class="annot"><span class="annottext">((String, FileModule) -&gt; (String, Prog))
+-&gt; Imports -&gt; [(String, Prog)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(FileModule -&gt; Prog) -&gt; (String, FileModule) -&gt; (String, Prog)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">FileModule -&gt; Prog
+</span><a href="Language.Futhark.Semantic.html#fileProg"><span class="hs-identifier hs-var hs-var">fileProg</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684572232"><span class="hs-identifier hs-var">imports</span></a></span><span>
+</span><span id="line-131"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684572211"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684572211"><span class="hs-identifier hs-var">tenv1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684572210"><span class="annot"><span class="annottext">Dec
+</span><a href="#local-6989586621684572210"><span class="hs-identifier hs-var">d1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684572209"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684572209"><span class="hs-identifier hs-var">src'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-132"></span><span>    </span><span class="annot"><span class="annottext">(TypeError -&gt; String)
+-&gt; Either TypeError (Env, Dec, VNameSource)
+-&gt; ExceptT String IO (Env, Dec, VNameSource)
+forall err a.
+(err -&gt; String) -&gt; Either err a -&gt; ExceptT String IO a
+</span><a href="#local-6989586621684572230"><span class="hs-identifier hs-var">badOnLeft</span></a></span><span> </span><span class="annot"><span class="annottext">TypeError -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">(Either TypeError (Env, Dec, VNameSource)
+ -&gt; ExceptT String IO (Env, Dec, VNameSource))
+-&gt; Either TypeError (Env, Dec, VNameSource)
+-&gt; ExceptT String IO (Env, Dec, VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-133"></span><span>      </span><span class="annot"><span class="annottext">(Warnings, Either TypeError (Env, Dec, VNameSource))
+-&gt; Either TypeError (Env, Dec, VNameSource)
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">((Warnings, Either TypeError (Env, Dec, VNameSource))
+ -&gt; Either TypeError (Env, Dec, VNameSource))
+-&gt; (Warnings, Either TypeError (Env, Dec, VNameSource))
+-&gt; Either TypeError (Env, Dec, VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-134"></span><span>        </span><span class="annot"><span class="annottext">Imports
+-&gt; VNameSource
+-&gt; Env
+-&gt; ImportName
+-&gt; UncheckedDec
+-&gt; (Warnings, Either TypeError (Env, Dec, VNameSource))
+</span><a href="Language.Futhark.TypeChecker.html#checkDec"><span class="hs-identifier hs-var">T.checkDec</span></a></span><span> </span><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684572232"><span class="hs-identifier hs-var">imports</span></a></span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684572231"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="Language.Futhark.TypeChecker.html#initialEnv"><span class="hs-identifier hs-var">T.initialEnv</span></a></span><span> </span><span class="annot"><span class="annottext">ImportName
+</span><a href="#local-6989586621684572221"><span class="hs-identifier hs-var">imp</span></a></span><span> </span><span class="annot"><span class="annottext">(UncheckedDec
+ -&gt; (Warnings, Either TypeError (Env, Dec, VNameSource)))
+-&gt; UncheckedDec
+-&gt; (Warnings, Either TypeError (Env, Dec, VNameSource))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-135"></span><span>          </span><span class="annot"><span class="annottext">String -&gt; UncheckedDec
+</span><a href="Futhark.CLI.Run.html#mkOpen"><span class="hs-identifier hs-var">mkOpen</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;/prelude/prelude&quot;</span></span><span>
+</span><span id="line-136"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684572205"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684572205"><span class="hs-identifier hs-var">tenv2</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684572204"><span class="annot"><span class="annottext">Dec
+</span><a href="#local-6989586621684572204"><span class="hs-identifier hs-var">d2</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-137"></span><span>    </span><span class="annot"><span class="annottext">(TypeError -&gt; String)
+-&gt; Either TypeError (Env, Dec, VNameSource)
+-&gt; ExceptT String IO (Env, Dec, VNameSource)
+forall err a.
+(err -&gt; String) -&gt; Either err a -&gt; ExceptT String IO a
+</span><a href="#local-6989586621684572230"><span class="hs-identifier hs-var">badOnLeft</span></a></span><span> </span><span class="annot"><span class="annottext">TypeError -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">(Either TypeError (Env, Dec, VNameSource)
+ -&gt; ExceptT String IO (Env, Dec, VNameSource))
+-&gt; Either TypeError (Env, Dec, VNameSource)
+-&gt; ExceptT String IO (Env, Dec, VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-138"></span><span>      </span><span class="annot"><span class="annottext">(Warnings, Either TypeError (Env, Dec, VNameSource))
+-&gt; Either TypeError (Env, Dec, VNameSource)
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">((Warnings, Either TypeError (Env, Dec, VNameSource))
+ -&gt; Either TypeError (Env, Dec, VNameSource))
+-&gt; (Warnings, Either TypeError (Env, Dec, VNameSource))
+-&gt; Either TypeError (Env, Dec, VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-139"></span><span>        </span><span class="annot"><span class="annottext">Imports
+-&gt; VNameSource
+-&gt; Env
+-&gt; ImportName
+-&gt; UncheckedDec
+-&gt; (Warnings, Either TypeError (Env, Dec, VNameSource))
+</span><a href="Language.Futhark.TypeChecker.html#checkDec"><span class="hs-identifier hs-var">T.checkDec</span></a></span><span> </span><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684572232"><span class="hs-identifier hs-var">imports</span></a></span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684572209"><span class="hs-identifier hs-var">src'</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684572211"><span class="hs-identifier hs-var">tenv1</span></a></span><span> </span><span class="annot"><span class="annottext">ImportName
+</span><a href="#local-6989586621684572221"><span class="hs-identifier hs-var">imp</span></a></span><span> </span><span class="annot"><span class="annottext">(UncheckedDec
+ -&gt; (Warnings, Either TypeError (Env, Dec, VNameSource)))
+-&gt; UncheckedDec
+-&gt; (Warnings, Either TypeError (Env, Dec, VNameSource))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-140"></span><span>          </span><span class="annot"><span class="annottext">String -&gt; UncheckedDec
+</span><a href="Futhark.CLI.Run.html#mkOpen"><span class="hs-identifier hs-var">mkOpen</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; UncheckedDec) -&gt; String -&gt; UncheckedDec
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String
+</span><a href="Futhark.Util.html#toPOSIX"><span class="hs-identifier hs-var">toPOSIX</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; String) -&gt; String -&gt; String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String
+</span><span class="hs-identifier hs-var">dropExtension</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572235"><span class="hs-identifier hs-var">file</span></a></span><span>
+</span><span id="line-141"></span><span>  </span><span id="local-6989586621684572202"><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572202"><span class="hs-identifier hs-var">ienv2</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(InterpreterError -&gt; String)
+-&gt; Either InterpreterError Ctx -&gt; ExceptT String IO Ctx
+forall err a.
+(err -&gt; String) -&gt; Either err a -&gt; ExceptT String IO a
+</span><a href="#local-6989586621684572230"><span class="hs-identifier hs-var">badOnLeft</span></a></span><span> </span><span class="annot"><span class="annottext">InterpreterError -&gt; String
+forall a. Show a =&gt; a -&gt; String
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">(Either InterpreterError Ctx -&gt; ExceptT String IO Ctx)
+-&gt; ExceptT String IO (Either InterpreterError Ctx)
+-&gt; ExceptT String IO Ctx
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">F ExtOp Ctx -&gt; ExceptT String IO (Either InterpreterError Ctx)
+forall (m :: * -&gt; *) a.
+MonadIO m =&gt;
+F ExtOp a -&gt; m (Either InterpreterError a)
+</span><a href="Futhark.CLI.Run.html#runInterpreter%27"><span class="hs-identifier hs-var">runInterpreter'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ctx -&gt; Dec -&gt; F ExtOp Ctx
+</span><a href="Language.Futhark.Interpreter.html#interpretDec"><span class="hs-identifier hs-var">I.interpretDec</span></a></span><span> </span><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572219"><span class="hs-identifier hs-var">ienv1</span></a></span><span> </span><span class="annot"><span class="annottext">Dec
+</span><a href="#local-6989586621684572210"><span class="hs-identifier hs-var">d1</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-142"></span><span>  </span><span id="local-6989586621684572200"><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572200"><span class="hs-identifier hs-var">ienv3</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(InterpreterError -&gt; String)
+-&gt; Either InterpreterError Ctx -&gt; ExceptT String IO Ctx
+forall err a.
+(err -&gt; String) -&gt; Either err a -&gt; ExceptT String IO a
+</span><a href="#local-6989586621684572230"><span class="hs-identifier hs-var">badOnLeft</span></a></span><span> </span><span class="annot"><span class="annottext">InterpreterError -&gt; String
+forall a. Show a =&gt; a -&gt; String
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">(Either InterpreterError Ctx -&gt; ExceptT String IO Ctx)
+-&gt; ExceptT String IO (Either InterpreterError Ctx)
+-&gt; ExceptT String IO Ctx
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">F ExtOp Ctx -&gt; ExceptT String IO (Either InterpreterError Ctx)
+forall (m :: * -&gt; *) a.
+MonadIO m =&gt;
+F ExtOp a -&gt; m (Either InterpreterError a)
+</span><a href="Futhark.CLI.Run.html#runInterpreter%27"><span class="hs-identifier hs-var">runInterpreter'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ctx -&gt; Dec -&gt; F ExtOp Ctx
+</span><a href="Language.Futhark.Interpreter.html#interpretDec"><span class="hs-identifier hs-var">I.interpretDec</span></a></span><span> </span><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572202"><span class="hs-identifier hs-var">ienv2</span></a></span><span> </span><span class="annot"><span class="annottext">Dec
+</span><a href="#local-6989586621684572204"><span class="hs-identifier hs-var">d2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-143"></span><span>  </span><span class="annot"><span class="annottext">(Env, Ctx) -&gt; ExceptT String IO (Env, Ctx)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684572205"><span class="hs-identifier hs-var">tenv2</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Ctx
+</span><a href="#local-6989586621684572200"><span class="hs-identifier hs-var">ienv3</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-145"></span><span>    </span><span id="local-6989586621684572461"><span id="local-6989586621684572462"><span class="annot"><a href="#local-6989586621684572230"><span class="hs-identifier hs-type">badOnLeft</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684572462"><span class="hs-identifier hs-type">err</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><a href="#local-6989586621684572462"><span class="hs-identifier hs-type">err</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684572461"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ExceptT</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621684572461"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-146"></span><span>    </span><span id="local-6989586621684572230"><span class="annot"><span class="annottext">badOnLeft :: forall err a.
+(err -&gt; String) -&gt; Either err a -&gt; ExceptT String IO a
+</span><a href="#local-6989586621684572230"><span class="hs-identifier hs-var hs-var">badOnLeft</span></a></span></span><span> </span><span class="annot"><span class="annottext">err -&gt; String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621684572197"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684572197"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; ExceptT String IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684572197"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-147"></span><span>    </span><span class="annot"><a href="#local-6989586621684572230"><span class="hs-identifier hs-var">badOnLeft</span></a></span><span> </span><span id="local-6989586621684572196"><span class="annot"><span class="annottext">err -&gt; String
+</span><a href="#local-6989586621684572196"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684572195"><span class="annot"><span class="annottext">err
+</span><a href="#local-6989586621684572195"><span class="hs-identifier hs-var">err</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; ExceptT String IO a
+forall e (m :: * -&gt; *) a. MonadError e m =&gt; e -&gt; m a
+</span><span class="hs-identifier hs-var">throwError</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; ExceptT String IO a) -&gt; String -&gt; ExceptT String IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">err -&gt; String
+</span><a href="#local-6989586621684572196"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">err
+</span><a href="#local-6989586621684572195"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span class="annot"><a href="Futhark.CLI.Run.html#mkOpen"><span class="hs-identifier hs-type">mkOpen</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Prop.html#UncheckedDec"><span class="hs-identifier hs-type">UncheckedDec</span></a></span><span>
+</span><span id="line-150"></span><span id="mkOpen"><span class="annot"><span class="annottext">mkOpen :: String -&gt; UncheckedDec
+</span><a href="Futhark.CLI.Run.html#mkOpen"><span class="hs-identifier hs-var hs-var">mkOpen</span></a></span></span><span> </span><span id="local-6989586621684572193"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572193"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ModExpBase NoInfo Name -&gt; SrcLoc -&gt; UncheckedDec
+forall (f :: * -&gt; *) vn. ModExpBase f vn -&gt; SrcLoc -&gt; DecBase f vn
+</span><a href="Language.Futhark.Syntax.html#OpenDec"><span class="hs-identifier hs-var">OpenDec</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; NoInfo String -&gt; SrcLoc -&gt; ModExpBase NoInfo Name
+forall (f :: * -&gt; *) vn.
+String -&gt; f String -&gt; SrcLoc -&gt; ModExpBase f vn
+</span><a href="Language.Futhark.Syntax.html#ModImport"><span class="hs-identifier hs-var">ModImport</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572193"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">NoInfo String
+forall a. NoInfo a
+</span><a href="Language.Futhark.Syntax.html#NoInfo"><span class="hs-identifier hs-var">NoInfo</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-151"></span><span>
+</span><span id="line-152"></span><span id="local-6989586621684572481"><span id="local-6989586621684572482"><span class="annot"><a href="Futhark.CLI.Run.html#runInterpreter%27"><span class="hs-identifier hs-type">runInterpreter'</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621684572482"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">F</span></span><span> </span><span class="annot"><a href="Language.Futhark.Interpreter.html#ExtOp"><span class="hs-identifier hs-type">I.ExtOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684572481"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684572482"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><a href="Language.Futhark.Interpreter.html#InterpreterError"><span class="hs-identifier hs-type">I.InterpreterError</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684572481"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-153"></span><span id="runInterpreter%27"><span class="annot"><span class="annottext">runInterpreter' :: forall (m :: * -&gt; *) a.
+MonadIO m =&gt;
+F ExtOp a -&gt; m (Either InterpreterError a)
+</span><a href="Futhark.CLI.Run.html#runInterpreter%27"><span class="hs-identifier hs-var hs-var">runInterpreter'</span></a></span></span><span> </span><span id="local-6989586621684572184"><span class="annot"><span class="annottext">F ExtOp a
+</span><a href="#local-6989586621684572184"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">F ExtOp a -&gt; forall r. (a -&gt; r) -&gt; (ExtOp r -&gt; r) -&gt; r
+forall (f :: * -&gt; *) a.
+F f a -&gt; forall r. (a -&gt; r) -&gt; (f r -&gt; r) -&gt; r
+</span><span class="hs-identifier hs-var hs-var">runF</span></span><span> </span><span class="annot"><span class="annottext">F ExtOp a
+</span><a href="#local-6989586621684572184"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Either InterpreterError a -&gt; m (Either InterpreterError a)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Either InterpreterError a -&gt; m (Either InterpreterError a))
+-&gt; (a -&gt; Either InterpreterError a)
+-&gt; a
+-&gt; m (Either InterpreterError a)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Either InterpreterError a
+forall a b. b -&gt; Either a b
+</span><span class="hs-identifier hs-var">Right</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ExtOp (m (Either InterpreterError a))
+-&gt; m (Either InterpreterError a)
+forall {m :: * -&gt; *} {b}.
+MonadIO m =&gt;
+ExtOp (m (Either InterpreterError b))
+-&gt; m (Either InterpreterError b)
+</span><a href="#local-6989586621684572182"><span class="hs-identifier hs-var">intOp</span></a></span><span>
+</span><span id="line-154"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-155"></span><span>    </span><span id="local-6989586621684572182"><span class="annot"><span class="annottext">intOp :: ExtOp (m (Either InterpreterError b))
+-&gt; m (Either InterpreterError b)
+</span><a href="#local-6989586621684572182"><span class="hs-identifier hs-var hs-var">intOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Interpreter.html#ExtOpError"><span class="hs-identifier hs-type">I.ExtOpError</span></a></span><span> </span><span id="local-6989586621684572173"><span class="annot"><span class="annottext">InterpreterError
+</span><a href="#local-6989586621684572173"><span class="hs-identifier hs-var">err</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Either InterpreterError b -&gt; m (Either InterpreterError b)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Either InterpreterError b -&gt; m (Either InterpreterError b))
+-&gt; Either InterpreterError b -&gt; m (Either InterpreterError b)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">InterpreterError -&gt; Either InterpreterError b
+forall a b. a -&gt; Either a b
+</span><span class="hs-identifier hs-var">Left</span></span><span> </span><span class="annot"><span class="annottext">InterpreterError
+</span><a href="#local-6989586621684572173"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-156"></span><span>    </span><span class="annot"><a href="#local-6989586621684572182"><span class="hs-identifier hs-var">intOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Interpreter.html#ExtOpTrace"><span class="hs-identifier hs-type">I.ExtOpTrace</span></a></span><span> </span><span id="local-6989586621684572171"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572171"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684572170"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572170"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684572169"><span class="annot"><span class="annottext">m (Either InterpreterError b)
+</span><a href="#local-6989586621684572169"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-157"></span><span>      </span><span class="annot"><span class="annottext">IO () -&gt; m ()
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; m ()) -&gt; IO () -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; String -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; String -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572171"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684572170"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-158"></span><span>      </span><span class="annot"><span class="annottext">m (Either InterpreterError b)
+</span><a href="#local-6989586621684572169"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-159"></span><span>    </span><span class="annot"><a href="#local-6989586621684572182"><span class="hs-identifier hs-var">intOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Interpreter.html#ExtOpBreak"><span class="hs-identifier hs-type">I.ExtOpBreak</span></a></span><span> </span><span class="annot"><span class="annottext">Loc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">BreakReason
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">NonEmpty StackFrame
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684572167"><span class="annot"><span class="annottext">m (Either InterpreterError b)
+</span><a href="#local-6989586621684572167"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m (Either InterpreterError b)
+</span><a href="#local-6989586621684572167"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-160"></span></pre></body></html>

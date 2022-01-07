@@ -1,0 +1,1233 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE Trustworthy #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Internalise.TypesValues</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * Internalising types</span></span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseReturnType"><span class="hs-identifier">internaliseReturnType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseLambdaReturnType"><span class="hs-identifier">internaliseLambdaReturnType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseEntryReturnType"><span class="hs-identifier">internaliseEntryReturnType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseType"><span class="hs-identifier">internaliseType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseParamTypes"><span class="hs-identifier">internaliseParamTypes</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseLoopParamType"><span class="hs-identifier">internaliseLoopParamType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimType"><span class="hs-identifier">internalisePrimType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisedTypeSize"><span class="hs-identifier">internalisedTypeSize</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseSumType"><span class="hs-identifier">internaliseSumType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>
+</span><span id="line-17"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Internalising values</span></span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimValue"><span class="hs-identifier">internalisePrimValue</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">delete</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">find</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">foldl'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html"><span class="hs-identifier">Futhark.IR.SOACS</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html"><span class="hs-identifier">Futhark.Internalise.Monad</span></a></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Language.Futhark.html"><span class="hs-identifier">Language.Futhark</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">E</span></span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseUniqueness"><span class="hs-identifier hs-type">internaliseUniqueness</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">E.Uniqueness</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">I.Uniqueness</span></a></span><span>
+</span><span id="line-32"></span><span id="internaliseUniqueness"><span class="annot"><span class="annottext">internaliseUniqueness :: Uniqueness -&gt; Uniqueness
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseUniqueness"><span class="hs-identifier hs-var hs-var">internaliseUniqueness</span></a></span></span><span> </span><span class="annot"><span class="annottext">Uniqueness
+</span><a href="Language.Futhark.Core.html#Nonunique"><span class="hs-identifier hs-var">E.Nonunique</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Uniqueness
+</span><a href="Language.Futhark.Core.html#Nonunique"><span class="hs-identifier hs-var">I.Nonunique</span></a></span><span>
+</span><span id="line-33"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseUniqueness"><span class="hs-identifier hs-var">internaliseUniqueness</span></a></span><span> </span><span class="annot"><span class="annottext">Uniqueness
+</span><a href="Language.Futhark.Core.html#Unique"><span class="hs-identifier hs-var">E.Unique</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Uniqueness
+</span><a href="Language.Futhark.Core.html#Unique"><span class="hs-identifier hs-var">I.Unique</span></a></span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">newtype</span><span> </span><span id="TypeState"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#TypeState"><span class="hs-identifier hs-var">TypeState</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="TypeState"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#TypeState"><span class="hs-identifier hs-var">TypeState</span></a></span></span><span> </span><span class="hs-special">{</span><span id="typeCounter"><span class="annot"><span class="annottext">TypeState -&gt; Int
+</span><a href="Futhark.Internalise.TypesValues.html#typeCounter"><span class="hs-identifier hs-var hs-var">typeCounter</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">}</span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span class="hs-keyword">newtype</span><span> </span><span id="InternaliseTypeM"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-var">InternaliseTypeM</span></a></span></span><span> </span><span id="local-6989586621684512342"><span class="annot"><a href="#local-6989586621684512342"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-38"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="InternaliseTypeM"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-var">InternaliseTypeM</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">StateT</span></span><span> </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#TypeState"><span class="hs-identifier hs-type">TypeState</span></a></span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512342"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684512071"><span id="local-6989586621684512077"><span class="annot"><span class="annottext">(forall a b. (a -&gt; b) -&gt; InternaliseTypeM a -&gt; InternaliseTypeM b)
+-&gt; (forall a b. a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM a)
+-&gt; Functor InternaliseTypeM
+forall a b. a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM a
+forall a b. (a -&gt; b) -&gt; InternaliseTypeM a -&gt; InternaliseTypeM b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+&lt;$ :: forall a b. a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM a
+$c&lt;$ :: forall a b. a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM a
+fmap :: forall a b. (a -&gt; b) -&gt; InternaliseTypeM a -&gt; InternaliseTypeM b
+$cfmap :: forall a b. (a -&gt; b) -&gt; InternaliseTypeM a -&gt; InternaliseTypeM b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684512037"><span id="local-6989586621684512043"><span id="local-6989586621684512049"><span id="local-6989586621684512055"><span id="local-6989586621684512062"><span class="annot"><span class="annottext">Functor InternaliseTypeM
+Functor InternaliseTypeM
+-&gt; (forall a. a -&gt; InternaliseTypeM a)
+-&gt; (forall a b.
+    InternaliseTypeM (a -&gt; b)
+    -&gt; InternaliseTypeM a -&gt; InternaliseTypeM b)
+-&gt; (forall a b c.
+    (a -&gt; b -&gt; c)
+    -&gt; InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM c)
+-&gt; (forall a b.
+    InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM b)
+-&gt; (forall a b.
+    InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM a)
+-&gt; Applicative InternaliseTypeM
+forall a. a -&gt; InternaliseTypeM a
+forall a b.
+InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM a
+forall a b.
+InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM b
+forall a b.
+InternaliseTypeM (a -&gt; b)
+-&gt; InternaliseTypeM a -&gt; InternaliseTypeM b
+forall a b c.
+(a -&gt; b -&gt; c)
+-&gt; InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM c
+forall (f :: * -&gt; *).
+Functor f
+-&gt; (forall a. a -&gt; f a)
+-&gt; (forall a b. f (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c)
+-&gt; (forall a b. f a -&gt; f b -&gt; f b)
+-&gt; (forall a b. f a -&gt; f b -&gt; f a)
+-&gt; Applicative f
+&lt;* :: forall a b.
+InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM a
+$c&lt;* :: forall a b.
+InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM a
+*&gt; :: forall a b.
+InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM b
+$c*&gt; :: forall a b.
+InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM b
+liftA2 :: forall a b c.
+(a -&gt; b -&gt; c)
+-&gt; InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM c
+$cliftA2 :: forall a b c.
+(a -&gt; b -&gt; c)
+-&gt; InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM c
+&lt;*&gt; :: forall a b.
+InternaliseTypeM (a -&gt; b)
+-&gt; InternaliseTypeM a -&gt; InternaliseTypeM b
+$c&lt;*&gt; :: forall a b.
+InternaliseTypeM (a -&gt; b)
+-&gt; InternaliseTypeM a -&gt; InternaliseTypeM b
+pure :: forall a. a -&gt; InternaliseTypeM a
+$cpure :: forall a. a -&gt; InternaliseTypeM a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Applicative</span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684512016"><span id="local-6989586621684512021"><span id="local-6989586621684512027"><span class="annot"><span class="annottext">Applicative InternaliseTypeM
+Applicative InternaliseTypeM
+-&gt; (forall a b.
+    InternaliseTypeM a
+    -&gt; (a -&gt; InternaliseTypeM b) -&gt; InternaliseTypeM b)
+-&gt; (forall a b.
+    InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM b)
+-&gt; (forall a. a -&gt; InternaliseTypeM a)
+-&gt; Monad InternaliseTypeM
+forall a. a -&gt; InternaliseTypeM a
+forall a b.
+InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM b
+forall a b.
+InternaliseTypeM a
+-&gt; (a -&gt; InternaliseTypeM b) -&gt; InternaliseTypeM b
+forall (m :: * -&gt; *).
+Applicative m
+-&gt; (forall a b. m a -&gt; (a -&gt; m b) -&gt; m b)
+-&gt; (forall a b. m a -&gt; m b -&gt; m b)
+-&gt; (forall a. a -&gt; m a)
+-&gt; Monad m
+return :: forall a. a -&gt; InternaliseTypeM a
+$creturn :: forall a. a -&gt; InternaliseTypeM a
+&gt;&gt; :: forall a b.
+InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM b
+$c&gt;&gt; :: forall a b.
+InternaliseTypeM a -&gt; InternaliseTypeM b -&gt; InternaliseTypeM b
+&gt;&gt;= :: forall a b.
+InternaliseTypeM a
+-&gt; (a -&gt; InternaliseTypeM b) -&gt; InternaliseTypeM b
+$c&gt;&gt;= :: forall a b.
+InternaliseTypeM a
+-&gt; (a -&gt; InternaliseTypeM b) -&gt; InternaliseTypeM b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monad</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684511997"><span id="local-6989586621684512002"><span id="local-6989586621684512008"><span class="annot"><span class="hs-identifier hs-type">MonadState</span></span><span> </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#TypeState"><span class="hs-identifier hs-type">TypeState</span></a></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span id="local-6989586621684512346"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#liftInternaliseM"><span class="hs-identifier hs-type">liftInternaliseM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512346"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-type">InternaliseTypeM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512346"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-42"></span><span id="liftInternaliseM"><span class="annot"><span class="annottext">liftInternaliseM :: forall a. InternaliseM a -&gt; InternaliseTypeM a
+</span><a href="Futhark.Internalise.TypesValues.html#liftInternaliseM"><span class="hs-identifier hs-var hs-var">liftInternaliseM</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT TypeState InternaliseM a -&gt; InternaliseTypeM a
+forall a. StateT TypeState InternaliseM a -&gt; InternaliseTypeM a
+</span><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-var">InternaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT TypeState InternaliseM a -&gt; InternaliseTypeM a)
+-&gt; (InternaliseM a -&gt; StateT TypeState InternaliseM a)
+-&gt; InternaliseM a
+-&gt; InternaliseTypeM a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">InternaliseM a -&gt; StateT TypeState InternaliseM a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span id="local-6989586621684512335"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM"><span class="hs-identifier hs-type">runInternaliseTypeM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-type">InternaliseTypeM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512335"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512335"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-45"></span><span id="runInternaliseTypeM"><span class="annot"><span class="annottext">runInternaliseTypeM :: forall a. InternaliseTypeM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM"><span class="hs-identifier hs-var hs-var">runInternaliseTypeM</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; InternaliseTypeM a -&gt; InternaliseM a
+forall a. [VName] -&gt; InternaliseTypeM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM%27"><span class="hs-identifier hs-var">runInternaliseTypeM'</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span id="local-6989586621684512333"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM%27"><span class="hs-identifier hs-type">runInternaliseTypeM'</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-type">InternaliseTypeM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512333"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512333"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-48"></span><span id="runInternaliseTypeM%27"><span class="annot"><span class="annottext">runInternaliseTypeM' :: forall a. [VName] -&gt; InternaliseTypeM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM%27"><span class="hs-identifier hs-var hs-var">runInternaliseTypeM'</span></a></span></span><span> </span><span id="local-6989586621684511981"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684511981"><span class="hs-identifier hs-var">exts</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-type">InternaliseTypeM</span></a></span><span> </span><span id="local-6989586621684511980"><span class="annot"><span class="annottext">StateT TypeState InternaliseM a
+</span><a href="#local-6989586621684511980"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT TypeState InternaliseM a -&gt; TypeState -&gt; InternaliseM a
+forall (m :: * -&gt; *) s a. Monad m =&gt; StateT s m a -&gt; s -&gt; m a
+</span><span class="hs-identifier hs-var">evalStateT</span></span><span> </span><span class="annot"><span class="annottext">StateT TypeState InternaliseM a
+</span><a href="#local-6989586621684511980"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeState -&gt; InternaliseM a) -&gt; TypeState -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; TypeState
+</span><a href="Futhark.Internalise.TypesValues.html#TypeState"><span class="hs-identifier hs-var">TypeState</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684511981"><span class="hs-identifier hs-var">exts</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseParamTypes"><span class="hs-identifier hs-type">internaliseParamTypes</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-51"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeBase"><span class="hs-identifier hs-type">E.TypeBase</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#DimDecl"><span class="hs-identifier hs-type">E.DimDecl</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">Uniqueness</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span>
+</span><span id="line-53"></span><span id="internaliseParamTypes"><span class="annot"><span class="annottext">internaliseParamTypes :: [StructType] -&gt; InternaliseM [[TypeBase Shape Uniqueness]]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseParamTypes"><span class="hs-identifier hs-var hs-var">internaliseParamTypes</span></a></span></span><span> </span><span id="local-6989586621684511977"><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684511977"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-54"></span><span>  </span><span class="annot"><span class="annottext">InternaliseTypeM [[TypeBase Shape Uniqueness]]
+-&gt; InternaliseM [[TypeBase Shape Uniqueness]]
+forall a. InternaliseTypeM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM"><span class="hs-identifier hs-var">runInternaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseTypeM [[TypeBase Shape Uniqueness]]
+ -&gt; InternaliseM [[TypeBase Shape Uniqueness]])
+-&gt; InternaliseTypeM [[TypeBase Shape Uniqueness]]
+-&gt; InternaliseM [[TypeBase Shape Uniqueness]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; InternaliseTypeM [TypeBase Shape Uniqueness])
+-&gt; [StructType] -&gt; InternaliseTypeM [[TypeBase Shape Uniqueness]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">([TypeBase ExtShape Uniqueness] -&gt; [TypeBase Shape Uniqueness])
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+-&gt; InternaliseTypeM [TypeBase Shape Uniqueness]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(TypeBase ExtShape Uniqueness -&gt; TypeBase Shape Uniqueness)
+-&gt; [TypeBase ExtShape Uniqueness] -&gt; [TypeBase Shape Uniqueness]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">TypeBase ExtShape Uniqueness -&gt; TypeBase Shape Uniqueness
+forall {u}. TypeBase ExtShape u -&gt; TypeBase Shape u
+</span><a href="#local-6989586621684511975"><span class="hs-identifier hs-var">onType</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InternaliseTypeM [TypeBase ExtShape Uniqueness]
+ -&gt; InternaliseTypeM [TypeBase Shape Uniqueness])
+-&gt; (StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; StructType
+-&gt; InternaliseTypeM [TypeBase Shape Uniqueness]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var">internaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684511977"><span class="hs-identifier hs-var">ts</span></a></span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-56"></span><span>    </span><span id="local-6989586621684511975"><span class="annot"><span class="annottext">onType :: TypeBase ExtShape u -&gt; TypeBase Shape u
+</span><a href="#local-6989586621684511975"><span class="hs-identifier hs-var hs-var">onType</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TypeBase Shape u -&gt; Maybe (TypeBase Shape u) -&gt; TypeBase Shape u
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="annot"><span class="annottext">TypeBase Shape u
+forall {a}. a
+</span><a href="#local-6989586621684511972"><span class="hs-identifier hs-var">bad</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe (TypeBase Shape u) -&gt; TypeBase Shape u)
+-&gt; (TypeBase ExtShape u -&gt; Maybe (TypeBase Shape u))
+-&gt; TypeBase ExtShape u
+-&gt; TypeBase Shape u
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">TypeBase ExtShape u -&gt; Maybe (TypeBase Shape u)
+forall u. TypeBase ExtShape u -&gt; Maybe (TypeBase Shape u)
+</span><a href="Futhark.IR.Prop.Types.html#hasStaticShape"><span class="hs-identifier hs-var">hasStaticShape</span></a></span><span>
+</span><span id="line-57"></span><span>    </span><span id="local-6989586621684511972"><span class="annot"><span class="annottext">bad :: a
+</span><a href="#local-6989586621684511972"><span class="hs-identifier hs-var hs-var">bad</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; a
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; a) -&gt; String -&gt; a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;internaliseParamTypes: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[StructType] -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684511977"><span class="hs-identifier hs-var">ts</span></a></span><span>
+</span><span id="line-58"></span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- We need to fix up the arrays for any Acc return values or loop</span><span>
+</span><span id="line-60"></span><span class="hs-comment">-- parameters.  We look at the concrete types for this, since the Acc</span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- parameter name in the second list will just be something we made up.</span><span>
+</span><span id="line-62"></span><span id="local-6989586621684512303"><span id="local-6989586621684512304"><span id="local-6989586621684512305"><span id="local-6989586621684512306"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#fixupTypes"><span class="hs-identifier hs-type">fixupTypes</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">TypeBase</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512306"><span class="hs-identifier hs-type">shape1</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512305"><span class="hs-identifier hs-type">u1</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">TypeBase</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512304"><span class="hs-identifier hs-type">shape2</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512303"><span class="hs-identifier hs-type">u2</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">TypeBase</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512304"><span class="hs-identifier hs-type">shape2</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512303"><span class="hs-identifier hs-type">u2</span></a></span><span class="hs-special">]</span></span></span></span></span><span>
+</span><span id="line-63"></span><span id="fixupTypes"><span class="annot"><span class="annottext">fixupTypes :: forall shape1 u1 shape2 u2.
+[TypeBase shape1 u1]
+-&gt; [TypeBase shape2 u2] -&gt; [TypeBase shape2 u2]
+</span><a href="Futhark.Internalise.TypesValues.html#fixupTypes"><span class="hs-identifier hs-var hs-var">fixupTypes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(TypeBase shape1 u1 -&gt; TypeBase shape2 u2 -&gt; TypeBase shape2 u2)
+-&gt; [TypeBase shape1 u1]
+-&gt; [TypeBase shape2 u2]
+-&gt; [TypeBase shape2 u2]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">TypeBase shape1 u1 -&gt; TypeBase shape2 u2 -&gt; TypeBase shape2 u2
+forall {shape} {u} {shape} {u}.
+TypeBase shape u -&gt; TypeBase shape u -&gt; TypeBase shape u
+</span><a href="#local-6989586621684511959"><span class="hs-identifier hs-var">fixup</span></a></span><span>
+</span><span id="line-64"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-65"></span><span>    </span><span id="local-6989586621684511959"><span class="annot"><span class="annottext">fixup :: TypeBase shape u -&gt; TypeBase shape u -&gt; TypeBase shape u
+</span><a href="#local-6989586621684511959"><span class="hs-identifier hs-var hs-var">fixup</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Acc"><span class="hs-identifier hs-type">Acc</span></a></span><span> </span><span id="local-6989586621684511957"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684511957"><span class="hs-identifier hs-var">acc</span></a></span></span><span> </span><span id="local-6989586621684511956"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684511956"><span class="hs-identifier hs-var">ispace</span></a></span></span><span> </span><span id="local-6989586621684511955"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684511955"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="annot"><span class="annottext">u
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Acc"><span class="hs-identifier hs-type">Acc</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684511954"><span class="annot"><span class="annottext">u
+</span><a href="#local-6989586621684511954"><span class="hs-identifier hs-var">u2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Shape -&gt; [Type] -&gt; u -&gt; TypeBase shape u
+forall shape u. VName -&gt; Shape -&gt; [Type] -&gt; u -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Acc"><span class="hs-identifier hs-var">Acc</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684511957"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684511956"><span class="hs-identifier hs-var">ispace</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684511955"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">u
+</span><a href="#local-6989586621684511954"><span class="hs-identifier hs-var">u2</span></a></span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><a href="#local-6989586621684511959"><span class="hs-identifier hs-var">fixup</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase shape u
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684511953"><span class="annot"><span class="annottext">TypeBase shape u
+</span><a href="#local-6989586621684511953"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TypeBase shape u
+</span><a href="#local-6989586621684511953"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span id="local-6989586621684512287"><span id="local-6989586621684512288"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseLoopParamType"><span class="hs-identifier hs-type">internaliseLoopParamType</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeBase"><span class="hs-identifier hs-type">E.TypeBase</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#DimDecl"><span class="hs-identifier hs-type">E.DimDecl</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-70"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">TypeBase</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512288"><span class="hs-identifier hs-type">shape</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512287"><span class="hs-identifier hs-type">u</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-71"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">Uniqueness</span></a></span><span class="hs-special">]</span></span></span><span>
+</span><span id="line-72"></span><span id="internaliseLoopParamType"><span class="annot"><span class="annottext">internaliseLoopParamType :: forall shape u.
+StructType
+-&gt; [TypeBase shape u] -&gt; InternaliseM [TypeBase Shape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseLoopParamType"><span class="hs-identifier hs-var hs-var">internaliseLoopParamType</span></a></span></span><span> </span><span id="local-6989586621684511950"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511950"><span class="hs-identifier hs-var">et</span></a></span></span><span> </span><span id="local-6989586621684511949"><span class="annot"><span class="annottext">[TypeBase shape u]
+</span><a href="#local-6989586621684511949"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-73"></span><span>  </span><span class="annot"><span class="annottext">[TypeBase shape u]
+-&gt; [TypeBase Shape Uniqueness] -&gt; [TypeBase Shape Uniqueness]
+forall shape1 u1 shape2 u2.
+[TypeBase shape1 u1]
+-&gt; [TypeBase shape2 u2] -&gt; [TypeBase shape2 u2]
+</span><a href="Futhark.Internalise.TypesValues.html#fixupTypes"><span class="hs-identifier hs-var">fixupTypes</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape u]
+</span><a href="#local-6989586621684511949"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">([TypeBase Shape Uniqueness] -&gt; [TypeBase Shape Uniqueness])
+-&gt; ([[TypeBase Shape Uniqueness]] -&gt; [TypeBase Shape Uniqueness])
+-&gt; [[TypeBase Shape Uniqueness]]
+-&gt; [TypeBase Shape Uniqueness]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[[TypeBase Shape Uniqueness]] -&gt; [TypeBase Shape Uniqueness]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">([[TypeBase Shape Uniqueness]] -&gt; [TypeBase Shape Uniqueness])
+-&gt; InternaliseM [[TypeBase Shape Uniqueness]]
+-&gt; InternaliseM [TypeBase Shape Uniqueness]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[StructType] -&gt; InternaliseM [[TypeBase Shape Uniqueness]]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseParamTypes"><span class="hs-identifier hs-var">internaliseParamTypes</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511950"><span class="hs-identifier hs-var">et</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span id="local-6989586621684512277"><span id="local-6989586621684512278"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseReturnType"><span class="hs-identifier hs-type">internaliseReturnType</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-76"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#StructRetType"><span class="hs-identifier hs-type">E.StructRetType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">TypeBase</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512278"><span class="hs-identifier hs-type">shape</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512277"><span class="hs-identifier hs-type">u</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-78"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtShape"><span class="hs-identifier hs-type">ExtShape</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">Uniqueness</span></a></span><span class="hs-special">]</span></span></span><span>
+</span><span id="line-79"></span><span id="internaliseReturnType"><span class="annot"><span class="annottext">internaliseReturnType :: forall shape u.
+StructRetType
+-&gt; [TypeBase shape u]
+-&gt; InternaliseM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseReturnType"><span class="hs-identifier hs-var hs-var">internaliseReturnType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#RetType"><span class="hs-identifier hs-type">E.RetType</span></a></span><span> </span><span id="local-6989586621684511944"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684511944"><span class="hs-identifier hs-var">dims</span></a></span></span><span> </span><span id="local-6989586621684511943"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511943"><span class="hs-identifier hs-var">et</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684511942"><span class="annot"><span class="annottext">[TypeBase shape u]
+</span><a href="#local-6989586621684511942"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-80"></span><span>  </span><span class="annot"><span class="annottext">[TypeBase shape u]
+-&gt; [TypeBase ExtShape Uniqueness] -&gt; [TypeBase ExtShape Uniqueness]
+forall shape1 u1 shape2 u2.
+[TypeBase shape1 u1]
+-&gt; [TypeBase shape2 u2] -&gt; [TypeBase shape2 u2]
+</span><a href="Futhark.Internalise.TypesValues.html#fixupTypes"><span class="hs-identifier hs-var">fixupTypes</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape u]
+</span><a href="#local-6989586621684511942"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">([TypeBase ExtShape Uniqueness] -&gt; [TypeBase ExtShape Uniqueness])
+-&gt; InternaliseM [TypeBase ExtShape Uniqueness]
+-&gt; InternaliseM [TypeBase ExtShape Uniqueness]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+-&gt; InternaliseM [TypeBase ExtShape Uniqueness]
+forall a. [VName] -&gt; InternaliseTypeM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM%27"><span class="hs-identifier hs-var">runInternaliseTypeM'</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684511944"><span class="hs-identifier hs-var">dims</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var">internaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511941"><span class="hs-identifier hs-var">exts</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511943"><span class="hs-identifier hs-var">et</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-82"></span><span>    </span><span id="local-6989586621684511941"><span class="annot"><span class="annottext">exts :: Map VName Int
+</span><a href="#local-6989586621684511941"><span class="hs-identifier hs-var hs-var">exts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, Int)] -&gt; Map VName Int
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, Int)] -&gt; Map VName Int)
+-&gt; [(VName, Int)] -&gt; Map VName Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; [Int] -&gt; [(VName, Int)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684511944"><span class="hs-identifier hs-var">dims</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span class="hs-special">]</span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span id="local-6989586621684512269"><span id="local-6989586621684512270"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseLambdaReturnType"><span class="hs-identifier hs-type">internaliseLambdaReturnType</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-85"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeBase"><span class="hs-identifier hs-type">E.TypeBase</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#DimDecl"><span class="hs-identifier hs-type">E.DimDecl</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">TypeBase</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512270"><span class="hs-identifier hs-type">shape</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684512269"><span class="hs-identifier hs-type">u</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-87"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#NoUniqueness"><span class="hs-identifier hs-type">NoUniqueness</span></a></span><span class="hs-special">]</span></span></span><span>
+</span><span id="line-88"></span><span id="internaliseLambdaReturnType"><span class="annot"><span class="annottext">internaliseLambdaReturnType :: forall shape u.
+StructType -&gt; [TypeBase shape u] -&gt; InternaliseM [Type]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseLambdaReturnType"><span class="hs-identifier hs-var hs-var">internaliseLambdaReturnType</span></a></span></span><span> </span><span id="local-6989586621684511935"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511935"><span class="hs-identifier hs-var">et</span></a></span></span><span> </span><span id="local-6989586621684511934"><span class="annot"><span class="annottext">[TypeBase shape u]
+</span><a href="#local-6989586621684511934"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><span class="annottext">(TypeBase Shape Uniqueness -&gt; Type)
+-&gt; [TypeBase Shape Uniqueness] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">TypeBase Shape Uniqueness -&gt; Type
+forall shape.
+TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness
+</span><a href="Futhark.IR.Prop.Types.html#fromDecl"><span class="hs-identifier hs-var">fromDecl</span></a></span><span> </span><span class="annot"><span class="annottext">([TypeBase Shape Uniqueness] -&gt; [Type])
+-&gt; InternaliseM [TypeBase Shape Uniqueness] -&gt; InternaliseM [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">StructType
+-&gt; [TypeBase shape u] -&gt; InternaliseM [TypeBase Shape Uniqueness]
+forall shape u.
+StructType
+-&gt; [TypeBase shape u] -&gt; InternaliseM [TypeBase Shape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseLoopParamType"><span class="hs-identifier hs-var">internaliseLoopParamType</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511935"><span class="hs-identifier hs-var">et</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape u]
+</span><a href="#local-6989586621684511934"><span class="hs-identifier hs-var">ts</span></a></span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span class="hs-comment">-- | As 'internaliseReturnType', but returns components of a top-level</span><span>
+</span><span id="line-92"></span><span class="hs-comment">-- tuple type piecemeal.</span><span>
+</span><span id="line-93"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseEntryReturnType"><span class="hs-identifier hs-type">internaliseEntryReturnType</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-94"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#StructRetType"><span class="hs-identifier hs-type">E.StructRetType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-95"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtShape"><span class="hs-identifier hs-type">ExtShape</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">Uniqueness</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span>
+</span><span id="line-96"></span><span id="internaliseEntryReturnType"><span class="annot"><span class="annottext">internaliseEntryReturnType :: StructRetType -&gt; InternaliseM [[TypeBase ExtShape Uniqueness]]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseEntryReturnType"><span class="hs-identifier hs-var hs-var">internaliseEntryReturnType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#RetType"><span class="hs-identifier hs-type">E.RetType</span></a></span><span> </span><span id="local-6989586621684511932"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684511932"><span class="hs-identifier hs-var">dims</span></a></span></span><span> </span><span id="local-6989586621684511931"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511931"><span class="hs-identifier hs-var">et</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-97"></span><span>  </span><span class="annot"><span class="annottext">[VName]
+-&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+-&gt; InternaliseM [[TypeBase ExtShape Uniqueness]]
+forall a. [VName] -&gt; InternaliseTypeM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM%27"><span class="hs-identifier hs-var">runInternaliseTypeM'</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684511932"><span class="hs-identifier hs-var">dims</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+ -&gt; InternaliseM [[TypeBase ExtShape Uniqueness]])
+-&gt; ([StructType]
+    -&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]])
+-&gt; [StructType]
+-&gt; InternaliseM [[TypeBase ExtShape Uniqueness]]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; [StructType]
+-&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var">internaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511930"><span class="hs-identifier hs-var">exts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([StructType] -&gt; InternaliseM [[TypeBase ExtShape Uniqueness]])
+-&gt; [StructType] -&gt; InternaliseM [[TypeBase ExtShape Uniqueness]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-98"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">StructType -&gt; Maybe [StructType]
+forall dim as. TypeBase dim as -&gt; Maybe [TypeBase dim as]
+</span><a href="Language.Futhark.Prop.html#isTupleRecord"><span class="hs-identifier hs-var">E.isTupleRecord</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511931"><span class="hs-identifier hs-var">et</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-99"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684511928"><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684511928"><span class="hs-identifier hs-var">ets</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; Bool -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[StructType] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">null</span></span><span> </span><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684511928"><span class="hs-identifier hs-var">ets</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684511928"><span class="hs-identifier hs-var">ets</span></a></span><span>
+</span><span id="line-100"></span><span>      </span><span class="annot"><span class="annottext">Maybe [StructType]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511931"><span class="hs-identifier hs-var">et</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-102"></span><span>    </span><span id="local-6989586621684511930"><span class="annot"><span class="annottext">exts :: Map VName Int
+</span><a href="#local-6989586621684511930"><span class="hs-identifier hs-var hs-var">exts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, Int)] -&gt; Map VName Int
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, Int)] -&gt; Map VName Int)
+-&gt; [(VName, Int)] -&gt; Map VName Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; [Int] -&gt; [(VName, Int)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684511932"><span class="hs-identifier hs-var">dims</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span class="hs-special">]</span><span>
+</span><span id="line-103"></span><span>
+</span><span id="line-104"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseType"><span class="hs-identifier hs-type">internaliseType</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-105"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeBase"><span class="hs-identifier hs-type">E.TypeBase</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#DimDecl"><span class="hs-identifier hs-type">E.DimDecl</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-106"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtShape"><span class="hs-identifier hs-type">I.ExtShape</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">Uniqueness</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-107"></span><span id="internaliseType"><span class="annot"><span class="annottext">internaliseType :: StructType -&gt; InternaliseM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseType"><span class="hs-identifier hs-var hs-var">internaliseType</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InternaliseTypeM [TypeBase ExtShape Uniqueness]
+-&gt; InternaliseM [TypeBase ExtShape Uniqueness]
+forall a. InternaliseTypeM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM"><span class="hs-identifier hs-var">runInternaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseTypeM [TypeBase ExtShape Uniqueness]
+ -&gt; InternaliseM [TypeBase ExtShape Uniqueness])
+-&gt; (StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; StructType
+-&gt; InternaliseM [TypeBase ExtShape Uniqueness]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var">internaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-108"></span><span>
+</span><span id="line-109"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#newId"><span class="hs-identifier hs-type">newId</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-type">InternaliseTypeM</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-110"></span><span id="newId"><span class="annot"><span class="annottext">newId :: InternaliseTypeM Int
+</span><a href="Futhark.Internalise.TypesValues.html#newId"><span class="hs-identifier hs-var hs-var">newId</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-111"></span><span>  </span><span id="local-6989586621684511921"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511921"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(TypeState -&gt; Int) -&gt; InternaliseTypeM Int
+forall s (m :: * -&gt; *) a. MonadState s m =&gt; (s -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">gets</span></span><span> </span><span class="annot"><span class="annottext">TypeState -&gt; Int
+</span><a href="Futhark.Internalise.TypesValues.html#typeCounter"><span class="hs-identifier hs-var hs-var">typeCounter</span></a></span><span>
+</span><span id="line-112"></span><span>  </span><span class="annot"><span class="annottext">(TypeState -&gt; TypeState) -&gt; InternaliseTypeM ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="annot"><span class="annottext">((TypeState -&gt; TypeState) -&gt; InternaliseTypeM ())
+-&gt; (TypeState -&gt; TypeState) -&gt; InternaliseTypeM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684511918"><span class="annot"><span class="annottext">TypeState
+</span><a href="#local-6989586621684511918"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">TypeState
+</span><a href="#local-6989586621684511918"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">typeCounter :: Int
+</span><a href="Futhark.Internalise.TypesValues.html#typeCounter"><span class="hs-identifier hs-var">typeCounter</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511921"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">}</span><span>
+</span><span id="line-113"></span><span>  </span><span class="annot"><span class="annottext">Int -&gt; InternaliseTypeM Int
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511921"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-114"></span><span>
+</span><span id="line-115"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseDim"><span class="hs-identifier hs-type">internaliseDim</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-116"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-117"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#DimDecl"><span class="hs-identifier hs-type">E.DimDecl</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-118"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-type">InternaliseTypeM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtSize"><span class="hs-identifier hs-type">ExtSize</span></a></span><span>
+</span><span id="line-119"></span><span id="internaliseDim"><span class="annot"><span class="annottext">internaliseDim :: Map VName Int -&gt; DimDecl VName -&gt; InternaliseTypeM (Ext SubExp)
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseDim"><span class="hs-identifier hs-var hs-var">internaliseDim</span></a></span></span><span> </span><span id="local-6989586621684511914"><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511914"><span class="hs-identifier hs-var">exts</span></a></span></span><span> </span><span id="local-6989586621684511913"><span class="annot"><span class="annottext">DimDecl VName
+</span><a href="#local-6989586621684511913"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-120"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">DimDecl VName
+</span><a href="#local-6989586621684511913"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-121"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#AnyDim"><span class="hs-identifier hs-type">E.AnyDim</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Ext SubExp
+forall a. Int -&gt; Ext a
+</span><a href="Futhark.IR.Syntax.Core.html#Ext"><span class="hs-identifier hs-var">Ext</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Ext SubExp)
+-&gt; InternaliseTypeM Int -&gt; InternaliseTypeM (Ext SubExp)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">InternaliseTypeM Int
+</span><a href="Futhark.Internalise.TypesValues.html#newId"><span class="hs-identifier hs-var">newId</span></a></span><span>
+</span><span id="line-122"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#ConstDim"><span class="hs-identifier hs-type">E.ConstDim</span></a></span><span> </span><span id="local-6989586621684511909"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511909"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ext SubExp -&gt; InternaliseTypeM (Ext SubExp)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Ext SubExp -&gt; InternaliseTypeM (Ext SubExp))
+-&gt; Ext SubExp -&gt; InternaliseTypeM (Ext SubExp)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Ext SubExp
+forall a. a -&gt; Ext a
+</span><a href="Futhark.IR.Syntax.Core.html#Free"><span class="hs-identifier hs-var">Free</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; Ext SubExp) -&gt; SubExp -&gt; Ext SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">I.Int64</span></a></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; SubExp) -&gt; Integer -&gt; SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511909"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-123"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#NamedDim"><span class="hs-identifier hs-type">E.NamedDim</span></a></span><span> </span><span id="local-6989586621684511904"><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684511904"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">QualName VName -&gt; InternaliseTypeM (Ext SubExp)
+</span><a href="#local-6989586621684511903"><span class="hs-identifier hs-var">namedDim</span></a></span><span> </span><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684511904"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-125"></span><span>    </span><span id="local-6989586621684511903"><span class="annot"><span class="annottext">namedDim :: QualName VName -&gt; InternaliseTypeM (Ext SubExp)
+</span><a href="#local-6989586621684511903"><span class="hs-identifier hs-var hs-var">namedDim</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#QualName"><span class="hs-identifier hs-type">E.QualName</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684511896"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684511896"><span class="hs-identifier hs-var">name</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684511895"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511895"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684511896"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Map VName Int -&gt; Maybe Int
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-operator hs-var">`M.lookup`</span></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511914"><span class="hs-identifier hs-var">exts</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ext SubExp -&gt; InternaliseTypeM (Ext SubExp)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Ext SubExp -&gt; InternaliseTypeM (Ext SubExp))
+-&gt; Ext SubExp -&gt; InternaliseTypeM (Ext SubExp)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Ext SubExp
+forall a. Int -&gt; Ext a
+</span><a href="Futhark.IR.Syntax.Core.html#Ext"><span class="hs-identifier hs-var">I.Ext</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511895"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-127"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-128"></span><span>        </span><span id="local-6989586621684511893"><span class="annot"><span class="annottext">Maybe [SubExp]
+</span><a href="#local-6989586621684511893"><span class="hs-identifier hs-var">subst</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">InternaliseM (Maybe [SubExp]) -&gt; InternaliseTypeM (Maybe [SubExp])
+forall a. InternaliseM a -&gt; InternaliseTypeM a
+</span><a href="Futhark.Internalise.TypesValues.html#liftInternaliseM"><span class="hs-identifier hs-var">liftInternaliseM</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseM (Maybe [SubExp])
+ -&gt; InternaliseTypeM (Maybe [SubExp]))
+-&gt; InternaliseM (Maybe [SubExp])
+-&gt; InternaliseTypeM (Maybe [SubExp])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; InternaliseM (Maybe [SubExp])
+</span><a href="Futhark.Internalise.Monad.html#lookupSubst"><span class="hs-identifier hs-var">lookupSubst</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684511896"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-129"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe [SubExp]
+</span><a href="#local-6989586621684511893"><span class="hs-identifier hs-var">subst</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-130"></span><span>          </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">[</span><span id="local-6989586621684511891"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684511891"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ext SubExp -&gt; InternaliseTypeM (Ext SubExp)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Ext SubExp -&gt; InternaliseTypeM (Ext SubExp))
+-&gt; Ext SubExp -&gt; InternaliseTypeM (Ext SubExp)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Ext SubExp
+forall a. a -&gt; Ext a
+</span><a href="Futhark.IR.Syntax.Core.html#Free"><span class="hs-identifier hs-var">I.Free</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684511891"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-131"></span><span>          </span><span class="annot"><span class="annottext">Maybe [SubExp]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ext SubExp -&gt; InternaliseTypeM (Ext SubExp)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Ext SubExp -&gt; InternaliseTypeM (Ext SubExp))
+-&gt; Ext SubExp -&gt; InternaliseTypeM (Ext SubExp)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Ext SubExp
+forall a. a -&gt; Ext a
+</span><a href="Futhark.IR.Syntax.Core.html#Free"><span class="hs-identifier hs-var">I.Free</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; Ext SubExp) -&gt; SubExp -&gt; Ext SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">I.Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684511896"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-type">internaliseTypeM</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-134"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-135"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#StructType"><span class="hs-identifier hs-type">E.StructType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-136"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#InternaliseTypeM"><span class="hs-identifier hs-type">InternaliseTypeM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtShape"><span class="hs-identifier hs-type">ExtShape</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">Uniqueness</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-137"></span><span id="internaliseTypeM"><span class="annot"><span class="annottext">internaliseTypeM :: Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var hs-var">internaliseTypeM</span></a></span></span><span> </span><span id="local-6989586621684511889"><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511889"><span class="hs-identifier hs-var">exts</span></a></span></span><span> </span><span id="local-6989586621684511888"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511888"><span class="hs-identifier hs-var">orig_t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-138"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511888"><span class="hs-identifier hs-var">orig_t</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-139"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#Array"><span class="hs-identifier hs-type">E.Array</span></a></span><span> </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684511886"><span class="annot"><span class="annottext">Uniqueness
+</span><a href="#local-6989586621684511886"><span class="hs-identifier hs-var">u</span></a></span></span><span> </span><span id="local-6989586621684511885"><span class="annot"><span class="annottext">ScalarTypeBase (DimDecl VName) ()
+</span><a href="#local-6989586621684511885"><span class="hs-identifier hs-var">et</span></a></span></span><span> </span><span id="local-6989586621684511884"><span class="annot"><span class="annottext">ShapeDecl (DimDecl VName)
+</span><a href="#local-6989586621684511884"><span class="hs-identifier hs-var">shape</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-140"></span><span>      </span><span id="local-6989586621684511883"><span class="annot"><span class="annottext">[Ext SubExp]
+</span><a href="#local-6989586621684511883"><span class="hs-identifier hs-var">dims</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ShapeDecl (DimDecl VName) -&gt; InternaliseTypeM [Ext SubExp]
+</span><a href="#local-6989586621684511882"><span class="hs-identifier hs-var">internaliseShape</span></a></span><span> </span><span class="annot"><span class="annottext">ShapeDecl (DimDecl VName)
+</span><a href="#local-6989586621684511884"><span class="hs-identifier hs-var">shape</span></a></span><span>
+</span><span id="line-141"></span><span>      </span><span id="local-6989586621684511881"><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness]
+</span><a href="#local-6989586621684511881"><span class="hs-identifier hs-var">ets</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var">internaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511889"><span class="hs-identifier hs-var">exts</span></a></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ScalarTypeBase (DimDecl VName) () -&gt; StructType
+forall dim as. ScalarTypeBase dim as -&gt; TypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-var">E.Scalar</span></a></span><span> </span><span class="annot"><span class="annottext">ScalarTypeBase (DimDecl VName) ()
+</span><a href="#local-6989586621684511885"><span class="hs-identifier hs-var">et</span></a></span><span>
+</span><span id="line-142"></span><span>      </span><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">TypeBase ExtShape Uniqueness
+-&gt; ExtShape -&gt; Uniqueness -&gt; TypeBase ExtShape Uniqueness
+forall shape u_unused u.
+ArrayShape shape =&gt;
+TypeBase shape u_unused -&gt; shape -&gt; u -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Prop.Types.html#arrayOf"><span class="hs-identifier hs-var">I.arrayOf</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase ExtShape Uniqueness
+</span><a href="#local-6989586621684511878"><span class="hs-identifier hs-var">et'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Ext SubExp] -&gt; ExtShape
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="annot"><span class="annottext">[Ext SubExp]
+</span><a href="#local-6989586621684511883"><span class="hs-identifier hs-var">dims</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Uniqueness -&gt; TypeBase ExtShape Uniqueness)
+-&gt; Uniqueness -&gt; TypeBase ExtShape Uniqueness
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Uniqueness -&gt; Uniqueness
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseUniqueness"><span class="hs-identifier hs-var">internaliseUniqueness</span></a></span><span> </span><span class="annot"><span class="annottext">Uniqueness
+</span><a href="#local-6989586621684511886"><span class="hs-identifier hs-var">u</span></a></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="local-6989586621684511878"><span class="annot"><span class="annottext">TypeBase ExtShape Uniqueness
+</span><a href="#local-6989586621684511878"><span class="hs-identifier hs-var">et'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness]
+</span><a href="#local-6989586621684511881"><span class="hs-identifier hs-var">ets</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-143"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-type">E.Scalar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Prim"><span class="hs-identifier hs-type">E.Prim</span></a></span><span> </span><span id="local-6989586621684511875"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684511875"><span class="hs-identifier hs-var">bt</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-144"></span><span>      </span><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; TypeBase ExtShape Uniqueness
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">I.Prim</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; TypeBase ExtShape Uniqueness)
+-&gt; PrimType -&gt; TypeBase ExtShape Uniqueness
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; PrimType
+</span><a href="Futhark.Internalise.TypesValues.html#internalisePrimType"><span class="hs-identifier hs-var">internalisePrimType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684511875"><span class="hs-identifier hs-var">bt</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-145"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-type">E.Scalar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Record"><span class="hs-identifier hs-type">E.Record</span></a></span><span> </span><span id="local-6989586621684511872"><span class="annot"><span class="annottext">Map Name StructType
+</span><a href="#local-6989586621684511872"><span class="hs-identifier hs-var">ets</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-146"></span><span>      </span><span class="hs-comment">-- XXX: we map empty records to units, because otherwise</span><span>
+</span><span id="line-147"></span><span>      </span><span class="hs-comment">-- arrays of unit will lose their sizes.</span><span>
+</span><span id="line-148"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Map Name StructType -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">null</span></span><span> </span><span class="annot"><span class="annottext">Map Name StructType
+</span><a href="#local-6989586621684511872"><span class="hs-identifier hs-var">ets</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; TypeBase ExtShape Uniqueness
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">I.Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Primitive.html#Unit"><span class="hs-identifier hs-var">I.Unit</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-149"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-150"></span><span>        </span><span class="annot"><span class="annottext">[[TypeBase ExtShape Uniqueness]] -&gt; [TypeBase ExtShape Uniqueness]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">([[TypeBase ExtShape Uniqueness]]
+ -&gt; [TypeBase ExtShape Uniqueness])
+-&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">((Name, StructType)
+ -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; [(Name, StructType)]
+-&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var">internaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511889"><span class="hs-identifier hs-var">exts</span></a></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; ((Name, StructType) -&gt; StructType)
+-&gt; (Name, StructType)
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Name, StructType) -&gt; StructType
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map Name StructType -&gt; [(Name, StructType)]
+forall a. Map Name a -&gt; [(Name, a)]
+</span><a href="Language.Futhark.Prop.html#sortFields"><span class="hs-identifier hs-var">E.sortFields</span></a></span><span> </span><span class="annot"><span class="annottext">Map Name StructType
+</span><a href="#local-6989586621684511872"><span class="hs-identifier hs-var">ets</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-type">E.Scalar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeVar"><span class="hs-identifier hs-type">E.TypeVar</span></a></span><span> </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684511868"><span class="annot"><span class="annottext">Uniqueness
+</span><a href="#local-6989586621684511868"><span class="hs-identifier hs-var">u</span></a></span></span><span> </span><span id="local-6989586621684511867"><span class="annot"><span class="annottext">TypeName
+</span><a href="#local-6989586621684511867"><span class="hs-identifier hs-var">tn</span></a></span></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeArgType"><span class="hs-identifier hs-type">E.TypeArgType</span></a></span><span> </span><span id="local-6989586621684511865"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511865"><span class="hs-identifier hs-var">arr_t</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-152"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Int
+</span><a href="Language.Futhark.Core.html#baseTag"><span class="hs-identifier hs-var">baseTag</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeName -&gt; VName
+</span><a href="Language.Futhark.Syntax.html#typeLeaf"><span class="hs-identifier hs-var hs-var">E.typeLeaf</span></a></span><span> </span><span class="annot"><span class="annottext">TypeName
+</span><a href="#local-6989586621684511867"><span class="hs-identifier hs-var">tn</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Language.Futhark.Prop.html#maxIntrinsicTag"><span class="hs-identifier hs-var">E.maxIntrinsicTag</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-153"></span><span>        </span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeName -&gt; VName
+</span><a href="Language.Futhark.Syntax.html#typeLeaf"><span class="hs-identifier hs-var hs-var">E.typeLeaf</span></a></span><span> </span><span class="annot"><span class="annottext">TypeName
+</span><a href="#local-6989586621684511867"><span class="hs-identifier hs-var">tn</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;acc&quot;</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-154"></span><span>        </span><span id="local-6989586621684511859"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684511859"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(TypeBase ExtShape Uniqueness -&gt; Type)
+-&gt; [TypeBase ExtShape Uniqueness] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase Shape Uniqueness -&gt; Type
+forall shape.
+TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness
+</span><a href="Futhark.IR.Prop.Types.html#fromDecl"><span class="hs-identifier hs-var">fromDecl</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase Shape Uniqueness -&gt; Type)
+-&gt; (TypeBase ExtShape Uniqueness -&gt; TypeBase Shape Uniqueness)
+-&gt; TypeBase ExtShape Uniqueness
+-&gt; Type
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">TypeBase ExtShape Uniqueness -&gt; TypeBase Shape Uniqueness
+forall {u}. TypeBase ExtShape u -&gt; TypeBase Shape u
+</span><a href="#local-6989586621684511858"><span class="hs-identifier hs-var">onAccType</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([TypeBase ExtShape Uniqueness] -&gt; [Type])
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+-&gt; InternaliseTypeM [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var">internaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511889"><span class="hs-identifier hs-var">exts</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511865"><span class="hs-identifier hs-var">arr_t</span></a></span><span>
+</span><span id="line-155"></span><span>        </span><span id="local-6989586621684511857"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684511857"><span class="hs-identifier hs-var">acc_param</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">InternaliseM VName -&gt; InternaliseTypeM VName
+forall a. InternaliseM a -&gt; InternaliseTypeM a
+</span><a href="Futhark.Internalise.TypesValues.html#liftInternaliseM"><span class="hs-identifier hs-var">liftInternaliseM</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseM VName -&gt; InternaliseTypeM VName)
+-&gt; InternaliseM VName -&gt; InternaliseTypeM VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; InternaliseM VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;acc_cert&quot;</span></span><span>
+</span><span id="line-156"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684511855"><span class="annot"><span class="annottext">acc_t :: TypeBase shape Uniqueness
+</span><a href="#local-6989586621684511855"><span class="hs-identifier hs-var hs-var">acc_t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Shape -&gt; [Type] -&gt; Uniqueness -&gt; TypeBase shape Uniqueness
+forall shape u. VName -&gt; Shape -&gt; [Type] -&gt; u -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Acc"><span class="hs-identifier hs-var">Acc</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684511857"><span class="hs-identifier hs-var">acc_param</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; Shape
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int -&gt; [Type] -&gt; SubExp
+forall u. Int -&gt; [TypeBase Shape u] -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Types.html#arraysSize"><span class="hs-identifier hs-var">arraysSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684511859"><span class="hs-identifier hs-var">ts</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Type -&gt; Type) -&gt; [Type] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; Type
+forall u. TypeBase Shape u -&gt; TypeBase Shape u
+</span><a href="Futhark.IR.Prop.Types.html#rowType"><span class="hs-identifier hs-var">rowType</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684511859"><span class="hs-identifier hs-var">ts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Uniqueness -&gt; TypeBase shape Uniqueness)
+-&gt; Uniqueness -&gt; TypeBase shape Uniqueness
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Uniqueness -&gt; Uniqueness
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseUniqueness"><span class="hs-identifier hs-var">internaliseUniqueness</span></a></span><span> </span><span class="annot"><span class="annottext">Uniqueness
+</span><a href="#local-6989586621684511868"><span class="hs-identifier hs-var">u</span></a></span><span>
+</span><span id="line-157"></span><span>        </span><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">TypeBase ExtShape Uniqueness
+forall {shape}. TypeBase shape Uniqueness
+</span><a href="#local-6989586621684511855"><span class="hs-identifier hs-var">acc_t</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-158"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-type">E.Scalar</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeVar"><span class="hs-identifier hs-type">E.TypeVar</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-159"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;internaliseTypeM: cannot handle type variable.&quot;</span></span><span>
+</span><span id="line-160"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-type">E.Scalar</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#Arrow"><span class="hs-identifier hs-type">E.Arrow</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-161"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; String -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;internaliseTypeM: cannot handle function type: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">StructType -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511888"><span class="hs-identifier hs-var">orig_t</span></a></span><span>
+</span><span id="line-162"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-type">E.Scalar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Sum"><span class="hs-identifier hs-type">E.Sum</span></a></span><span> </span><span id="local-6989586621684511850"><span class="annot"><span class="annottext">Map Name [StructType]
+</span><a href="#local-6989586621684511850"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-163"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684511849"><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness]
+</span><a href="#local-6989586621684511849"><span class="hs-identifier hs-var">ts</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Map Name (Int, [Int])
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-164"></span><span>        </span><span class="annot"><span class="annottext">Map Name [TypeBase ExtShape Uniqueness]
+-&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseConstructors"><span class="hs-identifier hs-var">internaliseConstructors</span></a></span><span>
+</span><span id="line-165"></span><span>          </span><span class="annot"><span class="annottext">(Map Name [TypeBase ExtShape Uniqueness]
+ -&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int])))
+-&gt; InternaliseTypeM (Map Name [TypeBase ExtShape Uniqueness])
+-&gt; InternaliseTypeM
+     ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">([StructType] -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; Map Name [StructType]
+-&gt; InternaliseTypeM (Map Name [TypeBase ExtShape Uniqueness])
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f (t b)
+</span><span class="hs-identifier hs-var">traverse</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">([[TypeBase ExtShape Uniqueness]]
+ -&gt; [TypeBase ExtShape Uniqueness])
+-&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">[[TypeBase ExtShape Uniqueness]] -&gt; [TypeBase ExtShape Uniqueness]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">(InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+ -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; ([StructType]
+    -&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]])
+-&gt; [StructType]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; [StructType]
+-&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var">internaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511889"><span class="hs-identifier hs-var">exts</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Map Name [StructType]
+</span><a href="#local-6989586621684511850"><span class="hs-identifier hs-var">cs</span></a></span><span>
+</span><span id="line-166"></span><span>      </span><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">([TypeBase ExtShape Uniqueness]
+ -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; [TypeBase ExtShape Uniqueness]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; TypeBase ExtShape Uniqueness
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">I.Prim</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-var">I.IntType</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int8"><span class="hs-identifier hs-var">I.Int8</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">TypeBase ExtShape Uniqueness
+-&gt; [TypeBase ExtShape Uniqueness] -&gt; [TypeBase ExtShape Uniqueness]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness]
+</span><a href="#local-6989586621684511849"><span class="hs-identifier hs-var">ts</span></a></span><span>
+</span><span id="line-167"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-168"></span><span>    </span><span id="local-6989586621684511882"><span class="annot"><span class="annottext">internaliseShape :: ShapeDecl (DimDecl VName) -&gt; InternaliseTypeM [Ext SubExp]
+</span><a href="#local-6989586621684511882"><span class="hs-identifier hs-var hs-var">internaliseShape</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(DimDecl VName -&gt; InternaliseTypeM (Ext SubExp))
+-&gt; [DimDecl VName] -&gt; InternaliseTypeM [Ext SubExp]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName Int -&gt; DimDecl VName -&gt; InternaliseTypeM (Ext SubExp)
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseDim"><span class="hs-identifier hs-var">internaliseDim</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684511889"><span class="hs-identifier hs-var">exts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([DimDecl VName] -&gt; InternaliseTypeM [Ext SubExp])
+-&gt; (ShapeDecl (DimDecl VName) -&gt; [DimDecl VName])
+-&gt; ShapeDecl (DimDecl VName)
+-&gt; InternaliseTypeM [Ext SubExp]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ShapeDecl (DimDecl VName) -&gt; [DimDecl VName]
+forall dim. ShapeDecl dim -&gt; [dim]
+</span><a href="Language.Futhark.Syntax.html#shapeDims"><span class="hs-identifier hs-var hs-var">E.shapeDims</span></a></span><span>
+</span><span id="line-169"></span><span>
+</span><span id="line-170"></span><span>    </span><span id="local-6989586621684511858"><span class="annot"><span class="annottext">onAccType :: TypeBase ExtShape u -&gt; TypeBase Shape u
+</span><a href="#local-6989586621684511858"><span class="hs-identifier hs-var hs-var">onAccType</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TypeBase Shape u -&gt; Maybe (TypeBase Shape u) -&gt; TypeBase Shape u
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="annot"><span class="annottext">TypeBase Shape u
+forall {a}. a
+</span><a href="#local-6989586621684511841"><span class="hs-identifier hs-var">bad</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe (TypeBase Shape u) -&gt; TypeBase Shape u)
+-&gt; (TypeBase ExtShape u -&gt; Maybe (TypeBase Shape u))
+-&gt; TypeBase ExtShape u
+-&gt; TypeBase Shape u
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">TypeBase ExtShape u -&gt; Maybe (TypeBase Shape u)
+forall u. TypeBase ExtShape u -&gt; Maybe (TypeBase Shape u)
+</span><a href="Futhark.IR.Prop.Types.html#hasStaticShape"><span class="hs-identifier hs-var">hasStaticShape</span></a></span><span>
+</span><span id="line-171"></span><span>    </span><span id="local-6989586621684511841"><span class="annot"><span class="annottext">bad :: a
+</span><a href="#local-6989586621684511841"><span class="hs-identifier hs-var hs-var">bad</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; a
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; a) -&gt; String -&gt; a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;internaliseTypeM Acc: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">StructType -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684511888"><span class="hs-identifier hs-var">orig_t</span></a></span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseConstructors"><span class="hs-identifier hs-type">internaliseConstructors</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-174"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtShape"><span class="hs-identifier hs-type">ExtShape</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">Uniqueness</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-175"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtShape"><span class="hs-identifier hs-type">ExtShape</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">Uniqueness</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-176"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-177"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-178"></span><span id="internaliseConstructors"><span class="annot"><span class="annottext">internaliseConstructors :: Map Name [TypeBase ExtShape Uniqueness]
+-&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseConstructors"><span class="hs-identifier hs-var hs-var">internaliseConstructors</span></a></span></span><span> </span><span id="local-6989586621684511835"><span class="annot"><span class="annottext">Map Name [TypeBase ExtShape Uniqueness]
+</span><a href="#local-6989586621684511835"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-179"></span><span>  </span><span class="annot"><span class="annottext">(([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+ -&gt; ((Name, [TypeBase ExtShape Uniqueness]), Int)
+ -&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int])))
+-&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+-&gt; [((Name, [TypeBase ExtShape Uniqueness]), Int)]
+-&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl'</span></span><span> </span><span class="annot"><span class="annottext">([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+-&gt; ((Name, [TypeBase ExtShape Uniqueness]), Int)
+-&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+forall {k} {t :: * -&gt; *} {shape} {a}.
+(Ord k, Foldable t, Eq shape) =&gt;
+([TypeBase shape Uniqueness], Map k (a, [Int]))
+-&gt; ((k, t (TypeBase shape Uniqueness)), a)
+-&gt; ([TypeBase shape Uniqueness], Map k (a, [Int]))
+</span><a href="#local-6989586621684511834"><span class="hs-identifier hs-var">onConstructor</span></a></span><span> </span><span class="annot"><span class="annottext">([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">([((Name, [TypeBase ExtShape Uniqueness]), Int)]
+ -&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int])))
+-&gt; [((Name, [TypeBase ExtShape Uniqueness]), Int)]
+-&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(Name, [TypeBase ExtShape Uniqueness])]
+-&gt; [Int] -&gt; [((Name, [TypeBase ExtShape Uniqueness]), Int)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map Name [TypeBase ExtShape Uniqueness]
+-&gt; [(Name, [TypeBase ExtShape Uniqueness])]
+forall a. Map Name a -&gt; [(Name, a)]
+</span><a href="Language.Futhark.Prop.html#sortConstrs"><span class="hs-identifier hs-var">E.sortConstrs</span></a></span><span> </span><span class="annot"><span class="annottext">Map Name [TypeBase ExtShape Uniqueness]
+</span><a href="#local-6989586621684511835"><span class="hs-identifier hs-var">cs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span class="hs-special">]</span><span>
+</span><span id="line-180"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-181"></span><span>    </span><span id="local-6989586621684511834"><span class="annot"><span class="annottext">onConstructor :: ([TypeBase shape Uniqueness], Map k (a, [Int]))
+-&gt; ((k, t (TypeBase shape Uniqueness)), a)
+-&gt; ([TypeBase shape Uniqueness], Map k (a, [Int]))
+</span><a href="#local-6989586621684511834"><span class="hs-identifier hs-var hs-var">onConstructor</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684511828"><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511828"><span class="hs-identifier hs-var">ts</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684511827"><span class="annot"><span class="annottext">Map k (a, [Int])
+</span><a href="#local-6989586621684511827"><span class="hs-identifier hs-var">mapping</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684511826"><span class="annot"><span class="annottext">k
+</span><a href="#local-6989586621684511826"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684511825"><span class="annot"><span class="annottext">t (TypeBase shape Uniqueness)
+</span><a href="#local-6989586621684511825"><span class="hs-identifier hs-var">c_ts</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684511824"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684511824"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-182"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(TypeBase shape NoUniqueness, Int)]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684511817"><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684511817"><span class="hs-identifier hs-var">js</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684511816"><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511816"><span class="hs-identifier hs-var">new_ts</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-183"></span><span>            </span><span class="annot"><span class="annottext">(([(TypeBase shape NoUniqueness, Int)], [Int],
+  [TypeBase shape Uniqueness])
+ -&gt; TypeBase shape Uniqueness
+ -&gt; ([(TypeBase shape NoUniqueness, Int)], [Int],
+     [TypeBase shape Uniqueness]))
+-&gt; ([(TypeBase shape NoUniqueness, Int)], [Int],
+    [TypeBase shape Uniqueness])
+-&gt; t (TypeBase shape Uniqueness)
+-&gt; ([(TypeBase shape NoUniqueness, Int)], [Int],
+    [TypeBase shape Uniqueness])
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl'</span></span><span> </span><span class="annot"><span class="annottext">([(TypeBase shape NoUniqueness, Int)], [Int],
+ [TypeBase shape Uniqueness])
+-&gt; TypeBase shape Uniqueness
+-&gt; ([(TypeBase shape NoUniqueness, Int)], [Int],
+    [TypeBase shape Uniqueness])
+forall {shape}.
+Eq shape =&gt;
+([(TypeBase shape NoUniqueness, Int)], [Int],
+ [TypeBase shape Uniqueness])
+-&gt; TypeBase shape Uniqueness
+-&gt; ([(TypeBase shape NoUniqueness, Int)], [Int],
+    [TypeBase shape Uniqueness])
+</span><a href="#local-6989586621684511815"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[TypeBase shape NoUniqueness]
+-&gt; [Int] -&gt; [(TypeBase shape NoUniqueness, Int)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness)
+-&gt; [TypeBase shape Uniqueness] -&gt; [TypeBase shape NoUniqueness]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness
+forall shape.
+TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness
+</span><a href="Futhark.IR.Prop.Types.html#fromDecl"><span class="hs-identifier hs-var">fromDecl</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511828"><span class="hs-identifier hs-var">ts</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Int]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">t (TypeBase shape Uniqueness)
+</span><a href="#local-6989586621684511825"><span class="hs-identifier hs-var">c_ts</span></a></span><span>
+</span><span id="line-184"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511828"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+-&gt; [TypeBase shape Uniqueness] -&gt; [TypeBase shape Uniqueness]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511816"><span class="hs-identifier hs-var">new_ts</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">k -&gt; (a, [Int]) -&gt; Map k (a, [Int]) -&gt; Map k (a, [Int])
+forall k a. Ord k =&gt; k -&gt; a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.insert</span></span><span> </span><span class="annot"><span class="annottext">k
+</span><a href="#local-6989586621684511826"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684511824"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684511817"><span class="hs-identifier hs-var">js</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Map k (a, [Int])
+</span><a href="#local-6989586621684511827"><span class="hs-identifier hs-var">mapping</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-185"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-186"></span><span>        </span><span id="local-6989586621684511815"><span class="annot"><span class="annottext">f :: ([(TypeBase shape NoUniqueness, Int)], [Int],
+ [TypeBase shape Uniqueness])
+-&gt; TypeBase shape Uniqueness
+-&gt; ([(TypeBase shape NoUniqueness, Int)], [Int],
+    [TypeBase shape Uniqueness])
+</span><a href="#local-6989586621684511815"><span class="hs-identifier hs-var hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684511799"><span class="annot"><span class="annottext">[(TypeBase shape NoUniqueness, Int)]
+</span><a href="#local-6989586621684511799"><span class="hs-identifier hs-var">ts'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684511798"><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684511798"><span class="hs-identifier hs-var">js</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684511797"><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511797"><span class="hs-identifier hs-var">new_ts</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684511796"><span class="annot"><span class="annottext">TypeBase shape Uniqueness
+</span><a href="#local-6989586621684511796"><span class="hs-identifier hs-var">t</span></a></span></span><span>
+</span><span id="line-187"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase shape NoUniqueness
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684511795"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511795"><span class="hs-identifier hs-var">j</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">((TypeBase shape NoUniqueness, Int) -&gt; Bool)
+-&gt; [(TypeBase shape NoUniqueness, Int)]
+-&gt; Maybe (TypeBase shape NoUniqueness, Int)
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">find</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase shape NoUniqueness -&gt; TypeBase shape NoUniqueness -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness
+forall shape.
+TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness
+</span><a href="Futhark.IR.Prop.Types.html#fromDecl"><span class="hs-identifier hs-var">fromDecl</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase shape Uniqueness
+</span><a href="#local-6989586621684511796"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(TypeBase shape NoUniqueness -&gt; Bool)
+-&gt; ((TypeBase shape NoUniqueness, Int)
+    -&gt; TypeBase shape NoUniqueness)
+-&gt; (TypeBase shape NoUniqueness, Int)
+-&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(TypeBase shape NoUniqueness, Int) -&gt; TypeBase shape NoUniqueness
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(TypeBase shape NoUniqueness, Int)]
+</span><a href="#local-6989586621684511799"><span class="hs-identifier hs-var">ts'</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-188"></span><span>            </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">(TypeBase shape NoUniqueness, Int)
+-&gt; [(TypeBase shape NoUniqueness, Int)]
+-&gt; [(TypeBase shape NoUniqueness, Int)]
+forall a. Eq a =&gt; a -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">delete</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness
+forall shape.
+TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness
+</span><a href="Futhark.IR.Prop.Types.html#fromDecl"><span class="hs-identifier hs-var">fromDecl</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase shape Uniqueness
+</span><a href="#local-6989586621684511796"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511795"><span class="hs-identifier hs-var">j</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(TypeBase shape NoUniqueness, Int)]
+</span><a href="#local-6989586621684511799"><span class="hs-identifier hs-var">ts'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-189"></span><span>              </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684511798"><span class="hs-identifier hs-var">js</span></a></span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [Int] -&gt; [Int]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684511795"><span class="hs-identifier hs-var">j</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-190"></span><span>              </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511797"><span class="hs-identifier hs-var">new_ts</span></a></span><span>
+</span><span id="line-191"></span><span>            </span><span class="hs-special">)</span><span>
+</span><span id="line-192"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-193"></span><span>            </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">[(TypeBase shape NoUniqueness, Int)]
+</span><a href="#local-6989586621684511799"><span class="hs-identifier hs-var">ts'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-194"></span><span>              </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684511798"><span class="hs-identifier hs-var">js</span></a></span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [Int] -&gt; [Int]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511828"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511797"><span class="hs-identifier hs-var">new_ts</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-195"></span><span>              </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+</span><a href="#local-6989586621684511797"><span class="hs-identifier hs-var">new_ts</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase shape Uniqueness]
+-&gt; [TypeBase shape Uniqueness] -&gt; [TypeBase shape Uniqueness]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">TypeBase shape Uniqueness
+</span><a href="#local-6989586621684511796"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-196"></span><span>            </span><span class="hs-special">)</span><span>
+</span><span id="line-197"></span><span>
+</span><span id="line-198"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internaliseSumType"><span class="hs-identifier hs-type">internaliseSumType</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-199"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Syntax.html#StructType"><span class="hs-identifier hs-type">E.StructType</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-200"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span>
+</span><span id="line-201"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">I.TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtShape"><span class="hs-identifier hs-type">ExtShape</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Uniqueness"><span class="hs-identifier hs-type">Uniqueness</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-202"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-204"></span><span id="internaliseSumType"><span class="annot"><span class="annottext">internaliseSumType :: Map Name [StructType]
+-&gt; InternaliseM
+     ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseSumType"><span class="hs-identifier hs-var hs-var">internaliseSumType</span></a></span></span><span> </span><span id="local-6989586621684511794"><span class="annot"><span class="annottext">Map Name [StructType]
+</span><a href="#local-6989586621684511794"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-205"></span><span>  </span><span class="annot"><span class="annottext">InternaliseTypeM
+  ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+-&gt; InternaliseM
+     ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+forall a. InternaliseTypeM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.TypesValues.html#runInternaliseTypeM"><span class="hs-identifier hs-var">runInternaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseTypeM
+   ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+ -&gt; InternaliseM
+      ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int])))
+-&gt; InternaliseTypeM
+     ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+-&gt; InternaliseM
+     ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-206"></span><span>    </span><span class="annot"><span class="annottext">Map Name [TypeBase ExtShape Uniqueness]
+-&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseConstructors"><span class="hs-identifier hs-var">internaliseConstructors</span></a></span><span>
+</span><span id="line-207"></span><span>      </span><span class="annot"><span class="annottext">(Map Name [TypeBase ExtShape Uniqueness]
+ -&gt; ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int])))
+-&gt; InternaliseTypeM (Map Name [TypeBase ExtShape Uniqueness])
+-&gt; InternaliseTypeM
+     ([TypeBase ExtShape Uniqueness], Map Name (Int, [Int]))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">([StructType] -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; Map Name [StructType]
+-&gt; InternaliseTypeM (Map Name [TypeBase ExtShape Uniqueness])
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f (t b)
+</span><span class="hs-identifier hs-var">traverse</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">([[TypeBase ExtShape Uniqueness]]
+ -&gt; [TypeBase ExtShape Uniqueness])
+-&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">[[TypeBase ExtShape Uniqueness]] -&gt; [TypeBase ExtShape Uniqueness]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">(InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+ -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; ([StructType]
+    -&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]])
+-&gt; [StructType]
+-&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness])
+-&gt; [StructType]
+-&gt; InternaliseTypeM [[TypeBase ExtShape Uniqueness]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName Int
+-&gt; StructType -&gt; InternaliseTypeM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseTypeM"><span class="hs-identifier hs-var">internaliseTypeM</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Int
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Map Name [StructType]
+</span><a href="#local-6989586621684511794"><span class="hs-identifier hs-var">cs</span></a></span><span>
+</span><span id="line-208"></span><span>
+</span><span id="line-209"></span><span class="hs-comment">-- | How many core language values are needed to represent one source</span><span>
+</span><span id="line-210"></span><span class="hs-comment">-- language value of the given type?</span><span>
+</span><span id="line-211"></span><span id="local-6989586621684512207"><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisedTypeSize"><span class="hs-identifier hs-type">internalisedTypeSize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeBase"><span class="hs-identifier hs-type">E.TypeBase</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#DimDecl"><span class="hs-identifier hs-type">E.DimDecl</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684512207"><span class="hs-identifier hs-type">als</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span></span><span>
+</span><span id="line-212"></span><span class="hs-comment">-- A few special cases for performance.</span><span>
+</span><span id="line-213"></span><span id="internalisedTypeSize"><span class="annot"><span class="annottext">internalisedTypeSize :: forall als. TypeBase (DimDecl VName) als -&gt; InternaliseM Int
+</span><a href="Futhark.Internalise.TypesValues.html#internalisedTypeSize"><span class="hs-identifier hs-var hs-var">internalisedTypeSize</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-type">E.Scalar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Prim"><span class="hs-identifier hs-type">E.Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; InternaliseM Int
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-214"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisedTypeSize"><span class="hs-identifier hs-var">internalisedTypeSize</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Array"><span class="hs-identifier hs-type">E.Array</span></a></span><span> </span><span class="annot"><span class="annottext">als
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Uniqueness
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Prim"><span class="hs-identifier hs-type">E.Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ShapeDecl (DimDecl VName)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; InternaliseM Int
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-215"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisedTypeSize"><span class="hs-identifier hs-var">internalisedTypeSize</span></a></span><span> </span><span id="local-6989586621684511786"><span class="annot"><span class="annottext">TypeBase (DimDecl VName) als
+</span><a href="#local-6989586621684511786"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[TypeBase ExtShape Uniqueness] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">([TypeBase ExtShape Uniqueness] -&gt; Int)
+-&gt; InternaliseM [TypeBase ExtShape Uniqueness] -&gt; InternaliseM Int
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">StructType -&gt; InternaliseM [TypeBase ExtShape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseType"><span class="hs-identifier hs-var">internaliseType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) als
+</span><a href="#local-6989586621684511786"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) als -&gt; () -&gt; StructType
+forall dim asf ast. TypeBase dim asf -&gt; ast -&gt; TypeBase dim ast
+</span><a href="Language.Futhark.Prop.html#setAliases"><span class="hs-operator hs-var">`E.setAliases`</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-216"></span><span>
+</span><span id="line-217"></span><span class="hs-comment">-- | Convert an external primitive to an internal primitive.</span><span>
+</span><span id="line-218"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimType"><span class="hs-identifier hs-type">internalisePrimType</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#PrimType"><span class="hs-identifier hs-type">E.PrimType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Primitive.html#PrimType"><span class="hs-identifier hs-type">I.PrimType</span></a></span><span>
+</span><span id="line-219"></span><span id="internalisePrimType"><span class="annot"><span class="annottext">internalisePrimType :: PrimType -&gt; PrimType
+</span><a href="Futhark.Internalise.TypesValues.html#internalisePrimType"><span class="hs-identifier hs-var hs-var">internalisePrimType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Signed"><span class="hs-identifier hs-type">E.Signed</span></a></span><span> </span><span id="local-6989586621684511783"><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684511783"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntType -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-var">I.IntType</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684511783"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-220"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimType"><span class="hs-identifier hs-var">internalisePrimType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Unsigned"><span class="hs-identifier hs-type">E.Unsigned</span></a></span><span> </span><span id="local-6989586621684511781"><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684511781"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntType -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-var">I.IntType</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684511781"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-221"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimType"><span class="hs-identifier hs-var">internalisePrimType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#FloatType"><span class="hs-identifier hs-type">E.FloatType</span></a></span><span> </span><span id="local-6989586621684511779"><span class="annot"><span class="annottext">FloatType
+</span><a href="#local-6989586621684511779"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FloatType -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#FloatType"><span class="hs-identifier hs-var">I.FloatType</span></a></span><span> </span><span class="annot"><span class="annottext">FloatType
+</span><a href="#local-6989586621684511779"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-222"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimType"><span class="hs-identifier hs-var">internalisePrimType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Language.Futhark.Syntax.html#Bool"><span class="hs-identifier hs-var">E.Bool</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Primitive.html#Bool"><span class="hs-identifier hs-var">I.Bool</span></a></span><span>
+</span><span id="line-223"></span><span>
+</span><span id="line-224"></span><span class="hs-comment">-- | Convert an external primitive value to an internal primitive value.</span><span>
+</span><span id="line-225"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimValue"><span class="hs-identifier hs-type">internalisePrimValue</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#PrimValue"><span class="hs-identifier hs-type">E.PrimValue</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Primitive.html#PrimValue"><span class="hs-identifier hs-type">I.PrimValue</span></a></span><span>
+</span><span id="line-226"></span><span id="internalisePrimValue"><span class="annot"><span class="annottext">internalisePrimValue :: PrimValue -&gt; PrimValue
+</span><a href="Futhark.Internalise.TypesValues.html#internalisePrimValue"><span class="hs-identifier hs-var hs-var">internalisePrimValue</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#SignedValue"><span class="hs-identifier hs-type">E.SignedValue</span></a></span><span> </span><span id="local-6989586621684511774"><span class="annot"><span class="annottext">IntValue
+</span><a href="#local-6989586621684511774"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntValue -&gt; PrimValue
+</span><a href="Futhark.IR.Primitive.html#IntValue"><span class="hs-identifier hs-var">I.IntValue</span></a></span><span> </span><span class="annot"><span class="annottext">IntValue
+</span><a href="#local-6989586621684511774"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-227"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimValue"><span class="hs-identifier hs-var">internalisePrimValue</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#UnsignedValue"><span class="hs-identifier hs-type">E.UnsignedValue</span></a></span><span> </span><span id="local-6989586621684511771"><span class="annot"><span class="annottext">IntValue
+</span><a href="#local-6989586621684511771"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntValue -&gt; PrimValue
+</span><a href="Futhark.IR.Primitive.html#IntValue"><span class="hs-identifier hs-var">I.IntValue</span></a></span><span> </span><span class="annot"><span class="annottext">IntValue
+</span><a href="#local-6989586621684511771"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-228"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimValue"><span class="hs-identifier hs-var">internalisePrimValue</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#FloatValue"><span class="hs-identifier hs-type">E.FloatValue</span></a></span><span> </span><span id="local-6989586621684511769"><span class="annot"><span class="annottext">FloatValue
+</span><a href="#local-6989586621684511769"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FloatValue -&gt; PrimValue
+</span><a href="Futhark.IR.Primitive.html#FloatValue"><span class="hs-identifier hs-var">I.FloatValue</span></a></span><span> </span><span class="annot"><span class="annottext">FloatValue
+</span><a href="#local-6989586621684511769"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-229"></span><span class="annot"><a href="Futhark.Internalise.TypesValues.html#internalisePrimValue"><span class="hs-identifier hs-var">internalisePrimValue</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#BoolValue"><span class="hs-identifier hs-type">E.BoolValue</span></a></span><span> </span><span id="local-6989586621684511766"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621684511766"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; PrimValue
+</span><a href="Futhark.IR.Primitive.html#BoolValue"><span class="hs-identifier hs-var">I.BoolValue</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621684511766"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-230"></span></pre></body></html>

@@ -1,0 +1,1105 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ConstraintKinds #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- | &quot;Sinking&quot; is conceptually the opposite of hoisting.  The idea is</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- to take code that looks like this:</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- x = xs[i]</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- y = ys[i]</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- if x != 0 then {</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--   y</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- } else {</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--   0</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- }</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-17"></span><span class="hs-comment">--</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- and turn it into</span><span>
+</span><span id="line-19"></span><span class="hs-comment">--</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- x = xs[i]</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- if x != 0 then {</span><span>
+</span><span id="line-23"></span><span class="hs-comment">--   y = ys[i]</span><span>
+</span><span id="line-24"></span><span class="hs-comment">--   y</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- } else {</span><span>
+</span><span id="line-26"></span><span class="hs-comment">--   0</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- }</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- The idea is to delay loads from memory until (if) they are actually</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- needed.  Code patterns like the above is particularly common in</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- code that makes use of pattern matching on sum types.</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- We are currently quite conservative about when we do this.  In</span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- particular, if any consumption is going on in a body, we don't do</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- anything.  This is far too conservative.  Also, we are careful</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- never to duplicate work.</span><span>
+</span><span id="line-38"></span><span class="hs-comment">--</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- This pass redundantly computes free-variable information a lot.  If</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- you ever see this pass as being a compilation speed bottleneck,</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- start by caching that a bit.</span><span>
+</span><span id="line-42"></span><span class="hs-comment">--</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- This pass is defined on post-SOACS representations.  This is not</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- because we do anything GPU-specific here, but simply because more</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- explicit indexing is going on after SOACs are gone.</span><span>
+</span><span id="line-46"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Optimise.Sink</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Sink.html#sinkGPU"><span class="hs-identifier">sinkGPU</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Optimise.Sink.html#sinkMC"><span class="hs-identifier">sinkMC</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State</span></span><span>
+</span><span id="line-49"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bifunctor</span></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">foldl'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-52"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.Alias.html"><span class="hs-identifier">Futhark.Analysis.Alias</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Alias</span></span><span>
+</span><span id="line-53"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html"><span class="hs-identifier">Futhark.Analysis.SymbolTable</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">ST</span></span><span>
+</span><span id="line-54"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Aliases.html"><span class="hs-identifier">Futhark.IR.Aliases</span></a></span><span>
+</span><span id="line-55"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html"><span class="hs-identifier">Futhark.IR.GPU</span></a></span><span>
+</span><span id="line-56"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.MC.html"><span class="hs-identifier">Futhark.IR.MC</span></a></span><span>
+</span><span id="line-57"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pass.html"><span class="hs-identifier">Futhark.Pass</span></a></span><span>
+</span><span id="line-58"></span><span>
+</span><span id="line-59"></span><span class="hs-keyword">type</span><span> </span><span id="SymbolTable"><span class="annot"><a href="Futhark.Optimise.Sink.html#SymbolTable"><span class="hs-identifier hs-var">SymbolTable</span></a></span></span><span> </span><span id="local-6989586621684426360"><span class="annot"><a href="#local-6989586621684426360"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#SymbolTable"><span class="hs-identifier hs-type">ST.SymbolTable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426360"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="hs-keyword">type</span><span> </span><span id="Sinking"><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinking"><span class="hs-identifier hs-var">Sinking</span></a></span></span><span> </span><span id="local-6989586621684426359"><span class="annot"><a href="#local-6989586621684426359"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426359"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-keyword">type</span><span> </span><span id="Sunk"><span class="annot"><a href="Futhark.Optimise.Sink.html#Sunk"><span class="hs-identifier hs-var">Sunk</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#Names"><span class="hs-identifier hs-type">Names</span></a></span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span class="hs-keyword">type</span><span> </span><span id="Sinker"><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-var">Sinker</span></a></span></span><span> </span><span id="local-6989586621684426357"><span class="annot"><a href="#local-6989586621684426357"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684426356"><span class="annot"><a href="#local-6989586621684426356"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Sink.html#SymbolTable"><span class="hs-identifier hs-type">SymbolTable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426357"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinking"><span class="hs-identifier hs-type">Sinking</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426357"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684426356"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684426356"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sunk"><span class="hs-identifier hs-type">Sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span>
+</span><span id="line-67"></span><span class="hs-keyword">type</span><span> </span><span id="Constraints"><span class="annot"><a href="Futhark.Optimise.Sink.html#Constraints"><span class="hs-identifier hs-var">Constraints</span></a></span></span><span> </span><span id="local-6989586621684426355"><span class="annot"><a href="#local-6989586621684426355"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426355"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-69"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#Aliased"><span class="hs-identifier hs-type">Aliased</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426355"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#IndexOp"><span class="hs-identifier hs-type">ST.IndexOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426355"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-71"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- | Given a statement, compute how often each of its free variables</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- are used.  Not accurate: what we care about are only 1, and greater</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- than 1.</span><span>
+</span><span id="line-76"></span><span id="local-6989586621684426630"><span class="annot"><a href="Futhark.Optimise.Sink.html#multiplicity"><span class="hs-identifier hs-type">multiplicity</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Constraints"><span class="hs-identifier hs-type">Constraints</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426630"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426630"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span></span><span>
+</span><span id="line-77"></span><span id="multiplicity"><span class="annot"><span class="annottext">multiplicity :: forall rep. Constraints rep =&gt; Stm rep -&gt; Map VName Int
+</span><a href="Futhark.Optimise.Sink.html#multiplicity"><span class="hs-identifier hs-var hs-var">multiplicity</span></a></span></span><span> </span><span id="local-6989586621684426282"><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426282"><span class="hs-identifier hs-var">stm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Exp rep
+forall rep. Stm rep -&gt; Exp rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var hs-var">stmExp</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426282"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-79"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span id="local-6989586621684426279"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684426279"><span class="hs-identifier hs-var">cond</span></a></span></span><span> </span><span id="local-6989586621684426278"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426278"><span class="hs-identifier hs-var">tbranch</span></a></span></span><span> </span><span id="local-6989586621684426277"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426277"><span class="hs-identifier hs-var">fbranch</span></a></span></span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-80"></span><span>      </span><span class="annot"><span class="annottext">SubExp -&gt; Int -&gt; Map VName Int
+forall {a} {a}. FreeIn a =&gt; a -&gt; a -&gt; Map VName a
+</span><a href="#local-6989586621684426276"><span class="hs-identifier hs-var">free</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684426279"><span class="hs-identifier hs-var">cond</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Map VName Int -&gt; Map VName Int -&gt; Map VName Int
+</span><a href="#local-6989586621684426275"><span class="hs-operator hs-var">`comb`</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep -&gt; Int -&gt; Map VName Int
+forall {a} {a}. FreeIn a =&gt; a -&gt; a -&gt; Map VName a
+</span><a href="#local-6989586621684426276"><span class="hs-identifier hs-var">free</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426278"><span class="hs-identifier hs-var">tbranch</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Map VName Int -&gt; Map VName Int -&gt; Map VName Int
+</span><a href="#local-6989586621684426275"><span class="hs-operator hs-var">`comb`</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep -&gt; Int -&gt; Map VName Int
+forall {a} {a}. FreeIn a =&gt; a -&gt; a -&gt; Map VName a
+</span><a href="#local-6989586621684426276"><span class="hs-identifier hs-var">free</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426277"><span class="hs-identifier hs-var">fbranch</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-81"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Int -&gt; Map VName Int
+forall {a} {a}. FreeIn a =&gt; a -&gt; a -&gt; Map VName a
+</span><a href="#local-6989586621684426276"><span class="hs-identifier hs-var">free</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426282"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-82"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-type">DoLoop</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Int -&gt; Map VName Int
+forall {a} {a}. FreeIn a =&gt; a -&gt; a -&gt; Map VName a
+</span><a href="#local-6989586621684426276"><span class="hs-identifier hs-var">free</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426282"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-83"></span><span>    </span><span class="annot"><span class="annottext">Exp rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Int -&gt; Map VName Int
+forall {a} {a}. FreeIn a =&gt; a -&gt; a -&gt; Map VName a
+</span><a href="#local-6989586621684426276"><span class="hs-identifier hs-var">free</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426282"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-85"></span><span>    </span><span id="local-6989586621684426276"><span class="annot"><span class="annottext">free :: a -&gt; a -&gt; Map VName a
+</span><a href="#local-6989586621684426276"><span class="hs-identifier hs-var hs-var">free</span></a></span></span><span> </span><span id="local-6989586621684426268"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684426268"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684426267"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684426267"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, a)] -&gt; Map VName a
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, a)] -&gt; Map VName a) -&gt; [(VName, a)] -&gt; Map VName a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; [a] -&gt; [(VName, a)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Sunk -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Names.html#namesToList"><span class="hs-identifier hs-var">namesToList</span></a></span><span> </span><span class="annot"><span class="annottext">(Sunk -&gt; [VName]) -&gt; Sunk -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Sunk
+forall a. FreeIn a =&gt; a -&gt; Sunk
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684426268"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([a] -&gt; [(VName, a)]) -&gt; [a] -&gt; [(VName, a)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; [a]
+forall a. a -&gt; [a]
+</span><span class="hs-identifier hs-var">repeat</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684426267"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-86"></span><span>    </span><span id="local-6989586621684426275"><span class="annot"><span class="annottext">comb :: Map VName Int -&gt; Map VName Int -&gt; Map VName Int
+</span><a href="#local-6989586621684426275"><span class="hs-identifier hs-var hs-var">comb</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Int -&gt; Int)
+-&gt; Map VName Int -&gt; Map VName Int -&gt; Map VName Int
+forall k a. Ord k =&gt; (a -&gt; a -&gt; a) -&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.unionWith</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(+)</span></span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span id="local-6989586621684426580"><span class="annot"><a href="Futhark.Optimise.Sink.html#optimiseBranch"><span class="hs-identifier hs-type">optimiseBranch</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Constraints"><span class="hs-identifier hs-type">Constraints</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426580"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-90"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426580"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426580"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-91"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426580"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426580"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-92"></span><span id="optimiseBranch"><span class="annot"><span class="annottext">optimiseBranch :: forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (Body rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseBranch"><span class="hs-identifier hs-var hs-var">optimiseBranch</span></a></span></span><span> </span><span id="local-6989586621684426201"><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426201"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span id="local-6989586621684426200"><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426200"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684426199"><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426199"><span class="hs-identifier hs-var">sinking</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span id="local-6989586621684426197"><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684426197"><span class="hs-identifier hs-var">dec</span></a></span></span><span> </span><span id="local-6989586621684426196"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426196"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span id="local-6989586621684426195"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684426195"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-93"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426194"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426194"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426193"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426193"><span class="hs-identifier hs-var">stms_sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+-&gt; SymbolTable rep
+-&gt; Sinking rep
+-&gt; Stms rep
+-&gt; Sunk
+-&gt; (Stms rep, Sunk)
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep)
+-&gt; SymbolTable rep
+-&gt; Sinking rep
+-&gt; Stms rep
+-&gt; Sunk
+-&gt; (Stms rep, Sunk)
+</span><a href="Futhark.Optimise.Sink.html#optimiseStms"><span class="hs-identifier hs-var">optimiseStms</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426201"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426200"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426191"><span class="hs-identifier hs-var">sinking'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426190"><span class="hs-identifier hs-var">sunk_stms</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; Stms rep -&gt; Stms rep
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426196"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Sunk -&gt; (Stms rep, Sunk)) -&gt; Sunk -&gt; (Stms rep, Sunk)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Result -&gt; Sunk
+forall a. FreeIn a =&gt; a -&gt; Sunk
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684426195"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-94"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">BodyDec rep -&gt; Stms rep -&gt; Result -&gt; BodyT rep
+forall rep. BodyDec rep -&gt; Stms rep -&gt; Result -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-var">Body</span></a></span><span> </span><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684426197"><span class="hs-identifier hs-var">dec</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426194"><span class="hs-identifier hs-var">stms'</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684426195"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-95"></span><span>        </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426189"><span class="hs-identifier hs-var">sunk</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426193"><span class="hs-identifier hs-var">stms_sunk</span></a></span><span>
+</span><span id="line-96"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-98"></span><span>    </span><span id="local-6989586621684426188"><span class="annot"><span class="annottext">free_in_stms :: Sunk
+</span><a href="#local-6989586621684426188"><span class="hs-identifier hs-var hs-var">free_in_stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; Sunk
+forall a. FreeIn a =&gt; a -&gt; Sunk
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426196"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Result -&gt; Sunk
+forall a. FreeIn a =&gt; a -&gt; Sunk
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684426195"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-99"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684426187"><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426187"><span class="hs-identifier hs-var">sinking_here</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426191"><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426191"><span class="hs-identifier hs-var">sinking'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VName -&gt; Stm rep -&gt; Bool)
+-&gt; Sinking rep -&gt; (Sinking rep, Sinking rep)
+forall k a. (k -&gt; a -&gt; Bool) -&gt; Map k a -&gt; (Map k a, Map k a)
+</span><span class="hs-identifier hs-var">M.partitionWithKey</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Stm rep -&gt; Bool
+</span><a href="#local-6989586621684426185"><span class="hs-identifier hs-var">sunkHere</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426199"><span class="hs-identifier hs-var">sinking</span></a></span><span>
+</span><span id="line-100"></span><span>    </span><span id="local-6989586621684426190"><span class="annot"><span class="annottext">sunk_stms :: Stms rep
+</span><a href="#local-6989586621684426190"><span class="hs-identifier hs-var hs-var">sunk_stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Stm rep] -&gt; Stms rep
+forall rep. [Stm rep] -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#stmsFromList"><span class="hs-identifier hs-var">stmsFromList</span></a></span><span> </span><span class="annot"><span class="annottext">([Stm rep] -&gt; Stms rep) -&gt; [Stm rep] -&gt; Stms rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Sinking rep -&gt; [Stm rep]
+forall k a. Map k a -&gt; [a]
+</span><span class="hs-identifier hs-var">M.elems</span></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426187"><span class="hs-identifier hs-var">sinking_here</span></a></span><span>
+</span><span id="line-101"></span><span>    </span><span id="local-6989586621684426185"><span class="annot"><span class="annottext">sunkHere :: VName -&gt; Stm rep -&gt; Bool
+</span><a href="#local-6989586621684426185"><span class="hs-identifier hs-var hs-var">sunkHere</span></a></span></span><span> </span><span id="local-6989586621684426182"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684426182"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684426181"><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426181"><span class="hs-identifier hs-var">stm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-102"></span><span>      </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684426182"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Sunk -&gt; Bool
+</span><a href="Futhark.IR.Prop.Names.html#nameIn"><span class="hs-operator hs-var">`nameIn`</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426188"><span class="hs-identifier hs-var">free_in_stms</span></a></span><span>
+</span><span id="line-103"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; Bool) -&gt; [VName] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; SymbolTable rep -&gt; Bool
+forall rep. VName -&gt; SymbolTable rep -&gt; Bool
+</span><a href="Futhark.Analysis.SymbolTable.html#available"><span class="hs-operator hs-var">`ST.available`</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426200"><span class="hs-identifier hs-var">vtable</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Sunk -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Names.html#namesToList"><span class="hs-identifier hs-var">namesToList</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stm rep -&gt; Sunk
+forall a. FreeIn a =&gt; a -&gt; Sunk
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426181"><span class="hs-identifier hs-var">stm</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-104"></span><span>    </span><span id="local-6989586621684426189"><span class="annot"><span class="annottext">sunk :: Sunk
+</span><a href="#local-6989586621684426189"><span class="hs-identifier hs-var hs-var">sunk</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; Sunk
+</span><a href="Futhark.IR.Prop.Names.html#namesFromList"><span class="hs-identifier hs-var">namesFromList</span></a></span><span> </span><span class="annot"><span class="annottext">([VName] -&gt; Sunk) -&gt; [VName] -&gt; Sunk
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Stm rep -&gt; [VName]) -&gt; Stms rep -&gt; [VName]
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT (LetDec rep) -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">(PatT (LetDec rep) -&gt; [VName])
+-&gt; (Stm rep -&gt; PatT (LetDec rep)) -&gt; Stm rep -&gt; [VName]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; PatT (LetDec rep)
+forall rep. Stm rep -&gt; Pat rep
+</span><a href="Futhark.IR.Syntax.html#stmPat"><span class="hs-identifier hs-var hs-var">stmPat</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426190"><span class="hs-identifier hs-var">sunk_stms</span></a></span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span id="local-6989586621684426567"><span class="annot"><a href="Futhark.Optimise.Sink.html#optimiseStms"><span class="hs-identifier hs-type">optimiseStms</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-107"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Constraints"><span class="hs-identifier hs-type">Constraints</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426567"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-108"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426567"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426567"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-109"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#SymbolTable"><span class="hs-identifier hs-type">SymbolTable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426567"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-110"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinking"><span class="hs-identifier hs-type">Sinking</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426567"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-111"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426567"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-112"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#Names"><span class="hs-identifier hs-type">Names</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-113"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426567"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sunk"><span class="hs-identifier hs-type">Sunk</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-114"></span><span id="optimiseStms"><span class="annot"><span class="annottext">optimiseStms :: forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep)
+-&gt; SymbolTable rep
+-&gt; Sinking rep
+-&gt; Stms rep
+-&gt; Sunk
+-&gt; (Stms rep, Sunk)
+</span><a href="Futhark.Optimise.Sink.html#optimiseStms"><span class="hs-identifier hs-var hs-var">optimiseStms</span></a></span></span><span> </span><span id="local-6989586621684426116"><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426116"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span id="local-6989586621684426115"><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426115"><span class="hs-identifier hs-var">init_vtable</span></a></span></span><span> </span><span id="local-6989586621684426114"><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426114"><span class="hs-identifier hs-var">init_sinking</span></a></span></span><span> </span><span id="local-6989586621684426113"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426113"><span class="hs-identifier hs-var">all_stms</span></a></span></span><span> </span><span id="local-6989586621684426112"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426112"><span class="hs-identifier hs-var">free_in_res</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-115"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426111"><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426111"><span class="hs-identifier hs-var">all_stms'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426110"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426110"><span class="hs-identifier hs-var">sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-116"></span><span>        </span><span class="annot"><span class="annottext">SymbolTable rep -&gt; Sinking rep -&gt; [Stm rep] -&gt; ([Stm rep], Sunk)
+</span><a href="#local-6989586621684426109"><span class="hs-identifier hs-var">optimiseStms'</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426115"><span class="hs-identifier hs-var">init_vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426114"><span class="hs-identifier hs-var">init_sinking</span></a></span><span> </span><span class="annot"><span class="annottext">([Stm rep] -&gt; ([Stm rep], Sunk)) -&gt; [Stm rep] -&gt; ([Stm rep], Sunk)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; [Stm rep]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426113"><span class="hs-identifier hs-var">all_stms</span></a></span><span>
+</span><span id="line-117"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Stm rep] -&gt; Stms rep
+forall rep. [Stm rep] -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#stmsFromList"><span class="hs-identifier hs-var">stmsFromList</span></a></span><span> </span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426111"><span class="hs-identifier hs-var">all_stms'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426110"><span class="hs-identifier hs-var">sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-118"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-119"></span><span>    </span><span id="local-6989586621684426107"><span class="annot"><span class="annottext">multiplicities :: Map VName Int
+</span><a href="#local-6989586621684426107"><span class="hs-identifier hs-var hs-var">multiplicities</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-120"></span><span>      </span><span class="annot"><span class="annottext">(Map VName Int -&gt; Map VName Int -&gt; Map VName Int)
+-&gt; Map VName Int -&gt; [Map VName Int] -&gt; Map VName Int
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl'</span></span><span>
+</span><span id="line-121"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Int -&gt; Int -&gt; Int)
+-&gt; Map VName Int -&gt; Map VName Int -&gt; Map VName Int
+forall k a. Ord k =&gt; (a -&gt; a -&gt; a) -&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.unionWith</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(+)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-122"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(VName, Int)] -&gt; Map VName Int
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [Int] -&gt; [(VName, Int)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Sunk -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Names.html#namesToList"><span class="hs-identifier hs-var">namesToList</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426112"><span class="hs-identifier hs-var">free_in_res</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; [Int]
+forall a. a -&gt; [a]
+</span><span class="hs-identifier hs-var">repeat</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Stm rep -&gt; Map VName Int) -&gt; [Stm rep] -&gt; [Map VName Int]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Map VName Int
+forall rep. Constraints rep =&gt; Stm rep -&gt; Map VName Int
+</span><a href="Futhark.Optimise.Sink.html#multiplicity"><span class="hs-identifier hs-var">multiplicity</span></a></span><span> </span><span class="annot"><span class="annottext">([Stm rep] -&gt; [Map VName Int]) -&gt; [Stm rep] -&gt; [Map VName Int]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; [Stm rep]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426113"><span class="hs-identifier hs-var">all_stms</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span>
+</span><span id="line-125"></span><span>    </span><span id="local-6989586621684426109"><span class="annot"><span class="annottext">optimiseStms' :: SymbolTable rep -&gt; Sinking rep -&gt; [Stm rep] -&gt; ([Stm rep], Sunk)
+</span><a href="#local-6989586621684426109"><span class="hs-identifier hs-var hs-var">optimiseStms'</span></a></span></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span>    </span><span class="annot"><a href="#local-6989586621684426109"><span class="hs-identifier hs-var">optimiseStms'</span></a></span><span> </span><span id="local-6989586621684426106"><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426106"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684426105"><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426105"><span class="hs-identifier hs-var">sinking</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426104"><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684426103"><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426103"><span class="hs-identifier hs-var">stms</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Index"><span class="hs-identifier hs-type">Index</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; ExpT rep
+forall rep. Stm rep -&gt; Exp rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var hs-var">stmExp</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-128"></span><span>        </span><span class="hs-special">[</span><span id="local-6989586621684426100"><span class="annot"><span class="annottext">PatElemT (LetDec rep)
+</span><a href="#local-6989586621684426100"><span class="hs-identifier hs-var">pe</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep) -&gt; [PatElemT (LetDec rep)]
+forall dec. PatT dec -&gt; [PatElemT dec]
+</span><a href="Futhark.IR.Syntax.html#patElems"><span class="hs-identifier hs-var hs-var">patElems</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stm rep -&gt; PatT (LetDec rep)
+forall rep. Stm rep -&gt; Pat rep
+</span><a href="Futhark.IR.Syntax.html#stmPat"><span class="hs-identifier hs-var hs-var">stmPat</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-129"></span><span>        </span><span class="annot"><span class="annottext">TypeBase Shape NoUniqueness -&gt; Bool
+forall shape u. TypeBase shape u -&gt; Bool
+</span><a href="Futhark.IR.Prop.Types.html#primType"><span class="hs-identifier hs-var">primType</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase Shape NoUniqueness -&gt; Bool)
+-&gt; TypeBase Shape NoUniqueness -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PatElemT (LetDec rep) -&gt; TypeBase Shape NoUniqueness
+forall dec.
+Typed dec =&gt;
+PatElemT dec -&gt; TypeBase Shape NoUniqueness
+</span><a href="Futhark.IR.Prop.Patterns.html#patElemType"><span class="hs-identifier hs-var">patElemType</span></a></span><span> </span><span class="annot"><span class="annottext">PatElemT (LetDec rep)
+</span><a href="#local-6989586621684426100"><span class="hs-identifier hs-var">pe</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-130"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; (Int -&gt; Bool) -&gt; Maybe Int -&gt; Bool
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Maybe Int -&gt; Bool) -&gt; Maybe Int -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Map VName Int -&gt; Maybe Int
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatElemT (LetDec rep) -&gt; VName
+forall dec. PatElemT dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#patElemName"><span class="hs-identifier hs-var hs-var">patElemName</span></a></span><span> </span><span class="annot"><span class="annottext">PatElemT (LetDec rep)
+</span><a href="#local-6989586621684426100"><span class="hs-identifier hs-var">pe</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Map VName Int
+</span><a href="#local-6989586621684426107"><span class="hs-identifier hs-var">multiplicities</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-131"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426093"><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426093"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426092"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426092"><span class="hs-identifier hs-var">sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-132"></span><span>              </span><span class="annot"><span class="annottext">SymbolTable rep -&gt; Sinking rep -&gt; [Stm rep] -&gt; ([Stm rep], Sunk)
+</span><a href="#local-6989586621684426109"><span class="hs-identifier hs-var">optimiseStms'</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426091"><span class="hs-identifier hs-var">vtable'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Stm rep -&gt; Sinking rep -&gt; Sinking rep
+forall k a. Ord k =&gt; k -&gt; a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.insert</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatElemT (LetDec rep) -&gt; VName
+forall dec. PatElemT dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#patElemName"><span class="hs-identifier hs-var hs-var">patElemName</span></a></span><span> </span><span class="annot"><span class="annottext">PatElemT (LetDec rep)
+</span><a href="#local-6989586621684426100"><span class="hs-identifier hs-var">pe</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426105"><span class="hs-identifier hs-var">sinking</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426103"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-133"></span><span>         </span><span class="hs-keyword">in</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">PatElemT (LetDec rep) -&gt; VName
+forall dec. PatElemT dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#patElemName"><span class="hs-identifier hs-var hs-var">patElemName</span></a></span><span> </span><span class="annot"><span class="annottext">PatElemT (LetDec rep)
+</span><a href="#local-6989586621684426100"><span class="hs-identifier hs-var">pe</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Sunk -&gt; Bool
+</span><a href="Futhark.IR.Prop.Names.html#nameIn"><span class="hs-operator hs-var">`nameIn`</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426092"><span class="hs-identifier hs-var">sunk</span></a></span><span>
+</span><span id="line-134"></span><span>              </span><span class="hs-keyword">then</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426093"><span class="hs-identifier hs-var">stms'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426092"><span class="hs-identifier hs-var">sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>              </span><span class="hs-keyword">else</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; [Stm rep] -&gt; [Stm rep]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426093"><span class="hs-identifier hs-var">stms'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426092"><span class="hs-identifier hs-var">sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-136"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span id="local-6989586621684426089"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684426089"><span class="hs-identifier hs-var">cond</span></a></span></span><span> </span><span id="local-6989586621684426088"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426088"><span class="hs-identifier hs-var">tbranch</span></a></span></span><span> </span><span id="local-6989586621684426087"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426087"><span class="hs-identifier hs-var">fbranch</span></a></span></span><span> </span><span id="local-6989586621684426086"><span class="annot"><span class="annottext">IfDec (BranchType rep)
+</span><a href="#local-6989586621684426086"><span class="hs-identifier hs-var">ret</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; ExpT rep
+forall rep. Stm rep -&gt; Exp rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var hs-var">stmExp</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-137"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426085"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426085"><span class="hs-identifier hs-var">tbranch'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426084"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426084"><span class="hs-identifier hs-var">tsunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep) -&gt; Sinker rep (BodyT rep)
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (Body rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseBranch"><span class="hs-identifier hs-var">optimiseBranch</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426116"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426106"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426105"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426088"><span class="hs-identifier hs-var">tbranch</span></a></span><span>
+</span><span id="line-138"></span><span>            </span><span class="hs-special">(</span><span id="local-6989586621684426083"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426083"><span class="hs-identifier hs-var">fbranch'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426082"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426082"><span class="hs-identifier hs-var">fsunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep) -&gt; Sinker rep (BodyT rep)
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (Body rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseBranch"><span class="hs-identifier hs-var">optimiseBranch</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426116"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426106"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426105"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426087"><span class="hs-identifier hs-var">fbranch</span></a></span><span>
+</span><span id="line-139"></span><span>            </span><span class="hs-special">(</span><span id="local-6989586621684426081"><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426081"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426080"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426080"><span class="hs-identifier hs-var">sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SymbolTable rep -&gt; Sinking rep -&gt; [Stm rep] -&gt; ([Stm rep], Sunk)
+</span><a href="#local-6989586621684426109"><span class="hs-identifier hs-var">optimiseStms'</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426091"><span class="hs-identifier hs-var">vtable'</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426105"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426103"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-140"></span><span>         </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: ExpT rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp
+-&gt; BodyT rep -&gt; BodyT rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep
+forall rep.
+SubExp
+-&gt; BodyT rep -&gt; BodyT rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-var">If</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684426089"><span class="hs-identifier hs-var">cond</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426085"><span class="hs-identifier hs-var">tbranch'</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426083"><span class="hs-identifier hs-var">fbranch'</span></a></span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType rep)
+</span><a href="#local-6989586621684426086"><span class="hs-identifier hs-var">ret</span></a></span><span class="hs-special">}</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; [Stm rep] -&gt; [Stm rep]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426081"><span class="hs-identifier hs-var">stms'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-141"></span><span>              </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426084"><span class="hs-identifier hs-var">tsunk</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426082"><span class="hs-identifier hs-var">fsunk</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426080"><span class="hs-identifier hs-var">sunk</span></a></span><span>
+</span><span id="line-142"></span><span>            </span><span class="hs-special">)</span><span>
+</span><span id="line-143"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span id="local-6989586621684426079"><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684426079"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; ExpT rep
+forall rep. Stm rep -&gt; Exp rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var hs-var">stmExp</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-144"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426078"><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684426078"><span class="hs-identifier hs-var">op'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426077"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426077"><span class="hs-identifier hs-var">op_sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426116"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426106"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426105"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684426079"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-145"></span><span>            </span><span class="hs-special">(</span><span id="local-6989586621684426076"><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426076"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426075"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426075"><span class="hs-identifier hs-var">stms_sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SymbolTable rep -&gt; Sinking rep -&gt; [Stm rep] -&gt; ([Stm rep], Sunk)
+</span><a href="#local-6989586621684426109"><span class="hs-identifier hs-var">optimiseStms'</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426091"><span class="hs-identifier hs-var">vtable'</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426105"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426103"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-146"></span><span>         </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: ExpT rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Op rep -&gt; ExpT rep
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684426078"><span class="hs-identifier hs-var">op'</span></a></span><span class="hs-special">}</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; [Stm rep] -&gt; [Stm rep]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426076"><span class="hs-identifier hs-var">stms'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-147"></span><span>              </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426075"><span class="hs-identifier hs-var">stms_sunk</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426077"><span class="hs-identifier hs-var">op_sunk</span></a></span><span>
+</span><span id="line-148"></span><span>            </span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-150"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426074"><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426074"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426073"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426073"><span class="hs-identifier hs-var">stms_sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SymbolTable rep -&gt; Sinking rep -&gt; [Stm rep] -&gt; ([Stm rep], Sunk)
+</span><a href="#local-6989586621684426109"><span class="hs-identifier hs-var">optimiseStms'</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426091"><span class="hs-identifier hs-var">vtable'</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426105"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426103"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-151"></span><span>            </span><span class="hs-special">(</span><span id="local-6989586621684426072"><span class="annot"><span class="annottext">ExpT rep
+</span><a href="#local-6989586621684426072"><span class="hs-identifier hs-var">e'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426071"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426071"><span class="hs-identifier hs-var">stm_sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State Sunk (ExpT rep) -&gt; Sunk -&gt; (ExpT rep, Sunk)
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><span class="hs-identifier hs-var">runState</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Mapper rep rep (StateT Sunk Identity)
+-&gt; ExpT rep -&gt; State Sunk (ExpT rep)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+Mapper frep trep m -&gt; Exp frep -&gt; m (Exp trep)
+</span><a href="Futhark.IR.Traversals.html#mapExpM"><span class="hs-identifier hs-var">mapExpM</span></a></span><span> </span><span class="annot"><span class="annottext">Mapper rep rep (StateT Sunk Identity)
+</span><a href="#local-6989586621684426068"><span class="hs-identifier hs-var">mapper</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stm rep -&gt; ExpT rep
+forall rep. Stm rep -&gt; Exp rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var hs-var">stmExp</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Sunk
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-152"></span><span>         </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: ExpT rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ExpT rep
+</span><a href="#local-6989586621684426072"><span class="hs-identifier hs-var">e'</span></a></span><span class="hs-special">}</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; [Stm rep] -&gt; [Stm rep]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Stm rep]
+</span><a href="#local-6989586621684426074"><span class="hs-identifier hs-var">stms'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-153"></span><span>              </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426071"><span class="hs-identifier hs-var">stm_sunk</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426073"><span class="hs-identifier hs-var">stms_sunk</span></a></span><span>
+</span><span id="line-154"></span><span>            </span><span class="hs-special">)</span><span>
+</span><span id="line-155"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-156"></span><span>        </span><span id="local-6989586621684426091"><span class="annot"><span class="annottext">vtable' :: SymbolTable rep
+</span><a href="#local-6989586621684426091"><span class="hs-identifier hs-var hs-var">vtable'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; SymbolTable rep -&gt; SymbolTable rep
+forall rep.
+(ASTRep rep, IndexOp (Op rep), Aliased rep) =&gt;
+Stm rep -&gt; SymbolTable rep -&gt; SymbolTable rep
+</span><a href="Futhark.Analysis.SymbolTable.html#insertStm"><span class="hs-identifier hs-var">ST.insertStm</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684426104"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426106"><span class="hs-identifier hs-var">vtable</span></a></span><span>
+</span><span id="line-157"></span><span>        </span><span id="local-6989586621684426068"><span class="annot"><span class="annottext">mapper :: Mapper rep rep (StateT Sunk Identity)
+</span><a href="#local-6989586621684426068"><span class="hs-identifier hs-var hs-var">mapper</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-158"></span><span>          </span><span class="annot"><span class="annottext">Mapper rep rep (StateT Sunk Identity)
+forall (m :: * -&gt; *) rep. Monad m =&gt; Mapper rep rep m
+</span><a href="Futhark.IR.Traversals.html#identityMapper"><span class="hs-identifier hs-var">identityMapper</span></a></span><span>
+</span><span id="line-159"></span><span>            </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnBody :: Scope rep -&gt; BodyT rep -&gt; StateT Sunk Identity (BodyT rep)
+</span><a href="Futhark.IR.Traversals.html#mapOnBody"><span class="hs-identifier hs-var">mapOnBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684426064"><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684426064"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span id="local-6989586621684426063"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426063"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-160"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426062"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426062"><span class="hs-identifier hs-var">body'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426061"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426061"><span class="hs-identifier hs-var">sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-161"></span><span>                      </span><span class="annot"><span class="annottext">Sinker rep (Op rep) -&gt; Sinker rep (BodyT rep)
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (Body rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseBody"><span class="hs-identifier hs-var">optimiseBody</span></a></span><span>
+</span><span id="line-162"></span><span>                        </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426116"><span class="hs-identifier hs-var">onOp</span></a></span><span>
+</span><span id="line-163"></span><span>                        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Scope rep -&gt; SymbolTable rep
+forall rep. ASTRep rep =&gt; Scope rep -&gt; SymbolTable rep
+</span><a href="Futhark.Analysis.SymbolTable.html#fromScope"><span class="hs-identifier hs-var">ST.fromScope</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684426064"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep -&gt; SymbolTable rep -&gt; SymbolTable rep
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426106"><span class="hs-identifier hs-var">vtable</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-164"></span><span>                        </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426105"><span class="hs-identifier hs-var">sinking</span></a></span><span>
+</span><span id="line-165"></span><span>                        </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426063"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-166"></span><span>                </span><span class="annot"><span class="annottext">(Sunk -&gt; Sunk) -&gt; StateT Sunk Identity ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426061"><span class="hs-identifier hs-var">sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-167"></span><span>                </span><span class="annot"><span class="annottext">BodyT rep -&gt; StateT Sunk Identity (BodyT rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684426062"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-168"></span><span>            </span><span class="hs-special">}</span><span>
+</span><span id="line-169"></span><span>
+</span><span id="line-170"></span><span id="local-6989586621684426057"><span class="annot"><a href="Futhark.Optimise.Sink.html#optimiseBody"><span class="hs-identifier hs-type">optimiseBody</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-171"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Constraints"><span class="hs-identifier hs-type">Constraints</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426057"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-172"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426057"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426057"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426057"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426057"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-174"></span><span id="optimiseBody"><span class="annot"><span class="annottext">optimiseBody :: forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (Body rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseBody"><span class="hs-identifier hs-var hs-var">optimiseBody</span></a></span></span><span> </span><span id="local-6989586621684426051"><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426051"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span id="local-6989586621684426050"><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426050"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684426049"><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426049"><span class="hs-identifier hs-var">sinking</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span id="local-6989586621684426048"><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684426048"><span class="hs-identifier hs-var">attr</span></a></span></span><span> </span><span id="local-6989586621684426047"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426047"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span id="local-6989586621684426046"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684426046"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-175"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426045"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426045"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426044"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426044"><span class="hs-identifier hs-var">sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+-&gt; SymbolTable rep
+-&gt; Sinking rep
+-&gt; Stms rep
+-&gt; Sunk
+-&gt; (Stms rep, Sunk)
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep)
+-&gt; SymbolTable rep
+-&gt; Sinking rep
+-&gt; Stms rep
+-&gt; Sunk
+-&gt; (Stms rep, Sunk)
+</span><a href="Futhark.Optimise.Sink.html#optimiseStms"><span class="hs-identifier hs-var">optimiseStms</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426051"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426050"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426049"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426047"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">(Sunk -&gt; (Stms rep, Sunk)) -&gt; Sunk -&gt; (Stms rep, Sunk)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Result -&gt; Sunk
+forall a. FreeIn a =&gt; a -&gt; Sunk
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684426046"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-176"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyDec rep -&gt; Stms rep -&gt; Result -&gt; BodyT rep
+forall rep. BodyDec rep -&gt; Stms rep -&gt; Result -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-var">Body</span></a></span><span> </span><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684426048"><span class="hs-identifier hs-var">attr</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426045"><span class="hs-identifier hs-var">stms'</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684426046"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426044"><span class="hs-identifier hs-var">sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-177"></span><span>
+</span><span id="line-178"></span><span id="local-6989586621684426490"><span class="annot"><a href="Futhark.Optimise.Sink.html#optimiseKernelBody"><span class="hs-identifier hs-type">optimiseKernelBody</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-179"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Constraints"><span class="hs-identifier hs-type">Constraints</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426490"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-180"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426490"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426490"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-181"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426490"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426490"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-182"></span><span id="optimiseKernelBody"><span class="annot"><span class="annottext">optimiseKernelBody :: forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (KernelBody rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseKernelBody"><span class="hs-identifier hs-var hs-var">optimiseKernelBody</span></a></span></span><span> </span><span id="local-6989586621684426036"><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426036"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span id="local-6989586621684426035"><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426035"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684426034"><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426034"><span class="hs-identifier hs-var">sinking</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span id="local-6989586621684426032"><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684426032"><span class="hs-identifier hs-var">attr</span></a></span></span><span> </span><span id="local-6989586621684426031"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426031"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span id="local-6989586621684426030"><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684426030"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-183"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684426029"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426029"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684426028"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426028"><span class="hs-identifier hs-var">sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+-&gt; SymbolTable rep
+-&gt; Sinking rep
+-&gt; Stms rep
+-&gt; Sunk
+-&gt; (Stms rep, Sunk)
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep)
+-&gt; SymbolTable rep
+-&gt; Sinking rep
+-&gt; Stms rep
+-&gt; Sunk
+-&gt; (Stms rep, Sunk)
+</span><a href="Futhark.Optimise.Sink.html#optimiseStms"><span class="hs-identifier hs-var">optimiseStms</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426036"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426035"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426034"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426031"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">(Sunk -&gt; (Stms rep, Sunk)) -&gt; Sunk -&gt; (Stms rep, Sunk)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[KernelResult] -&gt; Sunk
+forall a. FreeIn a =&gt; a -&gt; Sunk
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684426030"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-184"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+forall rep.
+BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+</span><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-var">KernelBody</span></a></span><span> </span><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684426032"><span class="hs-identifier hs-var">attr</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684426029"><span class="hs-identifier hs-var">stms'</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684426030"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684426028"><span class="hs-identifier hs-var">sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-185"></span><span>
+</span><span id="line-186"></span><span id="local-6989586621684426484"><span id="local-6989586621684426485"><span class="annot"><a href="Futhark.Optimise.Sink.html#optimiseSegOp"><span class="hs-identifier hs-type">optimiseSegOp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-187"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Constraints"><span class="hs-identifier hs-type">Constraints</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426485"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-188"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426485"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426485"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-189"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426485"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426484"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426485"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-190"></span><span id="optimiseSegOp"><span class="annot"><span class="annottext">optimiseSegOp :: forall rep lvl.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (SegOp lvl rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseSegOp"><span class="hs-identifier hs-var hs-var">optimiseSegOp</span></a></span></span><span> </span><span id="local-6989586621684426005"><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426005"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span id="local-6989586621684426004"><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426004"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684426003"><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426003"><span class="hs-identifier hs-var">sinking</span></a></span></span><span> </span><span id="local-6989586621684426002"><span class="annot"><span class="annottext">SegOp lvl rep
+</span><a href="#local-6989586621684426002"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-191"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684426001"><span class="annot"><span class="annottext">scope :: Scope rep
+</span><a href="#local-6989586621684426001"><span class="hs-identifier hs-var hs-var">scope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegSpace -&gt; Scope rep
+forall rep. SegSpace -&gt; Scope rep
+</span><a href="Futhark.IR.SegOp.html#scopeOfSegSpace"><span class="hs-identifier hs-var">scopeOfSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">(SegSpace -&gt; Scope rep) -&gt; SegSpace -&gt; Scope rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOp lvl rep -&gt; SegSpace
+forall lvl rep. SegOp lvl rep -&gt; SegSpace
+</span><a href="Futhark.IR.SegOp.html#segSpace"><span class="hs-identifier hs-var">segSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp lvl rep
+</span><a href="#local-6989586621684426002"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-192"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">State Sunk (SegOp lvl rep) -&gt; Sunk -&gt; (SegOp lvl rep, Sunk)
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><span class="hs-identifier hs-var">runState</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegOpMapper lvl rep rep (StateT Sunk Identity)
+-&gt; SegOp lvl rep -&gt; State Sunk (SegOp lvl rep)
+forall (m :: * -&gt; *) lvl frep trep.
+(Applicative m, Monad m) =&gt;
+SegOpMapper lvl frep trep m -&gt; SegOp lvl frep -&gt; m (SegOp lvl trep)
+</span><a href="Futhark.IR.SegOp.html#mapSegOpM"><span class="hs-identifier hs-var">mapSegOpM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Scope rep -&gt; SegOpMapper lvl rep rep (StateT Sunk Identity)
+</span><a href="#local-6989586621684425997"><span class="hs-identifier hs-var">opMapper</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684426001"><span class="hs-identifier hs-var">scope</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SegOp lvl rep
+</span><a href="#local-6989586621684426002"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Sunk
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-193"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-194"></span><span>    </span><span id="local-6989586621684425997"><span class="annot"><span class="annottext">opMapper :: Scope rep -&gt; SegOpMapper lvl rep rep (StateT Sunk Identity)
+</span><a href="#local-6989586621684425997"><span class="hs-identifier hs-var hs-var">opMapper</span></a></span></span><span> </span><span id="local-6989586621684425996"><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684425996"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-195"></span><span>      </span><span class="annot"><span class="annottext">SegOpMapper lvl Any Any (StateT Sunk Identity)
+forall (m :: * -&gt; *) lvl rep. Monad m =&gt; SegOpMapper lvl rep rep m
+</span><a href="Futhark.IR.SegOp.html#identitySegOpMapper"><span class="hs-identifier hs-var">identitySegOpMapper</span></a></span><span>
+</span><span id="line-196"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSegOpLambda :: Lambda rep -&gt; StateT Sunk Identity (Lambda rep)
+</span><a href="Futhark.IR.SegOp.html#mapOnSegOpLambda"><span class="hs-identifier hs-var">mapOnSegOpLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684425993"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684425993"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-197"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684425992"><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684425992"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684425991"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684425991"><span class="hs-identifier hs-var">sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-198"></span><span>                  </span><span class="annot"><span class="annottext">Sinker rep (Op rep) -&gt; Sinker rep (Body rep)
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (Body rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseBody"><span class="hs-identifier hs-var">optimiseBody</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426005"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684425990"><span class="hs-identifier hs-var">op_vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426003"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">(Body rep -&gt; (Body rep, Sunk)) -&gt; Body rep -&gt; (Body rep, Sunk)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-199"></span><span>                    </span><span class="annot"><span class="annottext">Lambda rep -&gt; Body rep
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684425993"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-200"></span><span>            </span><span class="annot"><span class="annottext">(Sunk -&gt; Sunk) -&gt; StateT Sunk Identity ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684425991"><span class="hs-identifier hs-var">sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-201"></span><span>            </span><span class="annot"><span class="annottext">Lambda rep -&gt; StateT Sunk Identity (Lambda rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684425993"><span class="hs-identifier hs-var">lam</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">lambdaBody :: Body rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var">lambdaBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684425992"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-202"></span><span>          </span><span class="annot"><span class="annottext">mapOnSegOpBody :: KernelBody rep -&gt; StateT Sunk Identity (KernelBody rep)
+</span><a href="Futhark.IR.SegOp.html#mapOnSegOpBody"><span class="hs-identifier hs-var">mapOnSegOpBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684425987"><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684425987"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-203"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684425986"><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684425986"><span class="hs-identifier hs-var">body'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684425985"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684425985"><span class="hs-identifier hs-var">sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-204"></span><span>                  </span><span class="annot"><span class="annottext">Sinker rep (Op rep) -&gt; Sinker rep (KernelBody rep)
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (KernelBody rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseKernelBody"><span class="hs-identifier hs-var">optimiseKernelBody</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker rep (Op rep)
+</span><a href="#local-6989586621684426005"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684425990"><span class="hs-identifier hs-var">op_vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking rep
+</span><a href="#local-6989586621684426003"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684425987"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-205"></span><span>            </span><span class="annot"><span class="annottext">(Sunk -&gt; Sunk) -&gt; StateT Sunk Identity ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684425985"><span class="hs-identifier hs-var">sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-206"></span><span>            </span><span class="annot"><span class="annottext">KernelBody rep -&gt; StateT Sunk Identity (KernelBody rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684425986"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-207"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-208"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-209"></span><span>        </span><span id="local-6989586621684425990"><span class="annot"><span class="annottext">op_vtable :: SymbolTable rep
+</span><a href="#local-6989586621684425990"><span class="hs-identifier hs-var hs-var">op_vtable</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; SymbolTable rep
+forall rep. ASTRep rep =&gt; Scope rep -&gt; SymbolTable rep
+</span><a href="Futhark.Analysis.SymbolTable.html#fromScope"><span class="hs-identifier hs-var">ST.fromScope</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684425996"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep -&gt; SymbolTable rep -&gt; SymbolTable rep
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684426004"><span class="hs-identifier hs-var">vtable</span></a></span><span>
+</span><span id="line-210"></span><span>
+</span><span id="line-211"></span><span class="hs-keyword">type</span><span> </span><span id="SinkRep"><span class="annot"><a href="Futhark.Optimise.Sink.html#SinkRep"><span class="hs-identifier hs-var">SinkRep</span></a></span></span><span> </span><span id="local-6989586621684425984"><span class="annot"><a href="#local-6989586621684425984"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684425984"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-212"></span><span>
+</span><span id="line-213"></span><span id="local-6989586621684426465"><span class="annot"><a href="Futhark.Optimise.Sink.html#sink"><span class="hs-identifier hs-type">sink</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-214"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426465"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-215"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426465"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-216"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#IndexOp"><span class="hs-identifier hs-type">ST.IndexOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#OpWithAliases"><span class="hs-identifier hs-type">OpWithAliases</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426465"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-217"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-218"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Sink.html#SinkRep"><span class="hs-identifier hs-type">SinkRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426465"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Sink.html#SinkRep"><span class="hs-identifier hs-type">SinkRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426465"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-219"></span><span>  </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426465"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684426465"><span class="hs-identifier hs-type">rep</span></a></span></span><span>
+</span><span id="line-220"></span><span id="sink"><span class="annot"><span class="annottext">sink :: forall rep.
+(ASTRep rep, CanBeAliased (Op rep),
+ IndexOp (OpWithAliases (Op rep))) =&gt;
+Sinker (SinkRep rep) (Op (SinkRep rep)) -&gt; Pass rep rep
+</span><a href="Futhark.Optimise.Sink.html#sink"><span class="hs-identifier hs-var hs-var">sink</span></a></span></span><span> </span><span id="local-6989586621684425949"><span class="annot"><span class="annottext">Sinker (SinkRep rep) (Op (SinkRep rep))
+</span><a href="#local-6989586621684425949"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-221"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; String -&gt; (Prog rep -&gt; PassM (Prog rep)) -&gt; Pass rep rep
+forall fromrep torep.
+String
+-&gt; String
+-&gt; (Prog fromrep -&gt; PassM (Prog torep))
+-&gt; Pass fromrep torep
+</span><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-var">Pass</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;sink&quot;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;move memory loads closer to their uses&quot;</span></span><span> </span><span class="annot"><span class="annottext">((Prog rep -&gt; PassM (Prog rep)) -&gt; Pass rep rep)
+-&gt; (Prog rep -&gt; PassM (Prog rep)) -&gt; Pass rep rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-222"></span><span>    </span><span class="annot"><span class="annottext">(Prog (SinkRep rep) -&gt; Prog rep)
+-&gt; PassM (Prog (SinkRep rep)) -&gt; PassM (Prog rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">Prog (SinkRep rep) -&gt; Prog rep
+forall rep. CanBeAliased (Op rep) =&gt; Prog (Aliases rep) -&gt; Prog rep
+</span><a href="Futhark.IR.Aliases.html#removeProgAliases"><span class="hs-identifier hs-var">removeProgAliases</span></a></span><span>
+</span><span id="line-223"></span><span>      </span><span class="annot"><span class="annottext">(PassM (Prog (SinkRep rep)) -&gt; PassM (Prog rep))
+-&gt; (Prog rep -&gt; PassM (Prog (SinkRep rep)))
+-&gt; Prog rep
+-&gt; PassM (Prog rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Stms (SinkRep rep) -&gt; PassM (Stms (SinkRep rep)))
+-&gt; (Stms (SinkRep rep)
+    -&gt; FunDef (SinkRep rep) -&gt; PassM (FunDef (SinkRep rep)))
+-&gt; Prog (SinkRep rep)
+-&gt; PassM (Prog (SinkRep rep))
+forall fromrep torep.
+(Stms fromrep -&gt; PassM (Stms torep))
+-&gt; (Stms torep -&gt; FunDef fromrep -&gt; PassM (FunDef torep))
+-&gt; Prog fromrep
+-&gt; PassM (Prog torep)
+</span><a href="Futhark.Pass.html#intraproceduralTransformationWithConsts"><span class="hs-identifier hs-var">intraproceduralTransformationWithConsts</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (SinkRep rep) -&gt; PassM (Stms (SinkRep rep))
+</span><a href="#local-6989586621684425945"><span class="hs-identifier hs-var">onConsts</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (SinkRep rep)
+-&gt; FunDef (SinkRep rep) -&gt; PassM (FunDef (SinkRep rep))
+</span><a href="#local-6989586621684425944"><span class="hs-identifier hs-var">onFun</span></a></span><span>
+</span><span id="line-224"></span><span>      </span><span class="annot"><span class="annottext">(Prog (SinkRep rep) -&gt; PassM (Prog (SinkRep rep)))
+-&gt; (Prog rep -&gt; Prog (SinkRep rep))
+-&gt; Prog rep
+-&gt; PassM (Prog (SinkRep rep))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Prog rep -&gt; Prog (SinkRep rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+Prog rep -&gt; Prog (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#aliasAnalysis"><span class="hs-identifier hs-var">Alias.aliasAnalysis</span></a></span><span>
+</span><span id="line-225"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-226"></span><span>    </span><span id="local-6989586621684425944"><span class="annot"><span class="annottext">onFun :: Stms (SinkRep rep)
+-&gt; FunDef (SinkRep rep) -&gt; PassM (FunDef (SinkRep rep))
+</span><a href="#local-6989586621684425944"><span class="hs-identifier hs-var hs-var">onFun</span></a></span></span><span> </span><span class="annot"><span class="annottext">Stms (SinkRep rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684425942"><span class="annot"><span class="annottext">FunDef (SinkRep rep)
+</span><a href="#local-6989586621684425942"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-227"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684425941"><span class="annot"><span class="annottext">vtable :: SymbolTable (SinkRep rep)
+</span><a href="#local-6989586621684425941"><span class="hs-identifier hs-var hs-var">vtable</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[FParam (SinkRep rep)]
+-&gt; SymbolTable (SinkRep rep) -&gt; SymbolTable (SinkRep rep)
+forall rep.
+ASTRep rep =&gt;
+[FParam rep] -&gt; SymbolTable rep -&gt; SymbolTable rep
+</span><a href="Futhark.Analysis.SymbolTable.html#insertFParams"><span class="hs-identifier hs-var">ST.insertFParams</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FunDef (SinkRep rep) -&gt; [FParam (SinkRep rep)]
+forall rep. FunDef rep -&gt; [FParam rep]
+</span><a href="Futhark.IR.Syntax.html#funDefParams"><span class="hs-identifier hs-var hs-var">funDefParams</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef (SinkRep rep)
+</span><a href="#local-6989586621684425942"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SymbolTable (SinkRep rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-228"></span><span>          </span><span class="hs-special">(</span><span id="local-6989586621684425938"><span class="annot"><span class="annottext">Body (SinkRep rep)
+</span><a href="#local-6989586621684425938"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep rep) (Op (SinkRep rep))
+-&gt; Sinker (SinkRep rep) (Body (SinkRep rep))
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (Body rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseBody"><span class="hs-identifier hs-var">optimiseBody</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep rep) (Op (SinkRep rep))
+</span><a href="#local-6989586621684425949"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable (SinkRep rep)
+</span><a href="#local-6989586621684425941"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking (SinkRep rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">(Body (SinkRep rep) -&gt; (Body (SinkRep rep), Sunk))
+-&gt; Body (SinkRep rep) -&gt; (Body (SinkRep rep), Sunk)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FunDef (SinkRep rep) -&gt; Body (SinkRep rep)
+forall rep. FunDef rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var hs-var">funDefBody</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef (SinkRep rep)
+</span><a href="#local-6989586621684425942"><span class="hs-identifier hs-var">fd</span></a></span><span>
+</span><span id="line-229"></span><span>      </span><span class="annot"><span class="annottext">FunDef (SinkRep rep) -&gt; PassM (FunDef (SinkRep rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">FunDef (SinkRep rep)
+</span><a href="#local-6989586621684425942"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">funDefBody :: Body (SinkRep rep)
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var">funDefBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body (SinkRep rep)
+</span><a href="#local-6989586621684425938"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-230"></span><span>
+</span><span id="line-231"></span><span>    </span><span id="local-6989586621684425945"><span class="annot"><span class="annottext">onConsts :: Stms (SinkRep rep) -&gt; PassM (Stms (SinkRep rep))
+</span><a href="#local-6989586621684425945"><span class="hs-identifier hs-var hs-var">onConsts</span></a></span></span><span> </span><span id="local-6989586621684425936"><span class="annot"><span class="annottext">Stms (SinkRep rep)
+</span><a href="#local-6989586621684425936"><span class="hs-identifier hs-var">consts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-232"></span><span>      </span><span class="annot"><span class="annottext">Stms (SinkRep rep) -&gt; PassM (Stms (SinkRep rep))
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Stms (SinkRep rep) -&gt; PassM (Stms (SinkRep rep)))
+-&gt; Stms (SinkRep rep) -&gt; PassM (Stms (SinkRep rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-233"></span><span>        </span><span class="annot"><span class="annottext">(Stms (SinkRep rep), Sunk) -&gt; Stms (SinkRep rep)
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">((Stms (SinkRep rep), Sunk) -&gt; Stms (SinkRep rep))
+-&gt; (Stms (SinkRep rep), Sunk) -&gt; Stms (SinkRep rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-234"></span><span>          </span><span class="annot"><span class="annottext">Sinker (SinkRep rep) (Op (SinkRep rep))
+-&gt; SymbolTable (SinkRep rep)
+-&gt; Sinking (SinkRep rep)
+-&gt; Stms (SinkRep rep)
+-&gt; Sunk
+-&gt; (Stms (SinkRep rep), Sunk)
+forall rep.
+Constraints rep =&gt;
+Sinker rep (Op rep)
+-&gt; SymbolTable rep
+-&gt; Sinking rep
+-&gt; Stms rep
+-&gt; Sunk
+-&gt; (Stms rep, Sunk)
+</span><a href="Futhark.Optimise.Sink.html#optimiseStms"><span class="hs-identifier hs-var">optimiseStms</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep rep) (Op (SinkRep rep))
+</span><a href="#local-6989586621684425949"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable (SinkRep rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">Sinking (SinkRep rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">Stms (SinkRep rep)
+</span><a href="#local-6989586621684425936"><span class="hs-identifier hs-var">consts</span></a></span><span> </span><span class="annot"><span class="annottext">(Sunk -&gt; (Stms (SinkRep rep), Sunk))
+-&gt; Sunk -&gt; (Stms (SinkRep rep), Sunk)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-235"></span><span>            </span><span class="annot"><span class="annottext">[VName] -&gt; Sunk
+</span><a href="Futhark.IR.Prop.Names.html#namesFromList"><span class="hs-identifier hs-var">namesFromList</span></a></span><span> </span><span class="annot"><span class="annottext">([VName] -&gt; Sunk) -&gt; [VName] -&gt; Sunk
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map VName (NameInfo (SinkRep rep)) -&gt; [VName]
+forall k a. Map k a -&gt; [k]
+</span><span class="hs-identifier hs-var">M.keys</span></span><span> </span><span class="annot"><span class="annottext">(Map VName (NameInfo (SinkRep rep)) -&gt; [VName])
+-&gt; Map VName (NameInfo (SinkRep rep)) -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stms (SinkRep rep) -&gt; Map VName (NameInfo (SinkRep rep))
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (SinkRep rep)
+</span><a href="#local-6989586621684425936"><span class="hs-identifier hs-var">consts</span></a></span><span>
+</span><span id="line-236"></span><span>
+</span><span id="line-237"></span><span class="hs-comment">-- | Sinking in GPU kernels.</span><span>
+</span><span id="line-238"></span><span class="annot"><a href="Futhark.Optimise.Sink.html#sinkGPU"><span class="hs-identifier hs-type">sinkGPU</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span>
+</span><span id="line-239"></span><span id="sinkGPU"><span class="annot"><span class="annottext">sinkGPU :: Pass GPU GPU
+</span><a href="Futhark.Optimise.Sink.html#sinkGPU"><span class="hs-identifier hs-var hs-var">sinkGPU</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep GPU) (Op (SinkRep GPU)) -&gt; Pass GPU GPU
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep),
+ IndexOp (OpWithAliases (Op rep))) =&gt;
+Sinker (SinkRep rep) (Op (SinkRep rep)) -&gt; Pass rep rep
+</span><a href="Futhark.Optimise.Sink.html#sink"><span class="hs-identifier hs-var">sink</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep GPU) (Op (SinkRep GPU))
+</span><a href="#local-6989586621684425933"><span class="hs-identifier hs-var">onHostOp</span></a></span><span>
+</span><span id="line-240"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-241"></span><span>    </span><span class="annot"><a href="#local-6989586621684425933"><span class="hs-identifier hs-type">onHostOp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Sink.html#SinkRep"><span class="hs-identifier hs-type">SinkRep</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Sink.html#SinkRep"><span class="hs-identifier hs-type">SinkRep</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-242"></span><span>    </span><span id="local-6989586621684425933"><span class="annot"><span class="annottext">onHostOp :: Sinker (SinkRep GPU) (Op (SinkRep GPU))
+</span><a href="#local-6989586621684425933"><span class="hs-identifier hs-var hs-var">onHostOp</span></a></span></span><span> </span><span id="local-6989586621684425932"><span class="annot"><span class="annottext">SymbolTable (SinkRep GPU)
+</span><a href="#local-6989586621684425932"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684425931"><span class="annot"><span class="annottext">Sinking (SinkRep GPU)
+</span><a href="#local-6989586621684425931"><span class="hs-identifier hs-var">sinking</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span id="local-6989586621684425929"><span class="annot"><span class="annottext">SegOp SegLevel (SinkRep GPU)
+</span><a href="#local-6989586621684425929"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-243"></span><span>      </span><span class="annot"><span class="annottext">(SegOp SegLevel (SinkRep GPU)
+ -&gt; HostOp (SinkRep GPU) (SOAC (SinkRep GPU)))
+-&gt; (SegOp SegLevel (SinkRep GPU), Sunk)
+-&gt; (HostOp (SinkRep GPU) (SOAC (SinkRep GPU)), Sunk)
+forall (p :: * -&gt; * -&gt; *) a b c.
+Bifunctor p =&gt;
+(a -&gt; b) -&gt; p a c -&gt; p b c
+</span><span class="hs-identifier hs-var">first</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel (SinkRep GPU)
+-&gt; HostOp (SinkRep GPU) (SOAC (SinkRep GPU))
+forall rep op. SegOp SegLevel rep -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-var">SegOp</span></a></span><span> </span><span class="annot"><span class="annottext">((SegOp SegLevel (SinkRep GPU), Sunk)
+ -&gt; (HostOp (SinkRep GPU) (SOAC (SinkRep GPU)), Sunk))
+-&gt; (SegOp SegLevel (SinkRep GPU), Sunk)
+-&gt; (HostOp (SinkRep GPU) (SOAC (SinkRep GPU)), Sunk)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep GPU) (Op (SinkRep GPU))
+-&gt; Sinker (SinkRep GPU) (SegOp SegLevel (SinkRep GPU))
+forall rep lvl.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (SegOp lvl rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseSegOp"><span class="hs-identifier hs-var">optimiseSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep GPU) (Op (SinkRep GPU))
+</span><a href="#local-6989586621684425933"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable (SinkRep GPU)
+</span><a href="#local-6989586621684425932"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking (SinkRep GPU)
+</span><a href="#local-6989586621684425931"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel (SinkRep GPU)
+</span><a href="#local-6989586621684425929"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-244"></span><span>    </span><span class="annot"><a href="#local-6989586621684425933"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable (SinkRep GPU)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Sinking (SinkRep GPU)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684425927"><span class="annot"><span class="annottext">Op (SinkRep GPU)
+</span><a href="#local-6989586621684425927"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Op (SinkRep GPU)
+</span><a href="#local-6989586621684425927"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-245"></span><span>
+</span><span id="line-246"></span><span class="hs-comment">-- | Sinking for multicore.</span><span>
+</span><span id="line-247"></span><span class="annot"><a href="Futhark.Optimise.Sink.html#sinkMC"><span class="hs-identifier hs-type">sinkMC</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MC.html#MC"><span class="hs-identifier hs-type">MC</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MC.html#MC"><span class="hs-identifier hs-type">MC</span></a></span><span>
+</span><span id="line-248"></span><span id="sinkMC"><span class="annot"><span class="annottext">sinkMC :: Pass MC MC
+</span><a href="Futhark.Optimise.Sink.html#sinkMC"><span class="hs-identifier hs-var hs-var">sinkMC</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep MC) (Op (SinkRep MC)) -&gt; Pass MC MC
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep),
+ IndexOp (OpWithAliases (Op rep))) =&gt;
+Sinker (SinkRep rep) (Op (SinkRep rep)) -&gt; Pass rep rep
+</span><a href="Futhark.Optimise.Sink.html#sink"><span class="hs-identifier hs-var">sink</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep MC) (Op (SinkRep MC))
+</span><a href="#local-6989586621684425926"><span class="hs-identifier hs-var">onHostOp</span></a></span><span>
+</span><span id="line-249"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-250"></span><span>    </span><span class="annot"><a href="#local-6989586621684425926"><span class="hs-identifier hs-type">onHostOp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Sink.html#Sinker"><span class="hs-identifier hs-type">Sinker</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Sink.html#SinkRep"><span class="hs-identifier hs-type">SinkRep</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MC.html#MC"><span class="hs-identifier hs-type">MC</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Sink.html#SinkRep"><span class="hs-identifier hs-type">SinkRep</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MC.html#MC"><span class="hs-identifier hs-type">MC</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-251"></span><span>    </span><span id="local-6989586621684425926"><span class="annot"><span class="annottext">onHostOp :: Sinker (SinkRep MC) (Op (SinkRep MC))
+</span><a href="#local-6989586621684425926"><span class="hs-identifier hs-var hs-var">onHostOp</span></a></span></span><span> </span><span id="local-6989586621684425925"><span class="annot"><span class="annottext">SymbolTable (SinkRep MC)
+</span><a href="#local-6989586621684425925"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684425924"><span class="annot"><span class="annottext">Sinking (SinkRep MC)
+</span><a href="#local-6989586621684425924"><span class="hs-identifier hs-var">sinking</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684425922"><span class="annot"><span class="annottext">Maybe (SegOp () (SinkRep MC))
+</span><a href="#local-6989586621684425922"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684425921"><span class="annot"><span class="annottext">SegOp () (SinkRep MC)
+</span><a href="#local-6989586621684425921"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-252"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684425920"><span class="annot"><span class="annottext">Maybe (SegOp () (SinkRep MC))
+</span><a href="#local-6989586621684425920"><span class="hs-identifier hs-var">par_op'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684425919"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684425919"><span class="hs-identifier hs-var">par_sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-253"></span><span>            </span><span class="annot"><span class="annottext">(Maybe (SegOp () (SinkRep MC)), Sunk)
+-&gt; (SegOp () (SinkRep MC) -&gt; (Maybe (SegOp () (SinkRep MC)), Sunk))
+-&gt; Maybe (SegOp () (SinkRep MC))
+-&gt; (Maybe (SegOp () (SinkRep MC)), Sunk)
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span>
+</span><span id="line-254"></span><span>              </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe (SegOp () (SinkRep MC))
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-255"></span><span>              </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SegOp () (SinkRep MC) -&gt; Maybe (SegOp () (SinkRep MC)))
+-&gt; (SegOp () (SinkRep MC), Sunk)
+-&gt; (Maybe (SegOp () (SinkRep MC)), Sunk)
+forall (p :: * -&gt; * -&gt; *) a b c.
+Bifunctor p =&gt;
+(a -&gt; b) -&gt; p a c -&gt; p b c
+</span><span class="hs-identifier hs-var">first</span></span><span> </span><span class="annot"><span class="annottext">SegOp () (SinkRep MC) -&gt; Maybe (SegOp () (SinkRep MC))
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">((SegOp () (SinkRep MC), Sunk)
+ -&gt; (Maybe (SegOp () (SinkRep MC)), Sunk))
+-&gt; (SegOp () (SinkRep MC) -&gt; (SegOp () (SinkRep MC), Sunk))
+-&gt; SegOp () (SinkRep MC)
+-&gt; (Maybe (SegOp () (SinkRep MC)), Sunk)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep MC) (Op (SinkRep MC))
+-&gt; Sinker (SinkRep MC) (SegOp () (SinkRep MC))
+forall rep lvl.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (SegOp lvl rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseSegOp"><span class="hs-identifier hs-var">optimiseSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep MC) (Op (SinkRep MC))
+</span><a href="#local-6989586621684425926"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable (SinkRep MC)
+</span><a href="#local-6989586621684425925"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking (SinkRep MC)
+</span><a href="#local-6989586621684425924"><span class="hs-identifier hs-var">sinking</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-256"></span><span>              </span><span class="annot"><span class="annottext">Maybe (SegOp () (SinkRep MC))
+</span><a href="#local-6989586621684425922"><span class="hs-identifier hs-var">par_op</span></a></span><span>
+</span><span id="line-257"></span><span>          </span><span class="hs-special">(</span><span id="local-6989586621684425918"><span class="annot"><span class="annottext">SegOp () (SinkRep MC)
+</span><a href="#local-6989586621684425918"><span class="hs-identifier hs-var">op'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684425917"><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684425917"><span class="hs-identifier hs-var">sunk</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep MC) (Op (SinkRep MC))
+-&gt; Sinker (SinkRep MC) (SegOp () (SinkRep MC))
+forall rep lvl.
+Constraints rep =&gt;
+Sinker rep (Op rep) -&gt; Sinker rep (SegOp lvl rep)
+</span><a href="Futhark.Optimise.Sink.html#optimiseSegOp"><span class="hs-identifier hs-var">optimiseSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">Sinker (SinkRep MC) (Op (SinkRep MC))
+</span><a href="#local-6989586621684425926"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable (SinkRep MC)
+</span><a href="#local-6989586621684425925"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Sinking (SinkRep MC)
+</span><a href="#local-6989586621684425924"><span class="hs-identifier hs-var">sinking</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () (SinkRep MC)
+</span><a href="#local-6989586621684425921"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-258"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe (SegOp () (SinkRep MC))
+-&gt; SegOp () (SinkRep MC) -&gt; MCOp (SinkRep MC) (SOAC (SinkRep MC))
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () (SinkRep MC))
+</span><a href="#local-6989586621684425920"><span class="hs-identifier hs-var">par_op'</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () (SinkRep MC)
+</span><a href="#local-6989586621684425918"><span class="hs-identifier hs-var">op'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684425919"><span class="hs-identifier hs-var">par_sunk</span></a></span><span> </span><span class="annot"><span class="annottext">Sunk -&gt; Sunk -&gt; Sunk
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Sunk
+</span><a href="#local-6989586621684425917"><span class="hs-identifier hs-var">sunk</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-259"></span><span>    </span><span class="annot"><a href="#local-6989586621684425926"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable (SinkRep MC)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Sinking (SinkRep MC)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684425916"><span class="annot"><span class="annottext">Op (SinkRep MC)
+</span><a href="#local-6989586621684425916"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Op (SinkRep MC)
+</span><a href="#local-6989586621684425916"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Sunk
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-260"></span></pre></body></html>

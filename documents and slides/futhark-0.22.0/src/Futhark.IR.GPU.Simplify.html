@@ -1,0 +1,478 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ConstraintKinds #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE MultiParamTypeClasses #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# OPTIONS_GHC -fno-warn-orphans #-}</span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.IR.GPU.Simplify</span><span>
+</span><span id="line-9"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyGPU"><span class="hs-identifier">simplifyGPU</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyLambda"><span class="hs-identifier">simplifyLambda</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier">GPU</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Building blocks</span></span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier">simplifyKernelOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html"><span class="hs-identifier">Futhark.Analysis.SymbolTable</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">ST</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html"><span class="hs-identifier">Futhark.IR.GPU</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.Simplify.html"><span class="hs-identifier">Futhark.IR.SOACS.Simplify</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">SOAC</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.html"><span class="hs-identifier">Futhark.Optimise.Simplify</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Simplify</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html"><span class="hs-identifier">Futhark.Optimise.Simplify.Engine</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Engine</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html"><span class="hs-identifier">Futhark.Optimise.Simplify.Rep</span></a></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html"><span class="hs-identifier">Futhark.Optimise.Simplify.Rule</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.html"><span class="hs-identifier">Futhark.Optimise.Simplify.Rules</span></a></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pass.html"><span class="hs-identifier">Futhark.Pass</span></a></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Tools.html"><span class="hs-identifier">Futhark.Tools</span></a></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Transform.FirstOrderTransform.html"><span class="hs-identifier">Futhark.Transform.FirstOrderTransform</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">FOT</span></span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simpleGPU"><span class="hs-identifier hs-type">simpleGPU</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimpleOps"><span class="hs-identifier hs-type">Simplify.SimpleOps</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span>
+</span><span id="line-32"></span><span id="simpleGPU"><span class="annot"><span class="annottext">simpleGPU :: SimpleOps GPU
+</span><a href="Futhark.IR.GPU.Simplify.html#simpleGPU"><span class="hs-identifier hs-var hs-var">simpleGPU</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SimplifyOp GPU (Op (Wise GPU)) -&gt; SimpleOps GPU
+forall rep.
+(SimplifiableRep rep, Buildable rep) =&gt;
+SimplifyOp rep (Op (Wise rep)) -&gt; SimpleOps rep
+</span><a href="Futhark.Optimise.Simplify.Engine.html#bindableSimpleOps"><span class="hs-identifier hs-var">Simplify.bindableSimpleOps</span></a></span><span> </span><span class="annot"><span class="annottext">(SimplifyOp GPU (Op (Wise GPU)) -&gt; SimpleOps GPU)
+-&gt; SimplifyOp GPU (Op (Wise GPU)) -&gt; SimpleOps GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SimplifyOp GPU (SOAC (Wise GPU))
+-&gt; HostOp (Wise GPU) (SOAC (Wise GPU))
+-&gt; SimpleM
+     GPU (HostOp (Wise GPU) (SOAC (Wise GPU)), Stms (Wise GPU))
+forall rep op.
+(SimplifiableRep rep, BodyDec rep ~ ()) =&gt;
+SimplifyOp rep op
+-&gt; HostOp (Wise rep) op
+-&gt; SimpleM rep (HostOp (Wise rep) op, Stms (Wise rep))
+</span><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier hs-var">simplifyKernelOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplifyOp GPU (SOAC (Wise GPU))
+forall rep. SimplifiableRep rep =&gt; SimplifyOp rep (SOAC (Wise rep))
+</span><a href="Futhark.IR.SOACS.Simplify.html#simplifySOAC"><span class="hs-identifier hs-var">SOAC.simplifySOAC</span></a></span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyGPU"><span class="hs-identifier hs-type">simplifyGPU</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span id="simplifyGPU"><span class="annot"><span class="annottext">simplifyGPU :: Prog GPU -&gt; PassM (Prog GPU)
+</span><a href="Futhark.IR.GPU.Simplify.html#simplifyGPU"><span class="hs-identifier hs-var hs-var">simplifyGPU</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-36"></span><span>  </span><span class="annot"><span class="annottext">SimpleOps GPU
+-&gt; RuleBook (Wise GPU)
+-&gt; HoistBlockers GPU
+-&gt; Prog GPU
+-&gt; PassM (Prog GPU)
+forall rep.
+SimplifiableRep rep =&gt;
+SimpleOps rep
+-&gt; RuleBook (Wise rep)
+-&gt; HoistBlockers rep
+-&gt; Prog rep
+-&gt; PassM (Prog rep)
+</span><a href="Futhark.Optimise.Simplify.html#simplifyProg"><span class="hs-identifier hs-var">Simplify.simplifyProg</span></a></span><span> </span><span class="annot"><span class="annottext">SimpleOps GPU
+</span><a href="Futhark.IR.GPU.Simplify.html#simpleGPU"><span class="hs-identifier hs-var">simpleGPU</span></a></span><span> </span><span class="annot"><span class="annottext">RuleBook (Wise GPU)
+</span><a href="Futhark.IR.GPU.Simplify.html#kernelRules"><span class="hs-identifier hs-var">kernelRules</span></a></span><span> </span><span class="annot"><span class="annottext">HoistBlockers GPU
+forall rep. HoistBlockers rep
+</span><a href="Futhark.Optimise.Simplify.Engine.html#noExtraHoistBlockers"><span class="hs-identifier hs-var">Simplify.noExtraHoistBlockers</span></a></span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span id="local-6989586621684437216"><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyLambda"><span class="hs-identifier hs-type">simplifyLambda</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437216"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437216"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-40"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-41"></span><span>  </span><span class="annot"><a href="#local-6989586621684437216"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-42"></span><span id="simplifyLambda"><span class="annot"><span class="annottext">simplifyLambda :: forall (m :: * -&gt; *).
+(HasScope GPU m, MonadFreshNames m) =&gt;
+Lambda GPU -&gt; m (Lambda GPU)
+</span><a href="Futhark.IR.GPU.Simplify.html#simplifyLambda"><span class="hs-identifier hs-var hs-var">simplifyLambda</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-43"></span><span>  </span><span class="annot"><span class="annottext">SimpleOps GPU
+-&gt; RuleBook (Wise GPU)
+-&gt; HoistBlockers GPU
+-&gt; Lambda GPU
+-&gt; m (Lambda GPU)
+forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, HasScope rep m, SimplifiableRep rep) =&gt;
+SimpleOps rep
+-&gt; RuleBook (Wise rep)
+-&gt; HoistBlockers rep
+-&gt; Lambda rep
+-&gt; m (Lambda rep)
+</span><a href="Futhark.Optimise.Simplify.html#simplifyLambda"><span class="hs-identifier hs-var">Simplify.simplifyLambda</span></a></span><span> </span><span class="annot"><span class="annottext">SimpleOps GPU
+</span><a href="Futhark.IR.GPU.Simplify.html#simpleGPU"><span class="hs-identifier hs-var">simpleGPU</span></a></span><span> </span><span class="annot"><span class="annottext">RuleBook (Wise GPU)
+</span><a href="Futhark.IR.GPU.Simplify.html#kernelRules"><span class="hs-identifier hs-var">kernelRules</span></a></span><span> </span><span class="annot"><span class="annottext">HoistBlockers GPU
+forall rep. HoistBlockers rep
+</span><a href="Futhark.Optimise.Simplify.Engine.html#noExtraHoistBlockers"><span class="hs-identifier hs-var">Engine.noExtraHoistBlockers</span></a></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span id="local-6989586621684437223"><span id="local-6989586621684437224"><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier hs-type">simplifyKernelOp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-46"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimplifiableRep"><span class="hs-identifier hs-type">Engine.SimplifiableRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437224"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-47"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#BodyDec"><span class="hs-identifier hs-type">BodyDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437224"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-49"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimplifyOp"><span class="hs-identifier hs-type">Simplify.SimplifyOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437224"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437223"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-50"></span><span>  </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#HostOp"><span class="hs-identifier hs-type">HostOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437224"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684437223"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-51"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimpleM"><span class="hs-identifier hs-type">Engine.SimpleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437224"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#HostOp"><span class="hs-identifier hs-type">HostOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437224"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684437223"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437224"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-52"></span><span id="simplifyKernelOp"><span class="annot"><span class="annottext">simplifyKernelOp :: forall rep op.
+(SimplifiableRep rep, BodyDec rep ~ ()) =&gt;
+SimplifyOp rep op
+-&gt; HostOp (Wise rep) op
+-&gt; SimpleM rep (HostOp (Wise rep) op, Stms (Wise rep))
+</span><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier hs-var hs-var">simplifyKernelOp</span></a></span></span><span> </span><span id="local-6989586621684436923"><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><a href="#local-6989586621684436923"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684436921"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684436921"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684436920"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684436920"><span class="hs-identifier hs-var">op'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684436919"><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684436919"><span class="hs-identifier hs-var">stms</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><a href="#local-6989586621684436923"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684436921"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-54"></span><span>  </span><span class="annot"><span class="annottext">(HostOp (Wise rep) op, Stms (Wise rep))
+-&gt; SimpleM rep (HostOp (Wise rep) op, Stms (Wise rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">op -&gt; HostOp (Wise rep) op
+forall rep op. op -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684436920"><span class="hs-identifier hs-var">op'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684436919"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-55"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier hs-var">simplifyKernelOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span id="local-6989586621684436917"><span class="annot"><span class="annottext">SegOp SegLevel (Wise rep)
+</span><a href="#local-6989586621684436917"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684436916"><span class="annot"><span class="annottext">SegOp SegLevel (Wise rep)
+</span><a href="#local-6989586621684436916"><span class="hs-identifier hs-var">op'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684436915"><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684436915"><span class="hs-identifier hs-var">hoisted</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel (Wise rep)
+-&gt; SimpleM rep (SegOp SegLevel (Wise rep), Stms (Wise rep))
+forall rep lvl.
+(SimplifiableRep rep, BodyDec rep ~ (), Simplifiable lvl) =&gt;
+SegOp lvl (Wise rep)
+-&gt; SimpleM rep (SegOp lvl (Wise rep), Stms (Wise rep))
+</span><a href="Futhark.IR.SegOp.html#simplifySegOp"><span class="hs-identifier hs-var">simplifySegOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel (Wise rep)
+</span><a href="#local-6989586621684436917"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><span class="annottext">(HostOp (Wise rep) op, Stms (Wise rep))
+-&gt; SimpleM rep (HostOp (Wise rep) op, Stms (Wise rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegOp SegLevel (Wise rep) -&gt; HostOp (Wise rep) op
+forall rep op. SegOp SegLevel rep -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-var">SegOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel (Wise rep)
+</span><a href="#local-6989586621684436916"><span class="hs-identifier hs-var">op'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684436915"><span class="hs-identifier hs-var">hoisted</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-58"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier hs-var">simplifyKernelOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-type">SizeOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SplitSpace"><span class="hs-identifier hs-type">SplitSpace</span></a></span><span> </span><span id="local-6989586621684436911"><span class="annot"><span class="annottext">SplitOrdering
+</span><a href="#local-6989586621684436911"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span id="local-6989586621684436910"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436910"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684436909"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436909"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684436908"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436908"><span class="hs-identifier hs-var">elems_per_thread</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">,</span><span class="hs-special">)</span><span>
+</span><span id="line-60"></span><span>    </span><span class="annot"><span class="annottext">(HostOp (Wise rep) op
+ -&gt; Stms (Wise rep) -&gt; (HostOp (Wise rep) op, Stms (Wise rep)))
+-&gt; SimpleM rep (HostOp (Wise rep) op)
+-&gt; SimpleM
+     rep (Stms (Wise rep) -&gt; (HostOp (Wise rep) op, Stms (Wise rep)))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">SizeOp -&gt; HostOp (Wise rep) op
+forall rep op. SizeOp -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-var">SizeOp</span></a></span><span>
+</span><span id="line-61"></span><span>            </span><span class="annot"><span class="annottext">(SizeOp -&gt; HostOp (Wise rep) op)
+-&gt; SimpleM rep SizeOp -&gt; SimpleM rep (HostOp (Wise rep) op)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">SplitOrdering -&gt; SubExp -&gt; SubExp -&gt; SubExp -&gt; SizeOp
+</span><a href="Futhark.IR.GPU.Op.html#SplitSpace"><span class="hs-identifier hs-var">SplitSpace</span></a></span><span> </span><span class="annot"><span class="annottext">(SplitOrdering -&gt; SubExp -&gt; SubExp -&gt; SubExp -&gt; SizeOp)
+-&gt; SimpleM rep SplitOrdering
+-&gt; SimpleM rep (SubExp -&gt; SubExp -&gt; SubExp -&gt; SizeOp)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SplitOrdering -&gt; SimpleM rep SplitOrdering
+forall e rep.
+(Simplifiable e, SimplifiableRep rep) =&gt;
+e -&gt; SimpleM rep e
+</span><a href="Futhark.Optimise.Simplify.Engine.html#simplify"><span class="hs-identifier hs-var">Engine.simplify</span></a></span><span> </span><span class="annot"><span class="annottext">SplitOrdering
+</span><a href="#local-6989586621684436911"><span class="hs-identifier hs-var">o</span></a></span><span> </span><span class="annot"><span class="annottext">SimpleM rep (SubExp -&gt; SubExp -&gt; SubExp -&gt; SizeOp)
+-&gt; SimpleM rep SubExp -&gt; SimpleM rep (SubExp -&gt; SubExp -&gt; SizeOp)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; SimpleM rep SubExp
+forall e rep.
+(Simplifiable e, SimplifiableRep rep) =&gt;
+e -&gt; SimpleM rep e
+</span><a href="Futhark.Optimise.Simplify.Engine.html#simplify"><span class="hs-identifier hs-var">Engine.simplify</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436910"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-62"></span><span>                    </span><span class="annot"><span class="annottext">SimpleM rep (SubExp -&gt; SubExp -&gt; SizeOp)
+-&gt; SimpleM rep SubExp -&gt; SimpleM rep (SubExp -&gt; SizeOp)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; SimpleM rep SubExp
+forall e rep.
+(Simplifiable e, SimplifiableRep rep) =&gt;
+e -&gt; SimpleM rep e
+</span><a href="Futhark.Optimise.Simplify.Engine.html#simplify"><span class="hs-identifier hs-var">Engine.simplify</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436909"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-63"></span><span>                    </span><span class="annot"><span class="annottext">SimpleM rep (SubExp -&gt; SizeOp)
+-&gt; SimpleM rep SubExp -&gt; SimpleM rep SizeOp
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; SimpleM rep SubExp
+forall e rep.
+(Simplifiable e, SimplifiableRep rep) =&gt;
+e -&gt; SimpleM rep e
+</span><a href="Futhark.Optimise.Simplify.Engine.html#simplify"><span class="hs-identifier hs-var">Engine.simplify</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436908"><span class="hs-identifier hs-var">elems_per_thread</span></a></span><span>
+</span><span id="line-64"></span><span>                </span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span>        </span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><span class="annottext">SimpleM
+  rep (Stms (Wise rep) -&gt; (HostOp (Wise rep) op, Stms (Wise rep)))
+-&gt; SimpleM rep (Stms (Wise rep))
+-&gt; SimpleM rep (HostOp (Wise rep) op, Stms (Wise rep))
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep) -&gt; SimpleM rep (Stms (Wise rep))
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-67"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier hs-var">simplifyKernelOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-type">SizeOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#GetSize"><span class="hs-identifier hs-type">GetSize</span></a></span><span> </span><span id="local-6989586621684436904"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684436904"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span id="local-6989586621684436903"><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684436903"><span class="hs-identifier hs-var">size_class</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><span class="annottext">(HostOp (Wise rep) op, Stms (Wise rep))
+-&gt; SimpleM rep (HostOp (Wise rep) op, Stms (Wise rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SizeOp -&gt; HostOp (Wise rep) op
+forall rep op. SizeOp -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-var">SizeOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SizeOp -&gt; HostOp (Wise rep) op) -&gt; SizeOp -&gt; HostOp (Wise rep) op
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; SizeClass -&gt; SizeOp
+</span><a href="Futhark.IR.GPU.Op.html#GetSize"><span class="hs-identifier hs-var">GetSize</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684436904"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684436903"><span class="hs-identifier hs-var">size_class</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier hs-var">simplifyKernelOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-type">SizeOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#GetSizeMax"><span class="hs-identifier hs-type">GetSizeMax</span></a></span><span> </span><span id="local-6989586621684436901"><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684436901"><span class="hs-identifier hs-var">size_class</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-70"></span><span>  </span><span class="annot"><span class="annottext">(HostOp (Wise rep) op, Stms (Wise rep))
+-&gt; SimpleM rep (HostOp (Wise rep) op, Stms (Wise rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SizeOp -&gt; HostOp (Wise rep) op
+forall rep op. SizeOp -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-var">SizeOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SizeOp -&gt; HostOp (Wise rep) op) -&gt; SizeOp -&gt; HostOp (Wise rep) op
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SizeClass -&gt; SizeOp
+</span><a href="Futhark.IR.GPU.Op.html#GetSizeMax"><span class="hs-identifier hs-var">GetSizeMax</span></a></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684436901"><span class="hs-identifier hs-var">size_class</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-71"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier hs-var">simplifyKernelOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-type">SizeOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#CmpSizeLe"><span class="hs-identifier hs-type">CmpSizeLe</span></a></span><span> </span><span id="local-6989586621684436899"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684436899"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span id="local-6989586621684436898"><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684436898"><span class="hs-identifier hs-var">size_class</span></a></span></span><span> </span><span id="local-6989586621684436897"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436897"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-72"></span><span>  </span><span id="local-6989586621684436896"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436896"><span class="hs-identifier hs-var">x'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; SimpleM rep SubExp
+forall e rep.
+(Simplifiable e, SimplifiableRep rep) =&gt;
+e -&gt; SimpleM rep e
+</span><a href="Futhark.Optimise.Simplify.Engine.html#simplify"><span class="hs-identifier hs-var">Engine.simplify</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436897"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-73"></span><span>  </span><span class="annot"><span class="annottext">(HostOp (Wise rep) op, Stms (Wise rep))
+-&gt; SimpleM rep (HostOp (Wise rep) op, Stms (Wise rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SizeOp -&gt; HostOp (Wise rep) op
+forall rep op. SizeOp -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-var">SizeOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SizeOp -&gt; HostOp (Wise rep) op) -&gt; SizeOp -&gt; HostOp (Wise rep) op
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; SizeClass -&gt; SubExp -&gt; SizeOp
+</span><a href="Futhark.IR.GPU.Op.html#CmpSizeLe"><span class="hs-identifier hs-var">CmpSizeLe</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684436899"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684436898"><span class="hs-identifier hs-var">size_class</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436896"><span class="hs-identifier hs-var">x'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyKernelOp"><span class="hs-identifier hs-var">simplifyKernelOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-type">SizeOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#CalcNumGroups"><span class="hs-identifier hs-type">CalcNumGroups</span></a></span><span> </span><span id="local-6989586621684436894"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436894"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684436893"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684436893"><span class="hs-identifier hs-var">max_num_groups</span></a></span></span><span> </span><span id="local-6989586621684436892"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436892"><span class="hs-identifier hs-var">group_size</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-75"></span><span>  </span><span id="local-6989586621684436891"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436891"><span class="hs-identifier hs-var">w'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; SimpleM rep SubExp
+forall e rep.
+(Simplifiable e, SimplifiableRep rep) =&gt;
+e -&gt; SimpleM rep e
+</span><a href="Futhark.Optimise.Simplify.Engine.html#simplify"><span class="hs-identifier hs-var">Engine.simplify</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436894"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-76"></span><span>  </span><span class="annot"><span class="annottext">(HostOp (Wise rep) op, Stms (Wise rep))
+-&gt; SimpleM rep (HostOp (Wise rep) op, Stms (Wise rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SizeOp -&gt; HostOp (Wise rep) op
+forall rep op. SizeOp -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-var">SizeOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SizeOp -&gt; HostOp (Wise rep) op) -&gt; SizeOp -&gt; HostOp (Wise rep) op
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Name -&gt; SubExp -&gt; SizeOp
+</span><a href="Futhark.IR.GPU.Op.html#CalcNumGroups"><span class="hs-identifier hs-var">CalcNumGroups</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436891"><span class="hs-identifier hs-var">w'</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684436893"><span class="hs-identifier hs-var">max_num_groups</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684436892"><span class="hs-identifier hs-var">group_size</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Traversals.html#TraverseOpStms"><span class="hs-identifier hs-type">TraverseOpStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-79"></span><span>  </span><span id="local-6989586621684436885"><span class="annot"><span class="annottext">traverseOpStms :: forall (m :: * -&gt; *).
+Monad m =&gt;
+OpStmsTraverser m (Op (Wise GPU)) (Wise GPU)
+</span><a href="Futhark.IR.Traversals.html#traverseOpStms"><span class="hs-identifier hs-var hs-var hs-var hs-var">traverseOpStms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OpStmsTraverser m (SOAC (Wise GPU)) (Wise GPU)
+-&gt; OpStmsTraverser
+     m (HostOp (Wise GPU) (SOAC (Wise GPU))) (Wise GPU)
+forall (m :: * -&gt; *) op rep.
+Monad m =&gt;
+OpStmsTraverser m op rep -&gt; OpStmsTraverser m (HostOp rep op) rep
+</span><a href="Futhark.IR.GPU.Op.html#traverseHostOpStms"><span class="hs-identifier hs-var">traverseHostOpStms</span></a></span><span> </span><span class="annot"><span class="annottext">OpStmsTraverser m (SOAC (Wise GPU)) (Wise GPU)
+forall (m :: * -&gt; *) rep.
+Monad m =&gt;
+OpStmsTraverser m (SOAC rep) rep
+</span><a href="Futhark.IR.SOACS.SOAC.html#traverseSOACStms"><span class="hs-identifier hs-var">traverseSOACStms</span></a></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684436874"><span id="local-6989586621684436876"><span id="local-6989586621684436878"><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-type">BuilderOps</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#HasSegOp"><span class="hs-identifier hs-type">HasSegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-keyword">type</span><span> </span><span id="SegOpLevel"><span class="annot"><a href="Futhark.IR.SegOp.html#SegOpLevel"><span class="hs-identifier hs-var">SegOpLevel</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span>
+</span><span id="line-85"></span><span>  </span><span id="local-6989586621684436869"><span class="annot"><span class="annottext">asSegOp :: Op (Wise GPU) -&gt; Maybe (SegOp (SegOpLevel (Wise GPU)) (Wise GPU))
+</span><a href="Futhark.IR.SegOp.html#asSegOp"><span class="hs-identifier hs-var hs-var hs-var hs-var">asSegOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span id="local-6989586621684436867"><span class="annot"><span class="annottext">SegOp SegLevel (Wise GPU)
+</span><a href="#local-6989586621684436867"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel (Wise GPU) -&gt; Maybe (SegOp SegLevel (Wise GPU))
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel (Wise GPU)
+</span><a href="#local-6989586621684436867"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-86"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#asSegOp"><span class="hs-identifier hs-var">asSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">Op (Wise GPU)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp (SegOpLevel (Wise GPU)) (Wise GPU))
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-87"></span><span>  </span><span id="local-6989586621684436866"><span class="annot"><span class="annottext">segOp :: SegOp (SegOpLevel (Wise GPU)) (Wise GPU) -&gt; Op (Wise GPU)
+</span><a href="Futhark.IR.SegOp.html#segOp"><span class="hs-identifier hs-var hs-var hs-var hs-var">segOp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegOp (SegOpLevel (Wise GPU)) (Wise GPU) -&gt; Op (Wise GPU)
+forall rep op. SegOp SegLevel rep -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-var">SegOp</span></a></span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.Simplify.html#HasSOAC"><span class="hs-identifier hs-type">SOAC.HasSOAC</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-90"></span><span>  </span><span id="local-6989586621684436861"><span class="annot"><span class="annottext">asSOAC :: Op (Wise GPU) -&gt; Maybe (SOAC (Wise GPU))
+</span><a href="Futhark.IR.SOACS.Simplify.html#asSOAC"><span class="hs-identifier hs-var hs-var hs-var hs-var">asSOAC</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684436859"><span class="annot"><span class="annottext">SOAC (Wise GPU)
+</span><a href="#local-6989586621684436859"><span class="hs-identifier hs-var">soac</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SOAC (Wise GPU) -&gt; Maybe (SOAC (Wise GPU))
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">SOAC (Wise GPU)
+</span><a href="#local-6989586621684436859"><span class="hs-identifier hs-var">soac</span></a></span><span>
+</span><span id="line-91"></span><span>  </span><span class="annot"><a href="Futhark.IR.SOACS.Simplify.html#asSOAC"><span class="hs-identifier hs-var">asSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">Op (Wise GPU)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (SOAC (Wise GPU))
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-92"></span><span>  </span><span id="local-6989586621684436858"><span class="annot"><span class="annottext">soacOp :: SOAC (Wise GPU) -&gt; Op (Wise GPU)
+</span><a href="Futhark.IR.SOACS.Simplify.html#soacOp"><span class="hs-identifier hs-var hs-var hs-var hs-var">soacOp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SOAC (Wise GPU) -&gt; Op (Wise GPU)
+forall rep op. op -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#kernelRules"><span class="hs-identifier hs-type">kernelRules</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-type">RuleBook</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-95"></span><span id="kernelRules"><span class="annot"><span class="annottext">kernelRules :: RuleBook (Wise GPU)
+</span><a href="Futhark.IR.GPU.Simplify.html#kernelRules"><span class="hs-identifier hs-var hs-var">kernelRules</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-96"></span><span>  </span><span class="annot"><span class="annottext">RuleBook (Wise GPU)
+forall rep.
+(BuilderOps rep, TraverseOpStms rep, Aliased rep) =&gt;
+RuleBook rep
+</span><a href="Futhark.Optimise.Simplify.Rules.html#standardRules"><span class="hs-identifier hs-var">standardRules</span></a></span><span> </span><span class="annot"><span class="annottext">RuleBook (Wise GPU) -&gt; RuleBook (Wise GPU) -&gt; RuleBook (Wise GPU)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">RuleBook (Wise GPU)
+forall rep.
+(HasSegOp rep, BuilderOps rep, Buildable rep) =&gt;
+RuleBook rep
+</span><a href="Futhark.IR.SegOp.html#segOpRules"><span class="hs-identifier hs-var">segOpRules</span></a></span><span>
+</span><span id="line-97"></span><span>    </span><span class="annot"><span class="annottext">RuleBook (Wise GPU) -&gt; RuleBook (Wise GPU) -&gt; RuleBook (Wise GPU)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[TopDownRule (Wise GPU)]
+-&gt; [BottomUpRule (Wise GPU)] -&gt; RuleBook (Wise GPU)
+forall m. [TopDownRule m] -&gt; [BottomUpRule m] -&gt; RuleBook m
+</span><a href="Futhark.Optimise.Simplify.Rule.html#ruleBook"><span class="hs-identifier hs-var">ruleBook</span></a></span><span>
+</span><span id="line-98"></span><span>      </span><span class="hs-special">[</span><span> </span><span class="hs-comment">--RuleOp redomapIotaToLoop,</span><span>
+</span><span id="line-99"></span><span>        </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU)) -&gt; TopDownRule (Wise GPU)
+forall rep a. RuleOp rep a -&gt; SimplificationRule rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-var">RuleOp</span></a></span><span> </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU))
+forall rep.
+(Buildable rep, BuilderOps rep, HasSOAC rep) =&gt;
+TopDownRuleOp rep
+</span><a href="Futhark.IR.SOACS.Simplify.html#simplifyMapIota"><span class="hs-identifier hs-var">SOAC.simplifyMapIota</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-100"></span><span>        </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU)) -&gt; TopDownRule (Wise GPU)
+forall rep a. RuleOp rep a -&gt; SimplificationRule rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-var">RuleOp</span></a></span><span> </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU))
+forall rep.
+(Aliased rep, Buildable rep, BuilderOps rep, HasSOAC rep) =&gt;
+TopDownRuleOp rep
+</span><a href="Futhark.IR.SOACS.Simplify.html#removeUnusedSOACInput"><span class="hs-identifier hs-var">SOAC.removeUnusedSOACInput</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-101"></span><span>        </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU)) -&gt; TopDownRule (Wise GPU)
+forall rep a. RuleOp rep a -&gt; SimplificationRule rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-var">RuleOp</span></a></span><span> </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU))
+forall rep.
+(Buildable rep, BuilderOps rep, HasSOAC rep) =&gt;
+TopDownRuleOp rep
+</span><a href="Futhark.IR.SOACS.Simplify.html#simplifyKnownIterationSOAC"><span class="hs-identifier hs-var">SOAC.simplifyKnownIterationSOAC</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-102"></span><span>        </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU)) -&gt; TopDownRule (Wise GPU)
+forall rep a. RuleOp rep a -&gt; SimplificationRule rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-var">RuleOp</span></a></span><span> </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU))
+forall rep.
+(Aliased rep, Buildable rep, BuilderOps rep, HasSOAC rep) =&gt;
+TopDownRuleOp rep
+</span><a href="Futhark.IR.SOACS.Simplify.html#removeReplicateMapping"><span class="hs-identifier hs-var">SOAC.removeReplicateMapping</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-103"></span><span>        </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU)) -&gt; TopDownRule (Wise GPU)
+forall rep a. RuleOp rep a -&gt; SimplificationRule rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-var">RuleOp</span></a></span><span> </span><span class="annot"><span class="annottext">RuleOp (Wise GPU) (TopDown (Wise GPU))
+forall rep.
+(Buildable rep, BuilderOps rep, HasSOAC rep) =&gt;
+TopDownRuleOp rep
+</span><a href="Futhark.IR.SOACS.Simplify.html#liftIdentityMapping"><span class="hs-identifier hs-var">SOAC.liftIdentityMapping</span></a></span><span>
+</span><span id="line-104"></span><span>      </span><span class="hs-special">]</span><span>
+</span><span id="line-105"></span><span>      </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">RuleBasicOp (Wise GPU) (BottomUp (Wise GPU))
+-&gt; BottomUpRule (Wise GPU)
+forall rep a. RuleBasicOp rep a -&gt; SimplificationRule rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleBasicOp"><span class="hs-identifier hs-var">RuleBasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">RuleBasicOp (Wise GPU) (BottomUp (Wise GPU))
+forall rep.
+(BuilderOps rep, Aliased rep) =&gt;
+BottomUpRuleBasicOp rep
+</span><a href="Futhark.Optimise.Simplify.Rules.html#removeUnnecessaryCopy"><span class="hs-identifier hs-var">removeUnnecessaryCopy</span></a></span><span>
+</span><span id="line-106"></span><span>      </span><span class="hs-special">]</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="hs-comment">-- We turn reductions over (solely) iotas into do-loops, because there</span><span>
+</span><span id="line-109"></span><span class="hs-comment">-- is no useful structure here anyway.  This is mostly a hack to work</span><span>
+</span><span id="line-110"></span><span class="hs-comment">-- around the fact that loop tiling would otherwise pointlessly tile</span><span>
+</span><span id="line-111"></span><span class="hs-comment">-- them.</span><span>
+</span><span id="line-112"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#redomapIotaToLoop"><span class="hs-identifier hs-type">redomapIotaToLoop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleOp"><span class="hs-identifier hs-type">TopDownRuleOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span id="redomapIotaToLoop"><span class="annot"><span class="annottext">redomapIotaToLoop :: RuleOp (Wise GPU) (TopDown (Wise GPU))
+</span><a href="Futhark.IR.GPU.Simplify.html#redomapIotaToLoop"><span class="hs-identifier hs-var hs-var">redomapIotaToLoop</span></a></span></span><span> </span><span id="local-6989586621684436844"><span class="annot"><span class="annottext">TopDown (Wise GPU)
+</span><a href="#local-6989586621684436844"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684436843"><span class="annot"><span class="annottext">Pat (Wise GPU)
+</span><a href="#local-6989586621684436843"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684436842"><span class="annot"><span class="annottext">StmAux (ExpDec (Wise GPU))
+</span><a href="#local-6989586621684436842"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684436841"><span class="annot"><span class="annottext">soac :: SOAC (Wise GPU)
+</span><a href="#local-6989586621684436841"><span class="hs-identifier hs-var">soac</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#Screma"><span class="hs-identifier hs-type">Screma</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">[</span><span id="local-6989586621684436839"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684436839"><span class="hs-identifier hs-var">arr</span></a></span></span><span class="hs-special">]</span><span> </span><span id="local-6989586621684436838"><span class="annot"><span class="annottext">ScremaForm (Wise GPU)
+</span><a href="#local-6989586621684436838"><span class="hs-identifier hs-var">form</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="annottext">([Reduce (Wise GPU)], Lambda (Wise GPU))
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ScremaForm (Wise GPU)
+-&gt; Maybe ([Reduce (Wise GPU)], Lambda (Wise GPU))
+forall rep. ScremaForm rep -&gt; Maybe ([Reduce rep], Lambda rep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#isRedomapSOAC"><span class="hs-identifier hs-var">isRedomapSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">ScremaForm (Wise GPU)
+</span><a href="#local-6989586621684436838"><span class="hs-identifier hs-var">form</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-115"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Iota"><span class="hs-identifier hs-type">Iota</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Certs
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; TopDown (Wise GPU) -&gt; Maybe (BasicOp, Certs)
+forall rep. VName -&gt; SymbolTable rep -&gt; Maybe (BasicOp, Certs)
+</span><a href="Futhark.Analysis.SymbolTable.html#lookupBasicOp"><span class="hs-identifier hs-var">ST.lookupBasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684436839"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">TopDown (Wise GPU)
+</span><a href="#local-6989586621684436844"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-116"></span><span>    </span><span class="annot"><span class="annottext">RuleM (Wise GPU) () -&gt; Rule (Wise GPU)
+forall rep. RuleM rep () -&gt; Rule rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#Simplify"><span class="hs-identifier hs-var">Simplify</span></a></span><span> </span><span class="annot"><span class="annottext">(RuleM (Wise GPU) () -&gt; Rule (Wise GPU))
+-&gt; RuleM (Wise GPU) () -&gt; Rule (Wise GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Certs -&gt; RuleM (Wise GPU) () -&gt; RuleM (Wise GPU) ()
+forall (m :: * -&gt; *) a. MonadBuilder m =&gt; Certs -&gt; m a -&gt; m a
+</span><a href="Futhark.Builder.Class.html#certifying"><span class="hs-identifier hs-var">certifying</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StmAux (ExpWisdom, ()) -&gt; Certs
+forall dec. StmAux dec -&gt; Certs
+</span><a href="Futhark.IR.Syntax.html#stmAuxCerts"><span class="hs-identifier hs-var hs-var">stmAuxCerts</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpWisdom, ())
+StmAux (ExpDec (Wise GPU))
+</span><a href="#local-6989586621684436842"><span class="hs-identifier hs-var">aux</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(RuleM (Wise GPU) () -&gt; RuleM (Wise GPU) ())
+-&gt; RuleM (Wise GPU) () -&gt; RuleM (Wise GPU) ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Pat (Rep (RuleM (Wise GPU)))
+-&gt; SOAC (Rep (RuleM (Wise GPU))) -&gt; RuleM (Wise GPU) ()
+forall (m :: * -&gt; *).
+Transformer m =&gt;
+Pat (Rep m) -&gt; SOAC (Rep m) -&gt; m ()
+</span><a href="Futhark.Transform.FirstOrderTransform.html#transformSOAC"><span class="hs-identifier hs-var">FOT.transformSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">Pat (Rep (RuleM (Wise GPU)))
+Pat (Wise GPU)
+</span><a href="#local-6989586621684436843"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC (Rep (RuleM (Wise GPU)))
+SOAC (Wise GPU)
+</span><a href="#local-6989586621684436841"><span class="hs-identifier hs-var">soac</span></a></span><span>
+</span><span id="line-117"></span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#redomapIotaToLoop"><span class="hs-identifier hs-var">redomapIotaToLoop</span></a></span><span> </span><span class="annot"><span class="annottext">TopDown (Wise GPU)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Pat (Wise GPU)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec (Wise GPU))
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Op (Wise GPU)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-118"></span><span>  </span><span class="annot"><span class="annottext">Rule (Wise GPU)
+forall rep. Rule rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#Skip"><span class="hs-identifier hs-var">Skip</span></a></span><span>
+</span><span id="line-119"></span></pre></body></html>

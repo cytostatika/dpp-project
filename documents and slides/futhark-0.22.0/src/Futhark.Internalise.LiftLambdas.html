@@ -1,0 +1,889 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE Trustworthy #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- | Lambda-lifting of typed, monomorphic Futhark programs without</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- modules.  After this pass, the program will no longer contain any</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- 'LetFun's or 'Lambda's.</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Internalise.LiftLambdas</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#transformProg"><span class="hs-identifier">transformProg</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-9"></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State</span></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bifunctor</span></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Foldable</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">partition</span></span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Pretty.html"><span class="hs-identifier">Futhark.IR.Pretty</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html"><span class="hs-identifier">Futhark.Internalise.FreeVars</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">FV</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.html"><span class="hs-identifier">Language.Futhark</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.Traversals.html"><span class="hs-identifier">Language.Futhark.Traversals</span></a></span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">newtype</span><span> </span><span id="Env"><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#Env"><span class="hs-identifier hs-var">Env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Env"><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#Env"><span class="hs-identifier hs-var">Env</span></a></span></span><span> </span><span class="hs-special">{</span><span id="envReplace"><span class="annot"><span class="annottext">Env -&gt; Map VName Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#envReplace"><span class="hs-identifier hs-var hs-var">envReplace</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#initialEnv"><span class="hs-identifier hs-type">initialEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span>
+</span><span id="line-27"></span><span id="initialEnv"><span class="annot"><span class="annottext">initialEnv :: Env
+</span><a href="Futhark.Internalise.LiftLambdas.html#initialEnv"><span class="hs-identifier hs-var hs-var">initialEnv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName Exp -&gt; Env
+</span><a href="Futhark.Internalise.LiftLambdas.html#Env"><span class="hs-identifier hs-var">Env</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Exp
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">data</span><span> </span><span id="LiftState"><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftState"><span class="hs-identifier hs-var">LiftState</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="State"><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#State"><span class="hs-identifier hs-var">State</span></a></span></span><span>
+</span><span id="line-30"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="stateNameSource"><span class="annot"><span class="annottext">LiftState -&gt; VNameSource
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateNameSource"><span class="hs-identifier hs-var hs-var">stateNameSource</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-31"></span><span>    </span><span id="stateValBinds"><span class="annot"><span class="annottext">LiftState -&gt; [ValBind]
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateValBinds"><span class="hs-identifier hs-var hs-var">stateValBinds</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#ValBind"><span class="hs-identifier hs-type">ValBind</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-32"></span><span>    </span><span id="stateGlobal"><span class="annot"><span class="annottext">LiftState -&gt; Set VName
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateGlobal"><span class="hs-identifier hs-var hs-var">stateGlobal</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.Set</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span>
+</span><span id="line-33"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#initialState"><span class="hs-identifier hs-type">initialState</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftState"><span class="hs-identifier hs-type">LiftState</span></a></span><span>
+</span><span id="line-36"></span><span id="initialState"><span class="annot"><span class="annottext">initialState :: VNameSource -&gt; LiftState
+</span><a href="Futhark.Internalise.LiftLambdas.html#initialState"><span class="hs-identifier hs-var hs-var">initialState</span></a></span></span><span> </span><span id="local-6989586621684521497"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684521497"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VNameSource -&gt; [ValBind] -&gt; Set VName -&gt; LiftState
+</span><a href="Futhark.Internalise.LiftLambdas.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684521497"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">[ValBind]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">(Set VName -&gt; LiftState) -&gt; Set VName -&gt; LiftState
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; Set VName
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">S.fromList</span></span><span> </span><span class="annot"><span class="annottext">([VName] -&gt; Set VName) -&gt; [VName] -&gt; Set VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map VName Intrinsic -&gt; [VName]
+forall k a. Map k a -&gt; [k]
+</span><span class="hs-identifier hs-var">M.keys</span></span><span> </span><span class="annot"><span class="annottext">Map VName Intrinsic
+</span><a href="Language.Futhark.Prop.html#intrinsics"><span class="hs-identifier hs-var">intrinsics</span></a></span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">newtype</span><span> </span><span id="LiftM"><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-var">LiftM</span></a></span></span><span> </span><span id="local-6989586621684521493"><span class="annot"><a href="#local-6989586621684521493"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="LiftM"><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-var">LiftM</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ReaderT</span></span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">State</span></span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftState"><span class="hs-identifier hs-type">LiftState</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684521493"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684521484"><span id="local-6989586621684521490"><span class="annot"><span class="annottext">(forall a b. (a -&gt; b) -&gt; LiftM a -&gt; LiftM b)
+-&gt; (forall a b. a -&gt; LiftM b -&gt; LiftM a) -&gt; Functor LiftM
+forall a b. a -&gt; LiftM b -&gt; LiftM a
+forall a b. (a -&gt; b) -&gt; LiftM a -&gt; LiftM b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+&lt;$ :: forall a b. a -&gt; LiftM b -&gt; LiftM a
+$c&lt;$ :: forall a b. a -&gt; LiftM b -&gt; LiftM a
+fmap :: forall a b. (a -&gt; b) -&gt; LiftM a -&gt; LiftM b
+$cfmap :: forall a b. (a -&gt; b) -&gt; LiftM a -&gt; LiftM b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521450"><span id="local-6989586621684521455"><span id="local-6989586621684521460"><span id="local-6989586621684521465"><span id="local-6989586621684521471"><span class="annot"><span class="annottext">Functor LiftM
+Functor LiftM
+-&gt; (forall a. a -&gt; LiftM a)
+-&gt; (forall a b. LiftM (a -&gt; b) -&gt; LiftM a -&gt; LiftM b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; LiftM a -&gt; LiftM b -&gt; LiftM c)
+-&gt; (forall a b. LiftM a -&gt; LiftM b -&gt; LiftM b)
+-&gt; (forall a b. LiftM a -&gt; LiftM b -&gt; LiftM a)
+-&gt; Applicative LiftM
+forall a. a -&gt; LiftM a
+forall a b. LiftM a -&gt; LiftM b -&gt; LiftM a
+forall a b. LiftM a -&gt; LiftM b -&gt; LiftM b
+forall a b. LiftM (a -&gt; b) -&gt; LiftM a -&gt; LiftM b
+forall a b c. (a -&gt; b -&gt; c) -&gt; LiftM a -&gt; LiftM b -&gt; LiftM c
+forall (f :: * -&gt; *).
+Functor f
+-&gt; (forall a. a -&gt; f a)
+-&gt; (forall a b. f (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c)
+-&gt; (forall a b. f a -&gt; f b -&gt; f b)
+-&gt; (forall a b. f a -&gt; f b -&gt; f a)
+-&gt; Applicative f
+&lt;* :: forall a b. LiftM a -&gt; LiftM b -&gt; LiftM a
+$c&lt;* :: forall a b. LiftM a -&gt; LiftM b -&gt; LiftM a
+*&gt; :: forall a b. LiftM a -&gt; LiftM b -&gt; LiftM b
+$c*&gt; :: forall a b. LiftM a -&gt; LiftM b -&gt; LiftM b
+liftA2 :: forall a b c. (a -&gt; b -&gt; c) -&gt; LiftM a -&gt; LiftM b -&gt; LiftM c
+$cliftA2 :: forall a b c. (a -&gt; b -&gt; c) -&gt; LiftM a -&gt; LiftM b -&gt; LiftM c
+&lt;*&gt; :: forall a b. LiftM (a -&gt; b) -&gt; LiftM a -&gt; LiftM b
+$c&lt;*&gt; :: forall a b. LiftM (a -&gt; b) -&gt; LiftM a -&gt; LiftM b
+pure :: forall a. a -&gt; LiftM a
+$cpure :: forall a. a -&gt; LiftM a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Applicative</span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521424"><span id="local-6989586621684521429"><span id="local-6989586621684521435"><span class="annot"><span class="annottext">Applicative LiftM
+Applicative LiftM
+-&gt; (forall a b. LiftM a -&gt; (a -&gt; LiftM b) -&gt; LiftM b)
+-&gt; (forall a b. LiftM a -&gt; LiftM b -&gt; LiftM b)
+-&gt; (forall a. a -&gt; LiftM a)
+-&gt; Monad LiftM
+forall a. a -&gt; LiftM a
+forall a b. LiftM a -&gt; LiftM b -&gt; LiftM b
+forall a b. LiftM a -&gt; (a -&gt; LiftM b) -&gt; LiftM b
+forall (m :: * -&gt; *).
+Applicative m
+-&gt; (forall a b. m a -&gt; (a -&gt; m b) -&gt; m b)
+-&gt; (forall a b. m a -&gt; m b -&gt; m b)
+-&gt; (forall a. a -&gt; m a)
+-&gt; Monad m
+return :: forall a. a -&gt; LiftM a
+$creturn :: forall a. a -&gt; LiftM a
+&gt;&gt; :: forall a b. LiftM a -&gt; LiftM b -&gt; LiftM b
+$c&gt;&gt; :: forall a b. LiftM a -&gt; LiftM b -&gt; LiftM b
+&gt;&gt;= :: forall a b. LiftM a -&gt; (a -&gt; LiftM b) -&gt; LiftM b
+$c&gt;&gt;= :: forall a b. LiftM a -&gt; (a -&gt; LiftM b) -&gt; LiftM b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monad</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521405"><span id="local-6989586621684521410"><span id="local-6989586621684521416"><span class="annot"><span class="hs-identifier hs-type">MonadReader</span></span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#Env"><span class="hs-identifier hs-type">Env</span></a></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521386"><span id="local-6989586621684521391"><span id="local-6989586621684521397"><span class="annot"><span class="hs-identifier hs-type">MonadState</span></span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftState"><span class="hs-identifier hs-type">LiftState</span></a></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-type">LiftM</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-42"></span><span>  </span><span id="local-6989586621684521372"><span class="annot"><span class="annottext">putNameSource :: VNameSource -&gt; LiftM ()
+</span><a href="Futhark.MonadFreshNames.html#putNameSource"><span class="hs-identifier hs-var hs-var hs-var hs-var">putNameSource</span></a></span></span><span> </span><span id="local-6989586621684521370"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684521370"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(LiftState -&gt; LiftState) -&gt; LiftM ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="annot"><span class="annottext">((LiftState -&gt; LiftState) -&gt; LiftM ())
+-&gt; (LiftState -&gt; LiftState) -&gt; LiftM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684521368"><span class="annot"><span class="annottext">LiftState
+</span><a href="#local-6989586621684521368"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">LiftState
+</span><a href="#local-6989586621684521368"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stateNameSource :: VNameSource
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateNameSource"><span class="hs-identifier hs-var">stateNameSource</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684521370"><span class="hs-identifier hs-var">src</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-43"></span><span>  </span><span id="local-6989586621684521366"><span class="annot"><span class="annottext">getNameSource :: LiftM VNameSource
+</span><a href="Futhark.MonadFreshNames.html#getNameSource"><span class="hs-identifier hs-var hs-var hs-var hs-var">getNameSource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(LiftState -&gt; VNameSource) -&gt; LiftM VNameSource
+forall s (m :: * -&gt; *) a. MonadState s m =&gt; (s -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">gets</span></span><span> </span><span class="annot"><span class="annottext">LiftState -&gt; VNameSource
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateNameSource"><span class="hs-identifier hs-var hs-var">stateNameSource</span></a></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#runLiftM"><span class="hs-identifier hs-type">runLiftM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-type">LiftM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#ValBind"><span class="hs-identifier hs-type">ValBind</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span id="runLiftM"><span class="annot"><span class="annottext">runLiftM :: VNameSource -&gt; LiftM () -&gt; ([ValBind], VNameSource)
+</span><a href="Futhark.Internalise.LiftLambdas.html#runLiftM"><span class="hs-identifier hs-var hs-var">runLiftM</span></a></span></span><span> </span><span id="local-6989586621684521362"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684521362"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-type">LiftM</span></a></span><span> </span><span id="local-6989586621684521361"><span class="annot"><span class="annottext">ReaderT Env (State LiftState) ()
+</span><a href="#local-6989586621684521361"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684521360"><span class="annot"><span class="annottext">s :: LiftState
+</span><a href="#local-6989586621684521360"><span class="hs-identifier hs-var hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State LiftState () -&gt; LiftState -&gt; LiftState
+forall s a. State s a -&gt; s -&gt; s
+</span><span class="hs-identifier hs-var">execState</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ReaderT Env (State LiftState) () -&gt; Env -&gt; State LiftState ()
+forall r (m :: * -&gt; *) a. ReaderT r m a -&gt; r -&gt; m a
+</span><span class="hs-identifier hs-var hs-var">runReaderT</span></span><span> </span><span class="annot"><span class="annottext">ReaderT Env (State LiftState) ()
+</span><a href="#local-6989586621684521361"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="Futhark.Internalise.LiftLambdas.html#initialEnv"><span class="hs-identifier hs-var">initialEnv</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VNameSource -&gt; LiftState
+</span><a href="Futhark.Internalise.LiftLambdas.html#initialState"><span class="hs-identifier hs-var">initialState</span></a></span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684521362"><span class="hs-identifier hs-var">src</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[ValBind] -&gt; [ValBind]
+forall a. [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">reverse</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LiftState -&gt; [ValBind]
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateValBinds"><span class="hs-identifier hs-var hs-var">stateValBinds</span></a></span><span> </span><span class="annot"><span class="annottext">LiftState
+</span><a href="#local-6989586621684521360"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LiftState -&gt; VNameSource
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateNameSource"><span class="hs-identifier hs-var hs-var">stateNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">LiftState
+</span><a href="#local-6989586621684521360"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#addValBind"><span class="hs-identifier hs-type">addValBind</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#ValBind"><span class="hs-identifier hs-type">ValBind</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-type">LiftM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span id="addValBind"><span class="annot"><span class="annottext">addValBind :: ValBind -&gt; LiftM ()
+</span><a href="Futhark.Internalise.LiftLambdas.html#addValBind"><span class="hs-identifier hs-var hs-var">addValBind</span></a></span></span><span> </span><span id="local-6989586621684521355"><span class="annot"><span class="annottext">ValBind
+</span><a href="#local-6989586621684521355"><span class="hs-identifier hs-var">vb</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(LiftState -&gt; LiftState) -&gt; LiftM ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="annot"><span class="annottext">((LiftState -&gt; LiftState) -&gt; LiftM ())
+-&gt; (LiftState -&gt; LiftState) -&gt; LiftM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684521354"><span class="annot"><span class="annottext">LiftState
+</span><a href="#local-6989586621684521354"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><span class="annottext">LiftState
+</span><a href="#local-6989586621684521354"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">stateValBinds :: [ValBind]
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateValBinds"><span class="hs-identifier hs-var">stateValBinds</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ValBind
+</span><a href="#local-6989586621684521355"><span class="hs-identifier hs-var">vb</span></a></span><span> </span><span class="annot"><span class="annottext">ValBind -&gt; [ValBind] -&gt; [ValBind]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">LiftState -&gt; [ValBind]
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateValBinds"><span class="hs-identifier hs-var hs-var">stateValBinds</span></a></span><span> </span><span class="annot"><span class="annottext">LiftState
+</span><a href="#local-6989586621684521354"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-54"></span><span>      </span><span class="annot"><span class="annottext">stateGlobal :: Set VName
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateGlobal"><span class="hs-identifier hs-var">stateGlobal</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Set VName -&gt; VName -&gt; Set VName)
+-&gt; Set VName -&gt; [VName] -&gt; Set VName
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl'</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName -&gt; Set VName -&gt; Set VName)
+-&gt; Set VName -&gt; VName -&gt; Set VName
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Set VName -&gt; Set VName
+forall a. Ord a =&gt; a -&gt; Set a -&gt; Set a
+</span><span class="hs-identifier hs-var">S.insert</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LiftState -&gt; Set VName
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateGlobal"><span class="hs-identifier hs-var hs-var">stateGlobal</span></a></span><span> </span><span class="annot"><span class="annottext">LiftState
+</span><a href="#local-6989586621684521354"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ValBind -&gt; [VName]
+</span><a href="Language.Futhark.Prop.html#valBindBound"><span class="hs-identifier hs-var">valBindBound</span></a></span><span> </span><span class="annot"><span class="annottext">ValBind
+</span><a href="#local-6989586621684521355"><span class="hs-identifier hs-var">vb</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-56"></span><span>
+</span><span id="line-57"></span><span id="local-6989586621684521644"><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#replacing"><span class="hs-identifier hs-type">replacing</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-type">LiftM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684521644"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-type">LiftM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684521644"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-58"></span><span id="replacing"><span class="annot"><span class="annottext">replacing :: forall a. VName -&gt; Exp -&gt; LiftM a -&gt; LiftM a
+</span><a href="Futhark.Internalise.LiftLambdas.html#replacing"><span class="hs-identifier hs-var hs-var">replacing</span></a></span></span><span> </span><span id="local-6989586621684521346"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521346"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684521345"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521345"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Env -&gt; Env) -&gt; LiftM a -&gt; LiftM a
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="annot"><span class="annottext">((Env -&gt; Env) -&gt; LiftM a -&gt; LiftM a)
+-&gt; (Env -&gt; Env) -&gt; LiftM a -&gt; LiftM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684521343"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684521343"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684521343"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">envReplace :: Map VName Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#envReplace"><span class="hs-identifier hs-var">envReplace</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Exp -&gt; Map VName Exp -&gt; Map VName Exp
+forall k a. Ord k =&gt; k -&gt; a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.insert</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521346"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521345"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">(Map VName Exp -&gt; Map VName Exp) -&gt; Map VName Exp -&gt; Map VName Exp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Env -&gt; Map VName Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#envReplace"><span class="hs-identifier hs-var hs-var">envReplace</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621684521343"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#existentials"><span class="hs-identifier hs-type">existentials</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.Set</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span>
+</span><span id="line-62"></span><span id="existentials"><span class="annot"><span class="annottext">existentials :: Exp -&gt; Set VName
+</span><a href="Futhark.Internalise.LiftLambdas.html#existentials"><span class="hs-identifier hs-var hs-var">existentials</span></a></span></span><span> </span><span id="local-6989586621684521340"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521340"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684521335"><span class="annot"><span class="annottext">here :: Set VName
+</span><a href="#local-6989586621684521335"><span class="hs-identifier hs-var hs-var">here</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521340"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-64"></span><span>        </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Apply"><span class="hs-identifier hs-type">Apply</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Diet
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521331"><span class="annot"><span class="annottext">Maybe VName
+</span><a href="#local-6989586621684521331"><span class="hs-identifier hs-var">pdim</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684521330"><span class="annot"><span class="annottext">AppRes
+</span><a href="#local-6989586621684521330"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-65"></span><span>          </span><span class="annot"><span class="annottext">[VName] -&gt; Set VName
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">S.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe VName -&gt; [VName]
+forall a. Maybe a -&gt; [a]
+</span><span class="hs-identifier hs-var">maybeToList</span></span><span> </span><span class="annot"><span class="annottext">Maybe VName
+</span><a href="#local-6989586621684521331"><span class="hs-identifier hs-var">pdim</span></a></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; [VName] -&gt; [VName]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">AppRes -&gt; [VName]
+</span><a href="Language.Futhark.Syntax.html#appResExt"><span class="hs-identifier hs-var hs-var">appResExt</span></a></span><span> </span><span class="annot"><span class="annottext">AppRes
+</span><a href="#local-6989586621684521330"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span>        </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="annot"><span class="annottext">AppExpBase Info VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684521327"><span class="annot"><span class="annottext">AppRes
+</span><a href="#local-6989586621684521327"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-67"></span><span>          </span><span class="annot"><span class="annottext">[VName] -&gt; Set VName
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">S.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AppRes -&gt; [VName]
+</span><a href="Language.Futhark.Syntax.html#appResExt"><span class="hs-identifier hs-var hs-var">appResExt</span></a></span><span> </span><span class="annot"><span class="annottext">AppRes
+</span><a href="#local-6989586621684521327"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>        </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-69"></span><span>          </span><span class="annot"><span class="annottext">Set VName
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-70"></span><span>
+</span><span id="line-71"></span><span>      </span><span id="local-6989586621684521318"><span class="annot"><span class="annottext">m :: ASTMapper (StateT (Set VName) Identity)
+</span><a href="#local-6989586621684521318"><span class="hs-identifier hs-var hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ASTMapper (StateT (Set VName) Identity)
+forall (m :: * -&gt; *). Monad m =&gt; ASTMapper m
+</span><a href="Language.Futhark.Traversals.html#identityMapper"><span class="hs-identifier hs-var">identityMapper</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">mapOnExp :: Exp -&gt; StateT (Set VName) Identity Exp
+</span><a href="Language.Futhark.Traversals.html#mapOnExp"><span class="hs-identifier hs-var">mapOnExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684521315"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521315"><span class="hs-identifier hs-var">e'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Set VName -&gt; Set VName) -&gt; StateT (Set VName) Identity ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set VName -&gt; Set VName -&gt; Set VName
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; Set VName
+</span><a href="Futhark.Internalise.LiftLambdas.html#existentials"><span class="hs-identifier hs-var">existentials</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521315"><span class="hs-identifier hs-var">e'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StateT (Set VName) Identity ()
+-&gt; StateT (Set VName) Identity Exp
+-&gt; StateT (Set VName) Identity Exp
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; StateT (Set VName) Identity Exp
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521315"><span class="hs-identifier hs-var">e'</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-72"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">StateT (Set VName) Identity Exp -&gt; Set VName -&gt; Set VName
+forall s a. State s a -&gt; s -&gt; s
+</span><span class="hs-identifier hs-var">execState</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ASTMapper (StateT (Set VName) Identity)
+-&gt; Exp -&gt; StateT (Set VName) Identity Exp
+forall x (m :: * -&gt; *).
+(ASTMappable x, Monad m) =&gt;
+ASTMapper m -&gt; x -&gt; m x
+</span><a href="Language.Futhark.Traversals.html#astMap"><span class="hs-identifier hs-var">astMap</span></a></span><span> </span><span class="annot"><span class="annottext">ASTMapper (StateT (Set VName) Identity)
+</span><a href="#local-6989586621684521318"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521340"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684521335"><span class="hs-identifier hs-var">here</span></a></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#liftFunction"><span class="hs-identifier hs-type">liftFunction</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#TypeParam"><span class="hs-identifier hs-type">TypeParam</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#StructRetType"><span class="hs-identifier hs-type">StructRetType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-type">LiftM</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span>
+</span><span id="line-75"></span><span id="liftFunction"><span class="annot"><span class="annottext">liftFunction :: VName -&gt; [TypeParam] -&gt; [Pat] -&gt; StructRetType -&gt; Exp -&gt; LiftM Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#liftFunction"><span class="hs-identifier hs-var hs-var">liftFunction</span></a></span></span><span> </span><span id="local-6989586621684521312"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521312"><span class="hs-identifier hs-var">fname</span></a></span></span><span> </span><span id="local-6989586621684521311"><span class="annot"><span class="annottext">[TypeParam]
+</span><a href="#local-6989586621684521311"><span class="hs-identifier hs-var">tparams</span></a></span></span><span> </span><span id="local-6989586621684521310"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521310"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#RetType"><span class="hs-identifier hs-type">RetType</span></a></span><span> </span><span id="local-6989586621684521308"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684521308"><span class="hs-identifier hs-var">dims</span></a></span></span><span> </span><span id="local-6989586621684521307"><span class="annot"><span class="annottext">TypeBase (DimDecl VName) ()
+</span><a href="#local-6989586621684521307"><span class="hs-identifier hs-var">ret</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684521306"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521306"><span class="hs-identifier hs-var">funbody</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-76"></span><span>  </span><span class="hs-comment">-- Find free variables</span><span>
+</span><span id="line-77"></span><span>  </span><span id="local-6989586621684521305"><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684521305"><span class="hs-identifier hs-var">global</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(LiftState -&gt; Set VName) -&gt; LiftM (Set VName)
+forall s (m :: * -&gt; *) a. MonadState s m =&gt; (s -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">gets</span></span><span> </span><span class="annot"><span class="annottext">LiftState -&gt; Set VName
+</span><a href="Futhark.Internalise.LiftLambdas.html#stateGlobal"><span class="hs-identifier hs-var hs-var">stateGlobal</span></a></span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684521293"><span class="annot"><span class="annottext">bound :: Set VName
+</span><a href="#local-6989586621684521293"><span class="hs-identifier hs-var hs-var">bound</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-79"></span><span>        </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684521305"><span class="hs-identifier hs-var">global</span></a></span><span>
+</span><span id="line-80"></span><span>          </span><span class="annot"><span class="annottext">Set VName -&gt; Set VName -&gt; Set VName
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; Set VName) -&gt; [Pat] -&gt; Set VName
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; Set VName
+forall (f :: * -&gt; *) vn.
+(Functor f, Ord vn) =&gt;
+PatBase f vn -&gt; Set vn
+</span><a href="Language.Futhark.Prop.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521310"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-81"></span><span>          </span><span class="annot"><span class="annottext">Set VName -&gt; Set VName -&gt; Set VName
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; Set VName
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">S.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(TypeParam -&gt; VName) -&gt; [TypeParam] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">TypeParam -&gt; VName
+forall vn. TypeParamBase vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#typeParamName"><span class="hs-identifier hs-var">typeParamName</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeParam]
+</span><a href="#local-6989586621684521311"><span class="hs-identifier hs-var">tparams</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>          </span><span class="annot"><span class="annottext">Set VName -&gt; Set VName -&gt; Set VName
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; Set VName
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">S.fromList</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684521308"><span class="hs-identifier hs-var">dims</span></a></span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span>      </span><span id="local-6989586621684521287"><span class="annot"><span class="annottext">free :: [(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521287"><span class="hs-identifier hs-var hs-var">free</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-85"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684521284"><span class="annot"><span class="annottext">immediate_free :: NameSet
+</span><a href="#local-6989586621684521284"><span class="hs-identifier hs-var hs-var">immediate_free</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">FV.freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521306"><span class="hs-identifier hs-var">funbody</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#without"><span class="hs-operator hs-var">`FV.without`</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684521293"><span class="hs-identifier hs-var">bound</span></a></span><span> </span><span class="annot"><span class="annottext">Set VName -&gt; Set VName -&gt; Set VName
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; Set VName
+</span><a href="Futhark.Internalise.LiftLambdas.html#existentials"><span class="hs-identifier hs-var">existentials</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521306"><span class="hs-identifier hs-var">funbody</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span>            </span><span id="local-6989586621684521278"><span class="annot"><span class="annottext">sizes_in_free :: Set VName
+</span><a href="#local-6989586621684521278"><span class="hs-identifier hs-var hs-var">sizes_in_free</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-87"></span><span>              </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) () -&gt; Set VName)
+-&gt; [TypeBase (DimDecl VName) ()] -&gt; Set VName
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) () -&gt; Set VName
+forall als. TypeBase (DimDecl VName) als -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#typeDimNames"><span class="hs-identifier hs-var">typeDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">([TypeBase (DimDecl VName) ()] -&gt; Set VName)
+-&gt; [TypeBase (DimDecl VName) ()] -&gt; Set VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-88"></span><span>                </span><span class="annot"><span class="annottext">Map VName (TypeBase (DimDecl VName) ())
+-&gt; [TypeBase (DimDecl VName) ()]
+forall k a. Map k a -&gt; [a]
+</span><span class="hs-identifier hs-var">M.elems</span></span><span> </span><span class="annot"><span class="annottext">(Map VName (TypeBase (DimDecl VName) ())
+ -&gt; [TypeBase (DimDecl VName) ()])
+-&gt; Map VName (TypeBase (DimDecl VName) ())
+-&gt; [TypeBase (DimDecl VName) ()]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; Map VName (TypeBase (DimDecl VName) ())
+</span><a href="Futhark.Internalise.FreeVars.html#unNameSet"><span class="hs-identifier hs-var hs-var">FV.unNameSet</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet
+</span><a href="#local-6989586621684521284"><span class="hs-identifier hs-var">immediate_free</span></a></span><span>
+</span><span id="line-89"></span><span>            </span><span id="local-6989586621684521269"><span class="annot"><span class="annottext">sizes :: NameSet
+</span><a href="#local-6989586621684521269"><span class="hs-identifier hs-var hs-var">sizes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-90"></span><span>              </span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">FV.sizes</span></a></span><span> </span><span class="annot"><span class="annottext">(Set VName -&gt; NameSet) -&gt; Set VName -&gt; NameSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-91"></span><span>                </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684521278"><span class="hs-identifier hs-var">sizes_in_free</span></a></span><span>
+</span><span id="line-92"></span><span>                  </span><span class="annot"><span class="annottext">Set VName -&gt; Set VName -&gt; Set VName
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; Set VName) -&gt; [Pat] -&gt; Set VName
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#patternDimNames"><span class="hs-identifier hs-var">patternDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521310"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-93"></span><span>                  </span><span class="annot"><span class="annottext">Set VName -&gt; Set VName -&gt; Set VName
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) () -&gt; Set VName
+forall als. TypeBase (DimDecl VName) als -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#typeDimNames"><span class="hs-identifier hs-var">typeDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) ()
+</span><a href="#local-6989586621684521307"><span class="hs-identifier hs-var">ret</span></a></span><span>
+</span><span id="line-94"></span><span>         </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Map VName (TypeBase (DimDecl VName) ())
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+forall k a. Map k a -&gt; [(k, a)]
+</span><span class="hs-identifier hs-var">M.toList</span></span><span> </span><span class="annot"><span class="annottext">(Map VName (TypeBase (DimDecl VName) ())
+ -&gt; [(VName, TypeBase (DimDecl VName) ())])
+-&gt; Map VName (TypeBase (DimDecl VName) ())
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; Map VName (TypeBase (DimDecl VName) ())
+</span><a href="Futhark.Internalise.FreeVars.html#unNameSet"><span class="hs-identifier hs-var hs-var">FV.unNameSet</span></a></span><span> </span><span class="annot"><span class="annottext">(NameSet -&gt; Map VName (TypeBase (DimDecl VName) ()))
+-&gt; NameSet -&gt; Map VName (TypeBase (DimDecl VName) ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NameSet
+</span><a href="#local-6989586621684521284"><span class="hs-identifier hs-var">immediate_free</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">NameSet
+</span><a href="#local-6989586621684521269"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#without"><span class="hs-operator hs-var">`FV.without`</span></a></span><span> </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684521293"><span class="hs-identifier hs-var">bound</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-95"></span><span>
+</span><span id="line-96"></span><span>      </span><span class="hs-comment">-- Those parameters that correspond to sizes must come first.</span><span>
+</span><span id="line-97"></span><span>      </span><span id="local-6989586621684521262"><span class="annot"><span class="annottext">sizes_in_types :: Set VName
+</span><a href="#local-6989586621684521262"><span class="hs-identifier hs-var hs-var">sizes_in_types</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-98"></span><span>        </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) () -&gt; Set VName)
+-&gt; [TypeBase (DimDecl VName) ()] -&gt; Set VName
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) () -&gt; Set VName
+forall als. TypeBase (DimDecl VName) als -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#typeDimNames"><span class="hs-identifier hs-var">typeDimNames</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) ()
+</span><a href="#local-6989586621684521307"><span class="hs-identifier hs-var">ret</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) ()
+-&gt; [TypeBase (DimDecl VName) ()] -&gt; [TypeBase (DimDecl VName) ()]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">((VName, TypeBase (DimDecl VName) ())
+ -&gt; TypeBase (DimDecl VName) ())
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+-&gt; [TypeBase (DimDecl VName) ()]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(VName, TypeBase (DimDecl VName) ()) -&gt; TypeBase (DimDecl VName) ()
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521287"><span class="hs-identifier hs-var">free</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase (DimDecl VName) ()]
+-&gt; [TypeBase (DimDecl VName) ()] -&gt; [TypeBase (DimDecl VName) ()]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; TypeBase (DimDecl VName) ())
+-&gt; [Pat] -&gt; [TypeBase (DimDecl VName) ()]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; TypeBase (DimDecl VName) ()
+</span><a href="Language.Futhark.Prop.html#patternStructType"><span class="hs-identifier hs-var">patternStructType</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521310"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>      </span><span id="local-6989586621684521259"><span class="annot"><span class="annottext">isSize :: (VName, b) -&gt; Bool
+</span><a href="#local-6989586621684521259"><span class="hs-identifier hs-var hs-var">isSize</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684521258"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521258"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">b
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521258"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Set VName -&gt; Bool
+forall a. Ord a =&gt; a -&gt; Set a -&gt; Bool
+</span><span class="hs-operator hs-var">`S.member`</span></span><span> </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684521262"><span class="hs-identifier hs-var">sizes_in_types</span></a></span><span>
+</span><span id="line-100"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684521256"><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521256"><span class="hs-identifier hs-var">free_dims</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521255"><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521255"><span class="hs-identifier hs-var">free_nondims</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((VName, TypeBase (DimDecl VName) ()) -&gt; Bool)
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+-&gt; ([(VName, TypeBase (DimDecl VName) ())],
+    [(VName, TypeBase (DimDecl VName) ())])
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; ([a], [a])
+</span><span class="hs-identifier hs-var">partition</span></span><span> </span><span class="annot"><span class="annottext">(VName, TypeBase (DimDecl VName) ()) -&gt; Bool
+forall {b}. (VName, b) -&gt; Bool
+</span><a href="#local-6989586621684521259"><span class="hs-identifier hs-var">isSize</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521287"><span class="hs-identifier hs-var">free</span></a></span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span>      </span><span id="local-6989586621684521252"><span class="annot"><span class="annottext">free_params :: [Pat]
+</span><a href="#local-6989586621684521252"><span class="hs-identifier hs-var hs-var">free_params</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-103"></span><span>        </span><span class="annot"><span class="annottext">((VName, TypeBase (DimDecl VName) ()) -&gt; Pat)
+-&gt; [(VName, TypeBase (DimDecl VName) ())] -&gt; [Pat]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName, TypeBase (DimDecl VName) ()) -&gt; Pat
+forall {vn} {as}.
+(vn, TypeBase (DimDecl VName) as) -&gt; PatBase Info vn
+</span><a href="#local-6989586621684521251"><span class="hs-identifier hs-var">mkParam</span></a></span><span> </span><span class="annot"><span class="annottext">((VName, TypeBase (DimDecl VName) ()) -&gt; Pat)
+-&gt; ((VName, TypeBase (DimDecl VName) ())
+    -&gt; (VName, TypeBase (DimDecl VName) ()))
+-&gt; (VName, TypeBase (DimDecl VName) ())
+-&gt; Pat
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) () -&gt; TypeBase (DimDecl VName) ())
+-&gt; (VName, TypeBase (DimDecl VName) ())
+-&gt; (VName, TypeBase (DimDecl VName) ())
+forall (p :: * -&gt; * -&gt; *) b c a.
+Bifunctor p =&gt;
+(b -&gt; c) -&gt; p a b -&gt; p a c
+</span><span class="hs-identifier hs-var">second</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) ()
+-&gt; Uniqueness -&gt; TypeBase (DimDecl VName) ()
+forall dim as. TypeBase dim as -&gt; Uniqueness -&gt; TypeBase dim as
+</span><a href="Language.Futhark.Prop.html#setUniqueness"><span class="hs-operator hs-var">`setUniqueness`</span></a></span><span> </span><span class="annot"><span class="annottext">Uniqueness
+</span><a href="Language.Futhark.Core.html#Nonunique"><span class="hs-identifier hs-var">Nonunique</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(VName, TypeBase (DimDecl VName) ())] -&gt; [Pat])
+-&gt; [(VName, TypeBase (DimDecl VName) ())] -&gt; [Pat]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-104"></span><span>          </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521256"><span class="hs-identifier hs-var">free_dims</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521255"><span class="hs-identifier hs-var">free_nondims</span></a></span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span>  </span><span class="annot"><span class="annottext">ValBind -&gt; LiftM ()
+</span><a href="Futhark.Internalise.LiftLambdas.html#addValBind"><span class="hs-identifier hs-var">addValBind</span></a></span><span> </span><span class="annot"><span class="annottext">(ValBind -&gt; LiftM ()) -&gt; ValBind -&gt; LiftM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-107"></span><span>    </span><span class="annot"><span class="annottext">ValBind :: forall (f :: * -&gt; *) vn.
+Maybe (f EntryPoint)
+-&gt; vn
+-&gt; Maybe (TypeExp vn)
+-&gt; f StructRetType
+-&gt; [TypeParamBase vn]
+-&gt; [PatBase f vn]
+-&gt; ExpBase f vn
+-&gt; Maybe DocComment
+-&gt; [AttrInfo vn]
+-&gt; SrcLoc
+-&gt; ValBindBase f vn
+</span><a href="Language.Futhark.Syntax.html#ValBind"><span class="hs-identifier hs-type">ValBind</span></a></span><span>
+</span><span id="line-108"></span><span>      </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">valBindName :: VName
+</span><a href="Language.Futhark.Syntax.html#valBindName"><span class="hs-identifier hs-var">valBindName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521312"><span class="hs-identifier hs-var">fname</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-109"></span><span>        </span><span class="annot"><span class="annottext">valBindTypeParams :: [TypeParam]
+</span><a href="Language.Futhark.Syntax.html#valBindTypeParams"><span class="hs-identifier hs-var">valBindTypeParams</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[TypeParam]
+</span><a href="#local-6989586621684521311"><span class="hs-identifier hs-var">tparams</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-110"></span><span>        </span><span class="annot"><span class="annottext">valBindParams :: [Pat]
+</span><a href="Language.Futhark.Syntax.html#valBindParams"><span class="hs-identifier hs-var">valBindParams</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521252"><span class="hs-identifier hs-var">free_params</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat] -&gt; [Pat] -&gt; [Pat]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521310"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-111"></span><span>        </span><span class="annot"><span class="annottext">valBindRetDecl :: Maybe (TypeExp VName)
+</span><a href="Language.Futhark.Syntax.html#valBindRetDecl"><span class="hs-identifier hs-var">valBindRetDecl</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (TypeExp VName)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-112"></span><span>        </span><span class="annot"><span class="annottext">valBindRetType :: Info StructRetType
+</span><a href="Language.Futhark.Syntax.html#valBindRetType"><span class="hs-identifier hs-var">valBindRetType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StructRetType -&gt; Info StructRetType
+forall a. a -&gt; Info a
+</span><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-var">Info</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; TypeBase (DimDecl VName) () -&gt; StructRetType
+forall dim as. [VName] -&gt; TypeBase dim as -&gt; RetTypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#RetType"><span class="hs-identifier hs-var">RetType</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684521308"><span class="hs-identifier hs-var">dims</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) ()
+</span><a href="#local-6989586621684521307"><span class="hs-identifier hs-var">ret</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-113"></span><span>        </span><span class="annot"><span class="annottext">valBindBody :: Exp
+</span><a href="Language.Futhark.Syntax.html#valBindBody"><span class="hs-identifier hs-var">valBindBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521306"><span class="hs-identifier hs-var">funbody</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-114"></span><span>        </span><span class="annot"><span class="annottext">valBindDoc :: Maybe DocComment
+</span><a href="Language.Futhark.Syntax.html#valBindDoc"><span class="hs-identifier hs-var">valBindDoc</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe DocComment
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-115"></span><span>        </span><span class="annot"><span class="annottext">valBindAttrs :: [AttrInfo VName]
+</span><a href="Language.Futhark.Syntax.html#valBindAttrs"><span class="hs-identifier hs-var">valBindAttrs</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[AttrInfo VName]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span>
+</span><span id="line-116"></span><span>        </span><span class="annot"><span class="annottext">valBindLocation :: SrcLoc
+</span><a href="Language.Futhark.Syntax.html#valBindLocation"><span class="hs-identifier hs-var">valBindLocation</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span>
+</span><span id="line-117"></span><span>        </span><span class="annot"><span class="annottext">valBindEntryPoint :: Maybe (Info EntryPoint)
+</span><a href="Language.Futhark.Syntax.html#valBindEntryPoint"><span class="hs-identifier hs-var">valBindEntryPoint</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (Info EntryPoint)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-118"></span><span>      </span><span class="hs-special">}</span><span>
+</span><span id="line-119"></span><span>
+</span><span id="line-120"></span><span>  </span><span class="annot"><span class="annottext">Exp -&gt; LiftM Exp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; LiftM Exp) -&gt; Exp -&gt; LiftM Exp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-121"></span><span>    </span><span class="annot"><span class="annottext">Exp -&gt; [(VName, TypeBase (DimDecl VName) ())] -&gt; Exp
+</span><a href="#local-6989586621684521235"><span class="hs-identifier hs-var">apply</span></a></span><span>
+</span><span id="line-122"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QualName VName -&gt; Info PatType -&gt; SrcLoc -&gt; Exp
+forall (f :: * -&gt; *) vn.
+QualName vn -&gt; f PatType -&gt; SrcLoc -&gt; ExpBase f vn
+</span><a href="Language.Futhark.Syntax.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; QualName VName
+forall v. v -&gt; QualName v
+</span><a href="Language.Futhark.Prop.html#qualName"><span class="hs-identifier hs-var">qualName</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521312"><span class="hs-identifier hs-var">fname</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatType -&gt; Info PatType
+forall a. a -&gt; Info a
+</span><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-var">Info</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())] -&gt; PatType
+forall {as}. [(VName, TypeBase (DimDecl VName) as)] -&gt; PatType
+</span><a href="#local-6989586621684521232"><span class="hs-identifier hs-var">augType</span></a></span><span> </span><span class="annot"><span class="annottext">([(VName, TypeBase (DimDecl VName) ())] -&gt; PatType)
+-&gt; [(VName, TypeBase (DimDecl VName) ())] -&gt; PatType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521256"><span class="hs-identifier hs-var">free_dims</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521255"><span class="hs-identifier hs-var">free_nondims</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>      </span><span class="annot"><span class="annottext">([(VName, TypeBase (DimDecl VName) ())] -&gt; Exp)
+-&gt; [(VName, TypeBase (DimDecl VName) ())] -&gt; Exp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521256"><span class="hs-identifier hs-var">free_dims</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+-&gt; [(VName, TypeBase (DimDecl VName) ())]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521255"><span class="hs-identifier hs-var">free_nondims</span></a></span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-125"></span><span>    </span><span id="local-6989586621684521231"><span class="annot"><span class="annottext">orig_type :: TypeBase (DimDecl VName) ()
+</span><a href="#local-6989586621684521231"><span class="hs-identifier hs-var hs-var">orig_type</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Pat] -&gt; StructRetType -&gt; TypeBase (DimDecl VName) ()
+</span><a href="Language.Futhark.Prop.html#funType"><span class="hs-identifier hs-var">funType</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521310"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">(StructRetType -&gt; TypeBase (DimDecl VName) ())
+-&gt; StructRetType -&gt; TypeBase (DimDecl VName) ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; TypeBase (DimDecl VName) () -&gt; StructRetType
+forall dim as. [VName] -&gt; TypeBase dim as -&gt; RetTypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#RetType"><span class="hs-identifier hs-var">RetType</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684521308"><span class="hs-identifier hs-var">dims</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) ()
+</span><a href="#local-6989586621684521307"><span class="hs-identifier hs-var">ret</span></a></span><span>
+</span><span id="line-126"></span><span>    </span><span id="local-6989586621684521251"><span class="annot"><span class="annottext">mkParam :: (vn, TypeBase (DimDecl VName) as) -&gt; PatBase Info vn
+</span><a href="#local-6989586621684521251"><span class="hs-identifier hs-var hs-var">mkParam</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684521228"><span class="annot"><span class="annottext">vn
+</span><a href="#local-6989586621684521228"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521227"><span class="annot"><span class="annottext">TypeBase (DimDecl VName) as
+</span><a href="#local-6989586621684521227"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">vn -&gt; Info PatType -&gt; SrcLoc -&gt; PatBase Info vn
+forall (f :: * -&gt; *) vn. vn -&gt; f PatType -&gt; SrcLoc -&gt; PatBase f vn
+</span><a href="Language.Futhark.Syntax.html#Id"><span class="hs-identifier hs-var">Id</span></a></span><span> </span><span class="annot"><span class="annottext">vn
+</span><a href="#local-6989586621684521228"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatType -&gt; Info PatType
+forall a. a -&gt; Info a
+</span><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-var">Info</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) as -&gt; PatType
+forall dim as. TypeBase dim as -&gt; TypeBase dim Aliasing
+</span><a href="Language.Futhark.Prop.html#fromStruct"><span class="hs-identifier hs-var">fromStruct</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) as
+</span><a href="#local-6989586621684521227"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-127"></span><span>    </span><span id="local-6989586621684521223"><span class="annot"><span class="annottext">freeVar :: (vn, TypeBase (DimDecl VName) as) -&gt; ExpBase Info vn
+</span><a href="#local-6989586621684521223"><span class="hs-identifier hs-var hs-var">freeVar</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684521222"><span class="annot"><span class="annottext">vn
+</span><a href="#local-6989586621684521222"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521221"><span class="annot"><span class="annottext">TypeBase (DimDecl VName) as
+</span><a href="#local-6989586621684521221"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">QualName vn -&gt; Info PatType -&gt; SrcLoc -&gt; ExpBase Info vn
+forall (f :: * -&gt; *) vn.
+QualName vn -&gt; f PatType -&gt; SrcLoc -&gt; ExpBase f vn
+</span><a href="Language.Futhark.Syntax.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">vn -&gt; QualName vn
+forall v. v -&gt; QualName v
+</span><a href="Language.Futhark.Prop.html#qualName"><span class="hs-identifier hs-var">qualName</span></a></span><span> </span><span class="annot"><span class="annottext">vn
+</span><a href="#local-6989586621684521222"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatType -&gt; Info PatType
+forall a. a -&gt; Info a
+</span><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-var">Info</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) as -&gt; PatType
+forall dim as. TypeBase dim as -&gt; TypeBase dim Aliasing
+</span><a href="Language.Futhark.Prop.html#fromStruct"><span class="hs-identifier hs-var">fromStruct</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) as
+</span><a href="#local-6989586621684521221"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-128"></span><span>    </span><span id="local-6989586621684521232"><span class="annot"><span class="annottext">augType :: [(VName, TypeBase (DimDecl VName) as)] -&gt; PatType
+</span><a href="#local-6989586621684521232"><span class="hs-identifier hs-var hs-var">augType</span></a></span></span><span> </span><span id="local-6989586621684521220"><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) as)]
+</span><a href="#local-6989586621684521220"><span class="hs-identifier hs-var">rem_free</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) () -&gt; PatType
+forall dim as. TypeBase dim as -&gt; TypeBase dim Aliasing
+</span><a href="Language.Futhark.Prop.html#fromStruct"><span class="hs-identifier hs-var">fromStruct</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) () -&gt; PatType)
+-&gt; TypeBase (DimDecl VName) () -&gt; PatType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Pat] -&gt; StructRetType -&gt; TypeBase (DimDecl VName) ()
+</span><a href="Language.Futhark.Prop.html#funType"><span class="hs-identifier hs-var">funType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((VName, TypeBase (DimDecl VName) as) -&gt; Pat)
+-&gt; [(VName, TypeBase (DimDecl VName) as)] -&gt; [Pat]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(VName, TypeBase (DimDecl VName) as) -&gt; Pat
+forall {vn} {as}.
+(vn, TypeBase (DimDecl VName) as) -&gt; PatBase Info vn
+</span><a href="#local-6989586621684521251"><span class="hs-identifier hs-var">mkParam</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) as)]
+</span><a href="#local-6989586621684521220"><span class="hs-identifier hs-var">rem_free</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(StructRetType -&gt; TypeBase (DimDecl VName) ())
+-&gt; StructRetType -&gt; TypeBase (DimDecl VName) ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; TypeBase (DimDecl VName) () -&gt; StructRetType
+forall dim as. [VName] -&gt; TypeBase dim as -&gt; RetTypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#RetType"><span class="hs-identifier hs-var">RetType</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) ()
+</span><a href="#local-6989586621684521231"><span class="hs-identifier hs-var">orig_type</span></a></span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span>    </span><span class="annot"><a href="#local-6989586621684521235"><span class="hs-identifier hs-type">apply</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#StructType"><span class="hs-identifier hs-type">StructType</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span>
+</span><span id="line-131"></span><span>    </span><span id="local-6989586621684521235"><span class="annot"><span class="annottext">apply :: Exp -&gt; [(VName, TypeBase (DimDecl VName) ())] -&gt; Exp
+</span><a href="#local-6989586621684521235"><span class="hs-identifier hs-var hs-var">apply</span></a></span></span><span> </span><span id="local-6989586621684521218"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521218"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521218"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-132"></span><span>    </span><span class="annot"><a href="#local-6989586621684521235"><span class="hs-identifier hs-var">apply</span></a></span><span> </span><span id="local-6989586621684521217"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521217"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684521216"><span class="annot"><span class="annottext">(VName, TypeBase (DimDecl VName) ())
+</span><a href="#local-6989586621684521216"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684521215"><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521215"><span class="hs-identifier hs-var">rem_ps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-133"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684521213"><span class="annot"><span class="annottext">inner_ret :: AppRes
+</span><a href="#local-6989586621684521213"><span class="hs-identifier hs-var hs-var">inner_ret</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PatType -&gt; [VName] -&gt; AppRes
+</span><a href="Language.Futhark.Syntax.html#AppRes"><span class="hs-identifier hs-var">AppRes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatType -&gt; PatType
+forall dim as. TypeBase dim as -&gt; TypeBase dim Aliasing
+</span><a href="Language.Futhark.Prop.html#fromStruct"><span class="hs-identifier hs-var">fromStruct</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())] -&gt; PatType
+forall {as}. [(VName, TypeBase (DimDecl VName) as)] -&gt; PatType
+</span><a href="#local-6989586621684521232"><span class="hs-identifier hs-var">augType</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521215"><span class="hs-identifier hs-var">rem_ps</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[VName]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-134"></span><span>          </span><span id="local-6989586621684521210"><span class="annot"><span class="annottext">inner :: Exp
+</span><a href="#local-6989586621684521210"><span class="hs-identifier hs-var hs-var">inner</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AppExpBase Info VName -&gt; Info AppRes -&gt; Exp
+forall (f :: * -&gt; *) vn.
+AppExpBase f vn -&gt; f AppRes -&gt; ExpBase f vn
+</span><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-var">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Exp
+-&gt; Exp
+-&gt; Info (Diet, Maybe VName)
+-&gt; SrcLoc
+-&gt; AppExpBase Info VName
+forall (f :: * -&gt; *) vn.
+ExpBase f vn
+-&gt; ExpBase f vn
+-&gt; f (Diet, Maybe VName)
+-&gt; SrcLoc
+-&gt; AppExpBase f vn
+</span><a href="Language.Futhark.Syntax.html#Apply"><span class="hs-identifier hs-var">Apply</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521217"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName, TypeBase (DimDecl VName) ()) -&gt; Exp
+forall {vn} {as}.
+(vn, TypeBase (DimDecl VName) as) -&gt; ExpBase Info vn
+</span><a href="#local-6989586621684521223"><span class="hs-identifier hs-var">freeVar</span></a></span><span> </span><span class="annot"><span class="annottext">(VName, TypeBase (DimDecl VName) ())
+</span><a href="#local-6989586621684521216"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Diet, Maybe VName) -&gt; Info (Diet, Maybe VName)
+forall a. a -&gt; Info a
+</span><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-var">Info</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Diet
+</span><a href="Language.Futhark.Syntax.html#Observe"><span class="hs-identifier hs-var">Observe</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe VName
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AppRes -&gt; Info AppRes
+forall a. a -&gt; Info a
+</span><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-var">Info</span></a></span><span> </span><span class="annot"><span class="annottext">AppRes
+</span><a href="#local-6989586621684521213"><span class="hs-identifier hs-var">inner_ret</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; [(VName, TypeBase (DimDecl VName) ())] -&gt; Exp
+</span><a href="#local-6989586621684521235"><span class="hs-identifier hs-var">apply</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521210"><span class="hs-identifier hs-var">inner</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, TypeBase (DimDecl VName) ())]
+</span><a href="#local-6989586621684521215"><span class="hs-identifier hs-var">rem_ps</span></a></span><span>
+</span><span id="line-136"></span><span>
+</span><span id="line-137"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-type">transformExp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-type">LiftM</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span>
+</span><span id="line-138"></span><span id="transformExp"><span class="annot"><span class="annottext">transformExp :: Exp -&gt; LiftM Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-var hs-var">transformExp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#LetFun"><span class="hs-identifier hs-type">LetFun</span></a></span><span> </span><span id="local-6989586621684521206"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521206"><span class="hs-identifier hs-var">fname</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684521205"><span class="annot"><span class="annottext">[TypeParam]
+</span><a href="#local-6989586621684521205"><span class="hs-identifier hs-var">tparams</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521204"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521204"><span class="hs-identifier hs-var">params</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe (TypeExp VName)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684521203"><span class="annot"><span class="annottext">StructRetType
+</span><a href="#local-6989586621684521203"><span class="hs-identifier hs-var">ret</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521202"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521202"><span class="hs-identifier hs-var">funbody</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684521201"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521201"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-139"></span><span>  </span><span id="local-6989586621684521200"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521200"><span class="hs-identifier hs-var">funbody'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; LiftM Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-var">transformExp</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521202"><span class="hs-identifier hs-var">funbody</span></a></span><span>
+</span><span id="line-140"></span><span>  </span><span id="local-6989586621684521199"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521199"><span class="hs-identifier hs-var">fname'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; LiftM VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; LiftM VName) -&gt; String -&gt; LiftM VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;lifted_&quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521206"><span class="hs-identifier hs-var">fname</span></a></span><span>
+</span><span id="line-141"></span><span>  </span><span id="local-6989586621684521196"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521196"><span class="hs-identifier hs-var">lifted_call</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; [TypeParam] -&gt; [Pat] -&gt; StructRetType -&gt; Exp -&gt; LiftM Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#liftFunction"><span class="hs-identifier hs-var">liftFunction</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521199"><span class="hs-identifier hs-var">fname'</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeParam]
+</span><a href="#local-6989586621684521205"><span class="hs-identifier hs-var">tparams</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521204"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">StructRetType
+</span><a href="#local-6989586621684521203"><span class="hs-identifier hs-var">ret</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521200"><span class="hs-identifier hs-var">funbody'</span></a></span><span>
+</span><span id="line-142"></span><span>  </span><span class="annot"><span class="annottext">VName -&gt; Exp -&gt; LiftM Exp -&gt; LiftM Exp
+forall a. VName -&gt; Exp -&gt; LiftM a -&gt; LiftM a
+</span><a href="Futhark.Internalise.LiftLambdas.html#replacing"><span class="hs-identifier hs-var">replacing</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521206"><span class="hs-identifier hs-var">fname</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521196"><span class="hs-identifier hs-var">lifted_call</span></a></span><span> </span><span class="annot"><span class="annottext">(LiftM Exp -&gt; LiftM Exp) -&gt; LiftM Exp -&gt; LiftM Exp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; LiftM Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-var">transformExp</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521201"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-143"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-var">transformExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span id="local-6989586621684521194"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521194"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span id="local-6989586621684521193"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521193"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="annot"><span class="annottext">Maybe (TypeExp VName)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Aliasing
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684521192"><span class="annot"><span class="annottext">StructRetType
+</span><a href="#local-6989586621684521192"><span class="hs-identifier hs-var">ret</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-144"></span><span>  </span><span id="local-6989586621684521191"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521191"><span class="hs-identifier hs-var">body'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; LiftM Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-var">transformExp</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521193"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-145"></span><span>  </span><span id="local-6989586621684521190"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521190"><span class="hs-identifier hs-var">fname</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; LiftM VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;lifted_lambda&quot;</span></span><span>
+</span><span id="line-146"></span><span>  </span><span class="annot"><span class="annottext">VName -&gt; [TypeParam] -&gt; [Pat] -&gt; StructRetType -&gt; Exp -&gt; LiftM Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#liftFunction"><span class="hs-identifier hs-var">liftFunction</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684521190"><span class="hs-identifier hs-var">fname</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684521194"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">StructRetType
+</span><a href="#local-6989586621684521192"><span class="hs-identifier hs-var">ret</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521191"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-147"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-var">transformExp</span></a></span><span> </span><span id="local-6989586621684521189"><span class="annot"><span class="annottext">e :: Exp
+</span><a href="#local-6989586621684521189"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684521188"><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684521188"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="annot"><span class="annottext">Info PatType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-148"></span><span>  </span><span class="hs-comment">-- Note that function-typed variables can only occur in expressions,</span><span>
+</span><span id="line-149"></span><span>  </span><span class="hs-comment">-- not in other places where VNames/QualNames can occur.</span><span>
+</span><span id="line-150"></span><span>  </span><span class="annot"><span class="annottext">(Env -&gt; Exp) -&gt; LiftM Exp
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">asks</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Exp -&gt; Maybe Exp -&gt; Exp
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521189"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe Exp -&gt; Exp) -&gt; (Env -&gt; Maybe Exp) -&gt; Env -&gt; Exp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Map VName Exp -&gt; Maybe Exp
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QualName VName -&gt; VName
+forall vn. QualName vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#qualLeaf"><span class="hs-identifier hs-var hs-var">qualLeaf</span></a></span><span> </span><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684521188"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Map VName Exp -&gt; Maybe Exp)
+-&gt; (Env -&gt; Map VName Exp) -&gt; Env -&gt; Maybe Exp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Env -&gt; Map VName Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#envReplace"><span class="hs-identifier hs-var hs-var">envReplace</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-var">transformExp</span></a></span><span> </span><span id="local-6989586621684521183"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521183"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-152"></span><span>  </span><span class="annot"><span class="annottext">ASTMapper LiftM -&gt; Exp -&gt; LiftM Exp
+forall x (m :: * -&gt; *).
+(ASTMappable x, Monad m) =&gt;
+ASTMapper m -&gt; x -&gt; m x
+</span><a href="Language.Futhark.Traversals.html#astMap"><span class="hs-identifier hs-var">astMap</span></a></span><span> </span><span class="annot"><span class="annottext">ASTMapper LiftM
+</span><a href="#local-6989586621684521182"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521183"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-153"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-154"></span><span>    </span><span id="local-6989586621684521182"><span class="annot"><span class="annottext">m :: ASTMapper LiftM
+</span><a href="#local-6989586621684521182"><span class="hs-identifier hs-var hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ASTMapper LiftM
+forall (m :: * -&gt; *). Monad m =&gt; ASTMapper m
+</span><a href="Language.Futhark.Traversals.html#identityMapper"><span class="hs-identifier hs-var">identityMapper</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">mapOnExp :: Exp -&gt; LiftM Exp
+</span><a href="Language.Futhark.Traversals.html#mapOnExp"><span class="hs-identifier hs-var">mapOnExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; LiftM Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-var">transformExp</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-155"></span><span>
+</span><span id="line-156"></span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#transformValBind"><span class="hs-identifier hs-type">transformValBind</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#ValBind"><span class="hs-identifier hs-type">ValBind</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#LiftM"><span class="hs-identifier hs-type">LiftM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-157"></span><span id="transformValBind"><span class="annot"><span class="annottext">transformValBind :: ValBind -&gt; LiftM ()
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformValBind"><span class="hs-identifier hs-var hs-var">transformValBind</span></a></span></span><span> </span><span id="local-6989586621684521179"><span class="annot"><span class="annottext">ValBind
+</span><a href="#local-6989586621684521179"><span class="hs-identifier hs-var">vb</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-158"></span><span>  </span><span id="local-6989586621684521178"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521178"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; LiftM Exp
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformExp"><span class="hs-identifier hs-var">transformExp</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; LiftM Exp) -&gt; Exp -&gt; LiftM Exp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ValBind -&gt; Exp
+forall (f :: * -&gt; *) vn. ValBindBase f vn -&gt; ExpBase f vn
+</span><a href="Language.Futhark.Syntax.html#valBindBody"><span class="hs-identifier hs-var hs-var">valBindBody</span></a></span><span> </span><span class="annot"><span class="annottext">ValBind
+</span><a href="#local-6989586621684521179"><span class="hs-identifier hs-var">vb</span></a></span><span>
+</span><span id="line-159"></span><span>  </span><span class="annot"><span class="annottext">ValBind -&gt; LiftM ()
+</span><a href="Futhark.Internalise.LiftLambdas.html#addValBind"><span class="hs-identifier hs-var">addValBind</span></a></span><span> </span><span class="annot"><span class="annottext">(ValBind -&gt; LiftM ()) -&gt; ValBind -&gt; LiftM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ValBind
+</span><a href="#local-6989586621684521179"><span class="hs-identifier hs-var">vb</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">valBindBody :: Exp
+</span><a href="Language.Futhark.Syntax.html#valBindBody"><span class="hs-identifier hs-var">valBindBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684521178"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#transformProg"><span class="hs-pragma hs-type">transformProg</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-162"></span><span>
+</span><span id="line-163"></span><span class="hs-comment">-- | Perform the transformation.</span><span>
+</span><span id="line-164"></span><span id="local-6989586621684521555"><span class="annot"><a href="Futhark.Internalise.LiftLambdas.html#transformProg"><span class="hs-identifier hs-type">transformProg</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684521555"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#ValBind"><span class="hs-identifier hs-type">ValBind</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684521555"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#ValBind"><span class="hs-identifier hs-type">ValBind</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-165"></span><span id="transformProg"><span class="annot"><span class="annottext">transformProg :: forall (m :: * -&gt; *). MonadFreshNames m =&gt; [ValBind] -&gt; m [ValBind]
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformProg"><span class="hs-identifier hs-var hs-var">transformProg</span></a></span></span><span> </span><span id="local-6989586621684521173"><span class="annot"><span class="annottext">[ValBind]
+</span><a href="#local-6989586621684521173"><span class="hs-identifier hs-var">vbinds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-166"></span><span>  </span><span class="annot"><span class="annottext">(VNameSource -&gt; ([ValBind], VNameSource)) -&gt; m [ValBind]
+forall (m :: * -&gt; *) a.
+MonadFreshNames m =&gt;
+(VNameSource -&gt; (a, VNameSource)) -&gt; m a
+</span><a href="Futhark.MonadFreshNames.html#modifyNameSource"><span class="hs-identifier hs-var">modifyNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">((VNameSource -&gt; ([ValBind], VNameSource)) -&gt; m [ValBind])
+-&gt; (VNameSource -&gt; ([ValBind], VNameSource)) -&gt; m [ValBind]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684521171"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684521171"><span class="hs-identifier hs-var">namesrc</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-167"></span><span>    </span><span class="annot"><span class="annottext">VNameSource -&gt; LiftM () -&gt; ([ValBind], VNameSource)
+</span><a href="Futhark.Internalise.LiftLambdas.html#runLiftM"><span class="hs-identifier hs-var">runLiftM</span></a></span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684521171"><span class="hs-identifier hs-var">namesrc</span></a></span><span> </span><span class="annot"><span class="annottext">(LiftM () -&gt; ([ValBind], VNameSource))
+-&gt; LiftM () -&gt; ([ValBind], VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(ValBind -&gt; LiftM ()) -&gt; [ValBind] -&gt; LiftM ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="annot"><span class="annottext">ValBind -&gt; LiftM ()
+</span><a href="Futhark.Internalise.LiftLambdas.html#transformValBind"><span class="hs-identifier hs-var">transformValBind</span></a></span><span> </span><span class="annot"><span class="annottext">[ValBind]
+</span><a href="#local-6989586621684521173"><span class="hs-identifier hs-var">vbinds</span></a></span><span>
+</span><span id="line-168"></span></pre></body></html>

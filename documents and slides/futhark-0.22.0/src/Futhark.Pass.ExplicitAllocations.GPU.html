@@ -1,0 +1,1014 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# OPTIONS_GHC -fno-warn-orphans #-}</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- | Facilities for converting a 'GPU' program to 'GPUMem'.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Pass.ExplicitAllocations.GPU</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#explicitAllocations"><span class="hs-identifier">explicitAllocations</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#explicitAllocationsInStms"><span class="hs-identifier">explicitAllocationsInStms</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-11"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html"><span class="hs-identifier">Futhark.IR.GPU</span></a></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html"><span class="hs-identifier">Futhark.IR.GPUMem</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.Mem.IxFun.html"><span class="hs-identifier">Futhark.IR.Mem.IxFun</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">IxFun</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html"><span class="hs-identifier">Futhark.Pass.ExplicitAllocations</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.SegOp.html"><span class="hs-identifier">Futhark.Pass.ExplicitAllocations.SegOp</span></a></span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span id="local-6989586621684441306"><span id="local-6989586621684441307"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#SizeSubst"><span class="hs-identifier hs-type">SizeSubst</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#HostOp"><span class="hs-identifier hs-type">HostOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441307"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441306"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-22"></span><span>  </span><span id="local-6989586621684440920"><span class="annot"><span class="annottext">opSizeSubst :: forall dec. PatT dec -&gt; HostOp rep op -&gt; ChunkMap
+</span><a href="Futhark.Pass.ExplicitAllocations.html#opSizeSubst"><span class="hs-identifier hs-var hs-var hs-var hs-var">opSizeSubst</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-special">[</span><span id="local-6989586621684440917"><span class="annot"><span class="annottext">PatElemT dec
+</span><a href="#local-6989586621684440917"><span class="hs-identifier hs-var">size</span></a></span></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-type">SizeOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SplitSpace"><span class="hs-identifier hs-type">SplitSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SplitOrdering
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684440914"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440914"><span class="hs-identifier hs-var">elems_per_thread</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><span class="annottext">VName -&gt; SubExp -&gt; ChunkMap
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatElemT dec -&gt; VName
+forall dec. PatElemT dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#patElemName"><span class="hs-identifier hs-var hs-var">patElemName</span></a></span><span> </span><span class="annot"><span class="annottext">PatElemT dec
+</span><a href="#local-6989586621684440917"><span class="hs-identifier hs-var">size</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440914"><span class="hs-identifier hs-var">elems_per_thread</span></a></span><span>
+</span><span id="line-24"></span><span>  </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#opSizeSubst"><span class="hs-identifier hs-var">opSizeSubst</span></a></span><span> </span><span class="annot"><span class="annottext">PatT dec
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">HostOp rep op
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ChunkMap
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span>  </span><span id="local-6989586621684440911"><span class="annot"><span class="annottext">opIsConst :: HostOp rep op -&gt; Bool
+</span><a href="Futhark.Pass.ExplicitAllocations.html#opIsConst"><span class="hs-identifier hs-var hs-var hs-var hs-var">opIsConst</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-type">SizeOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#GetSize"><span class="hs-identifier hs-type">GetSize</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-27"></span><span>  </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#opIsConst"><span class="hs-identifier hs-var">opIsConst</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-type">SizeOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#GetSizeMax"><span class="hs-identifier hs-type">GetSizeMax</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-28"></span><span>  </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#opIsConst"><span class="hs-identifier hs-var">opIsConst</span></a></span><span> </span><span class="annot"><span class="annottext">HostOp rep op
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span></span></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span id="local-6989586621684441284"><span id="local-6989586621684441285"><span id="local-6989586621684441286"><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#allocAtLevel"><span class="hs-identifier hs-type">allocAtLevel</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#AllocM"><span class="hs-identifier hs-type">AllocM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441286"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441285"><span class="hs-identifier hs-type">trep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441284"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#AllocM"><span class="hs-identifier hs-type">AllocM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441286"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441285"><span class="hs-identifier hs-type">trep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441284"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-31"></span><span id="allocAtLevel"><span class="annot"><span class="annottext">allocAtLevel :: forall fromrep trep a.
+SegLevel -&gt; AllocM fromrep trep a -&gt; AllocM fromrep trep a
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#allocAtLevel"><span class="hs-identifier hs-var hs-var">allocAtLevel</span></a></span></span><span> </span><span id="local-6989586621684440905"><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440905"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(AllocEnv fromrep trep -&gt; AllocEnv fromrep trep)
+-&gt; AllocM fromrep trep a -&gt; AllocM fromrep trep a
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="annot"><span class="annottext">((AllocEnv fromrep trep -&gt; AllocEnv fromrep trep)
+ -&gt; AllocM fromrep trep a -&gt; AllocM fromrep trep a)
+-&gt; (AllocEnv fromrep trep -&gt; AllocEnv fromrep trep)
+-&gt; AllocM fromrep trep a
+-&gt; AllocM fromrep trep a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684440903"><span class="annot"><span class="annottext">AllocEnv fromrep trep
+</span><a href="#local-6989586621684440903"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-32"></span><span>  </span><span class="annot"><span class="annottext">AllocEnv fromrep trep
+</span><a href="#local-6989586621684440903"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-33"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">allocSpace :: Space
+</span><a href="Futhark.Pass.ExplicitAllocations.html#allocSpace"><span class="hs-identifier hs-var">allocSpace</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="#local-6989586621684440901"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-34"></span><span>      </span><span class="annot"><span class="annottext">aggressiveReuse :: Bool
+</span><a href="Futhark.Pass.ExplicitAllocations.html#aggressiveReuse"><span class="hs-identifier hs-var">aggressiveReuse</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-35"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-36"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-37"></span><span>    </span><span id="local-6989586621684440901"><span class="annot"><span class="annottext">space :: Space
+</span><a href="#local-6989586621684440901"><span class="hs-identifier hs-var hs-var">space</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440905"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-38"></span><span>      </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegThread"><span class="hs-identifier hs-type">SegThread</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span>
+</span><span id="line-39"></span><span>      </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegGroup"><span class="hs-identifier hs-type">SegGroup</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SpaceId -&gt; Space
+</span><a href="Futhark.IR.Syntax.Core.html#Space"><span class="hs-identifier hs-var">Space</span></a></span><span> </span><span class="annot"><span class="annottext">SpaceId
+</span><span class="hs-string">&quot;local&quot;</span></span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#handleSegOp"><span class="hs-identifier hs-type">handleSegOp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-42"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-43"></span><span>  </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#AllocM"><span class="hs-identifier hs-type">AllocM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span id="handleSegOp"><span class="annot"><span class="annottext">handleSegOp :: SegOp SegLevel GPU -&gt; AllocM GPU GPUMem (SegOp SegLevel GPUMem)
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#handleSegOp"><span class="hs-identifier hs-var hs-var">handleSegOp</span></a></span></span><span> </span><span id="local-6989586621684440894"><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684440894"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-45"></span><span>  </span><span id="local-6989586621684440893"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440893"><span class="hs-identifier hs-var">num_threads</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-46"></span><span>    </span><span class="annot"><span class="annottext">SpaceId
+-&gt; Exp (Rep (AllocM GPU GPUMem)) -&gt; AllocM GPU GPUMem SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+SpaceId -&gt; Exp (Rep m) -&gt; m SubExp
+</span><a href="Futhark.Construct.html#letSubExp"><span class="hs-identifier hs-var">letSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">SpaceId
+</span><span class="hs-string">&quot;num_threads&quot;</span></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (AllocM GPU GPUMem)) -&gt; AllocM GPU GPUMem SubExp)
+-&gt; Exp (Rep (AllocM GPU GPUMem)) -&gt; AllocM GPU GPUMem SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-47"></span><span>      </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT GPUMem
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT GPUMem) -&gt; BasicOp -&gt; ExpT GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-48"></span><span>        </span><span class="annot"><span class="annottext">BinOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#BinOp"><span class="hs-identifier hs-var">BinOp</span></a></span><span>
+</span><span id="line-49"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; Overflow -&gt; BinOp
+</span><a href="Futhark.IR.Primitive.html#Mul"><span class="hs-identifier hs-var">Mul</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">Overflow
+</span><a href="Futhark.IR.Primitive.html#OverflowUndef"><span class="hs-identifier hs-var">OverflowUndef</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-50"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Count NumGroups SubExp -&gt; SubExp
+forall u e. Count u e -&gt; e
+</span><a href="Futhark.IR.GPU.Sizes.html#unCount"><span class="hs-identifier hs-var hs-var">unCount</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegLevel -&gt; Count NumGroups SubExp
+</span><a href="Futhark.IR.GPU.Op.html#segNumGroups"><span class="hs-identifier hs-var hs-var">segNumGroups</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440884"><span class="hs-identifier hs-var">lvl</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Count GroupSize SubExp -&gt; SubExp
+forall u e. Count u e -&gt; e
+</span><a href="Futhark.IR.GPU.Sizes.html#unCount"><span class="hs-identifier hs-var hs-var">unCount</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegLevel -&gt; Count GroupSize SubExp
+</span><a href="Futhark.IR.GPU.Op.html#segGroupSize"><span class="hs-identifier hs-var hs-var">segGroupSize</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440884"><span class="hs-identifier hs-var">lvl</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><span class="annottext">SegLevel
+-&gt; AllocM GPU GPUMem (SegOp SegLevel GPUMem)
+-&gt; AllocM GPU GPUMem (SegOp SegLevel GPUMem)
+forall fromrep trep a.
+SegLevel -&gt; AllocM fromrep trep a -&gt; AllocM fromrep trep a
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#allocAtLevel"><span class="hs-identifier hs-var">allocAtLevel</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440884"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">(AllocM GPU GPUMem (SegOp SegLevel GPUMem)
+ -&gt; AllocM GPU GPUMem (SegOp SegLevel GPUMem))
+-&gt; AllocM GPU GPUMem (SegOp SegLevel GPUMem)
+-&gt; AllocM GPU GPUMem (SegOp SegLevel GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOpMapper SegLevel GPU GPUMem (AllocM GPU GPUMem)
+-&gt; SegOp SegLevel GPU -&gt; AllocM GPU GPUMem (SegOp SegLevel GPUMem)
+forall (m :: * -&gt; *) lvl frep trep.
+(Applicative m, Monad m) =&gt;
+SegOpMapper lvl frep trep m -&gt; SegOp lvl frep -&gt; m (SegOp lvl trep)
+</span><a href="Futhark.IR.SegOp.html#mapSegOpM"><span class="hs-identifier hs-var">mapSegOpM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; SegOpMapper SegLevel GPU GPUMem (AllocM GPU GPUMem)
+</span><a href="#local-6989586621684440881"><span class="hs-identifier hs-var">mapper</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440893"><span class="hs-identifier hs-var">num_threads</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684440894"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-54"></span><span>    </span><span id="local-6989586621684440880"><span class="annot"><span class="annottext">scope :: Scope GPUMem
+</span><a href="#local-6989586621684440880"><span class="hs-identifier hs-var hs-var">scope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegSpace -&gt; Scope GPUMem
+forall rep. SegSpace -&gt; Scope rep
+</span><a href="Futhark.IR.SegOp.html#scopeOfSegSpace"><span class="hs-identifier hs-var">scopeOfSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">(SegSpace -&gt; Scope GPUMem) -&gt; SegSpace -&gt; Scope GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU -&gt; SegSpace
+forall lvl rep. SegOp lvl rep -&gt; SegSpace
+</span><a href="Futhark.IR.SegOp.html#segSpace"><span class="hs-identifier hs-var">segSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684440894"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-55"></span><span>    </span><span id="local-6989586621684440884"><span class="annot"><span class="annottext">lvl :: SegLevel
+</span><a href="#local-6989586621684440884"><span class="hs-identifier hs-var hs-var">lvl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU -&gt; SegLevel
+forall lvl rep. SegOp lvl rep -&gt; lvl
+</span><a href="Futhark.IR.SegOp.html#segLevel"><span class="hs-identifier hs-var">segLevel</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684440894"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-56"></span><span>    </span><span id="local-6989586621684440881"><span class="annot"><span class="annottext">mapper :: SubExp -&gt; SegOpMapper SegLevel GPU GPUMem (AllocM GPU GPUMem)
+</span><a href="#local-6989586621684440881"><span class="hs-identifier hs-var hs-var">mapper</span></a></span></span><span> </span><span id="local-6989586621684440876"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440876"><span class="hs-identifier hs-var">num_threads</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-57"></span><span>      </span><span class="annot"><span class="annottext">SegOpMapper SegLevel Any Any (AllocM GPU GPUMem)
+forall (m :: * -&gt; *) lvl rep. Monad m =&gt; SegOpMapper lvl rep rep m
+</span><a href="Futhark.IR.SegOp.html#identitySegOpMapper"><span class="hs-identifier hs-var">identitySegOpMapper</span></a></span><span>
+</span><span id="line-58"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSegOpBody :: KernelBody GPU -&gt; AllocM GPU GPUMem (KernelBody GPUMem)
+</span><a href="Futhark.IR.SegOp.html#mapOnSegOpBody"><span class="hs-identifier hs-var">mapOnSegOpBody</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-59"></span><span>            </span><span class="annot"><span class="annottext">Scope GPUMem
+-&gt; AllocM GPU GPUMem (KernelBody GPUMem)
+-&gt; AllocM GPU GPUMem (KernelBody GPUMem)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="annot"><span class="annottext">Scope GPUMem
+</span><a href="#local-6989586621684440880"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">(AllocM GPU GPUMem (KernelBody GPUMem)
+ -&gt; AllocM GPU GPUMem (KernelBody GPUMem))
+-&gt; (KernelBody GPU -&gt; AllocM GPU GPUMem (KernelBody GPUMem))
+-&gt; KernelBody GPU
+-&gt; AllocM GPU GPUMem (KernelBody GPUMem)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(AllocEnv GPU GPUMem -&gt; AllocEnv GPU GPUMem)
+-&gt; AllocM GPU GPUMem (KernelBody GPUMem)
+-&gt; AllocM GPU GPUMem (KernelBody GPUMem)
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem -&gt; AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440871"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(AllocM GPU GPUMem (KernelBody GPUMem)
+ -&gt; AllocM GPU GPUMem (KernelBody GPUMem))
+-&gt; (KernelBody GPU -&gt; AllocM GPU GPUMem (KernelBody GPUMem))
+-&gt; KernelBody GPU
+-&gt; AllocM GPU GPUMem (KernelBody GPUMem)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPU -&gt; AllocM GPU GPUMem (KernelBody GPUMem)
+forall fromrep torep inner.
+Allocable fromrep torep inner =&gt;
+KernelBody fromrep -&gt; AllocM fromrep torep (KernelBody torep)
+</span><a href="Futhark.Pass.ExplicitAllocations.SegOp.html#allocInKernelBody"><span class="hs-identifier hs-var">allocInKernelBody</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-60"></span><span>          </span><span class="annot"><span class="annottext">mapOnSegOpLambda :: Lambda GPU -&gt; AllocM GPU GPUMem (Lambda GPUMem)
+</span><a href="Futhark.IR.SegOp.html#mapOnSegOpLambda"><span class="hs-identifier hs-var">mapOnSegOpLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-61"></span><span>            </span><span class="annot"><span class="annottext">(AllocEnv GPU GPUMem -&gt; AllocEnv GPU GPUMem)
+-&gt; AllocM GPU GPUMem (Lambda GPUMem)
+-&gt; AllocM GPU GPUMem (Lambda GPUMem)
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem -&gt; AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440868"><span class="hs-identifier hs-var">inThread</span></a></span><span>
+</span><span id="line-62"></span><span>              </span><span class="annot"><span class="annottext">(AllocM GPU GPUMem (Lambda GPUMem)
+ -&gt; AllocM GPU GPUMem (Lambda GPUMem))
+-&gt; (Lambda GPU -&gt; AllocM GPU GPUMem (Lambda GPUMem))
+-&gt; Lambda GPU
+-&gt; AllocM GPU GPUMem (Lambda GPUMem)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+-&gt; SegSpace -&gt; Lambda GPU -&gt; AllocM GPU GPUMem (Lambda GPUMem)
+forall fromrep torep inner.
+Allocable fromrep torep inner =&gt;
+SubExp
+-&gt; SegSpace
+-&gt; Lambda fromrep
+-&gt; AllocM fromrep torep (Lambda torep)
+</span><a href="Futhark.Pass.ExplicitAllocations.SegOp.html#allocInBinOpLambda"><span class="hs-identifier hs-var">allocInBinOpLambda</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440876"><span class="hs-identifier hs-var">num_threads</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegOp SegLevel GPU -&gt; SegSpace
+forall lvl rep. SegOp lvl rep -&gt; SegSpace
+</span><a href="Futhark.IR.SegOp.html#segSpace"><span class="hs-identifier hs-var">segSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684440894"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-64"></span><span>    </span><span id="local-6989586621684440871"><span class="annot"><span class="annottext">f :: AllocEnv GPU GPUMem -&gt; AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440871"><span class="hs-identifier hs-var hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU -&gt; SegLevel
+forall lvl rep. SegOp lvl rep -&gt; lvl
+</span><a href="Futhark.IR.SegOp.html#segLevel"><span class="hs-identifier hs-var">segLevel</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684440894"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-65"></span><span>      </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegThread"><span class="hs-identifier hs-type">SegThread</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem -&gt; AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440868"><span class="hs-identifier hs-var">inThread</span></a></span><span>
+</span><span id="line-66"></span><span>      </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegGroup"><span class="hs-identifier hs-type">SegGroup</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem -&gt; AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440866"><span class="hs-identifier hs-var">inGroup</span></a></span><span>
+</span><span id="line-67"></span><span>    </span><span id="local-6989586621684440868"><span class="annot"><span class="annottext">inThread :: AllocEnv GPU GPUMem -&gt; AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440868"><span class="hs-identifier hs-var hs-var">inThread</span></a></span></span><span> </span><span id="local-6989586621684440865"><span class="annot"><span class="annottext">AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440865"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440865"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">envExpHints :: ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]
+</span><a href="Futhark.Pass.ExplicitAllocations.html#envExpHints"><span class="hs-identifier hs-var">envExpHints</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#inThreadExpHints"><span class="hs-identifier hs-var">inThreadExpHints</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-68"></span><span>    </span><span id="local-6989586621684440866"><span class="annot"><span class="annottext">inGroup :: AllocEnv GPU GPUMem -&gt; AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440866"><span class="hs-identifier hs-var hs-var">inGroup</span></a></span></span><span> </span><span id="local-6989586621684440862"><span class="annot"><span class="annottext">AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440862"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem
+</span><a href="#local-6989586621684440862"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">envExpHints :: ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]
+</span><a href="Futhark.Pass.ExplicitAllocations.html#envExpHints"><span class="hs-identifier hs-var">envExpHints</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#inGroupExpHints"><span class="hs-identifier hs-var">inGroupExpHints</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#handleHostOp"><span class="hs-identifier hs-type">handleHostOp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-71"></span><span>  </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#HostOp"><span class="hs-identifier hs-type">HostOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#SOAC"><span class="hs-identifier hs-type">SOAC</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-72"></span><span>  </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#AllocM"><span class="hs-identifier hs-type">AllocM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#MemOp"><span class="hs-identifier hs-type">MemOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#HostOp"><span class="hs-identifier hs-type">HostOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-73"></span><span id="handleHostOp"><span class="annot"><span class="annottext">handleHostOp :: HostOp GPU (SOAC GPU)
+-&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ()))
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#handleHostOp"><span class="hs-identifier hs-var hs-var">handleHostOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-type">SizeOp</span></a></span><span> </span><span id="local-6989586621684440859"><span class="annot"><span class="annottext">SizeOp
+</span><a href="#local-6989586621684440859"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-74"></span><span>  </span><span class="annot"><span class="annottext">MemOp (HostOp GPUMem ())
+-&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ()))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(MemOp (HostOp GPUMem ())
+ -&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ())))
+-&gt; MemOp (HostOp GPUMem ())
+-&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ()))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ())
+forall inner. inner -&gt; MemOp inner
+</span><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-var">Inner</span></a></span><span> </span><span class="annot"><span class="annottext">(HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ()))
+-&gt; HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SizeOp -&gt; HostOp GPUMem ()
+forall rep op. SizeOp -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-var">SizeOp</span></a></span><span> </span><span class="annot"><span class="annottext">SizeOp
+</span><a href="#local-6989586621684440859"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-75"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#handleHostOp"><span class="hs-identifier hs-var">handleHostOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684440856"><span class="annot"><span class="annottext">SOAC GPU
+</span><a href="#local-6989586621684440856"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-76"></span><span>  </span><span class="annot"><span class="annottext">SpaceId -&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ()))
+forall a. HasCallStack =&gt; SpaceId -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(SpaceId -&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ())))
+-&gt; SpaceId -&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ()))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SpaceId
+</span><span class="hs-string">&quot;Cannot allocate memory in SOAC: &quot;</span></span><span> </span><span class="annot"><span class="annottext">SpaceId -&gt; SpaceId -&gt; SpaceId
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">SOAC GPU -&gt; SpaceId
+forall a. Pretty a =&gt; a -&gt; SpaceId
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC GPU
+</span><a href="#local-6989586621684440856"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-77"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#handleHostOp"><span class="hs-identifier hs-var">handleHostOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span id="local-6989586621684440852"><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684440852"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-78"></span><span>  </span><span class="annot"><span class="annottext">HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ())
+forall inner. inner -&gt; MemOp inner
+</span><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-var">Inner</span></a></span><span> </span><span class="annot"><span class="annottext">(HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ()))
+-&gt; (SegOp SegLevel GPUMem -&gt; HostOp GPUMem ())
+-&gt; SegOp SegLevel GPUMem
+-&gt; MemOp (HostOp GPUMem ())
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem -&gt; HostOp GPUMem ()
+forall rep op. SegOp SegLevel rep -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-var">SegOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPUMem -&gt; MemOp (HostOp GPUMem ()))
+-&gt; AllocM GPU GPUMem (SegOp SegLevel GPUMem)
+-&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ()))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU -&gt; AllocM GPU GPUMem (SegOp SegLevel GPUMem)
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#handleSegOp"><span class="hs-identifier hs-var">handleSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684440852"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#kernelExpHints"><span class="hs-identifier hs-type">kernelExpHints</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#AllocM"><span class="hs-identifier hs-type">AllocM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#ExpHint"><span class="hs-identifier hs-type">ExpHint</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-81"></span><span id="kernelExpHints"><span class="annot"><span class="annottext">kernelExpHints :: ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#kernelExpHints"><span class="hs-identifier hs-var hs-var">kernelExpHints</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Manifest"><span class="hs-identifier hs-type">Manifest</span></a></span><span> </span><span id="local-6989586621684440848"><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684440848"><span class="hs-identifier hs-var">perm</span></a></span></span><span> </span><span id="local-6989586621684440847"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684440847"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-82"></span><span>  </span><span id="local-6989586621684440846"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440846"><span class="hs-identifier hs-var">dims</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [SubExp])
+-&gt; AllocM GPU GPUMem Type -&gt; AllocM GPU GPUMem [SubExp]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; AllocM GPU GPUMem Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684440847"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684440843"><span class="annot"><span class="annottext">perm_inv :: [Int]
+</span><a href="#local-6989586621684440843"><span class="hs-identifier hs-var hs-var">perm_inv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [Int]
+</span><a href="Futhark.IR.Prop.Rearrange.html#rearrangeInverse"><span class="hs-identifier hs-var">rearrangeInverse</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684440848"><span class="hs-identifier hs-var">perm</span></a></span><span>
+</span><span id="line-84"></span><span>      </span><span id="local-6989586621684440841"><span class="annot"><span class="annottext">dims' :: [SubExp]
+</span><a href="#local-6989586621684440841"><span class="hs-identifier hs-var hs-var">dims'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [SubExp] -&gt; [SubExp]
+forall a. [Int] -&gt; [a] -&gt; [a]
+</span><a href="Futhark.IR.Prop.Rearrange.html#rearrangeShape"><span class="hs-identifier hs-var">rearrangeShape</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684440848"><span class="hs-identifier hs-var">perm</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440846"><span class="hs-identifier hs-var">dims</span></a></span><span>
+</span><span id="line-85"></span><span>      </span><span id="local-6989586621684440839"><span class="annot"><span class="annottext">ixfun :: IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440839"><span class="hs-identifier hs-var hs-var">ixfun</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+-&gt; [Int] -&gt; IxFun (TPrimExp Int64 VName)
+forall num. IntegralExp num =&gt; IxFun num -&gt; [Int] -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#permute"><span class="hs-identifier hs-var">IxFun.permute</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall num. IntegralExp num =&gt; Shape num -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#iota"><span class="hs-identifier hs-var">IxFun.iota</span></a></span><span> </span><span class="annot"><span class="annottext">(Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName))
+-&gt; Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TPrimExp Int64 VName)
+-&gt; [SubExp] -&gt; Shape (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440841"><span class="hs-identifier hs-var">dims'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684440843"><span class="hs-identifier hs-var">perm_inv</span></a></span><span>
+</span><span id="line-86"></span><span>  </span><span class="annot"><span class="annottext">[ExpHint] -&gt; AllocM GPU GPUMem [ExpHint]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName) -&gt; Space -&gt; ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#Hint"><span class="hs-identifier hs-var">Hint</span></a></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440839"><span class="hs-identifier hs-var">ixfun</span></a></span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-87"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#kernelExpHints"><span class="hs-identifier hs-var">kernelExpHints</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-type">Inner</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-type">SegMap</span></a></span><span> </span><span id="local-6989586621684440832"><span class="annot"><span class="annottext">lvl :: SegLevel
+</span><a href="#local-6989586621684440832"><span class="hs-identifier hs-var">lvl</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegThread"><span class="hs-identifier hs-type">SegThread</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span id="local-6989586621684440831"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684440831"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684440830"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684440830"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684440829"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684440829"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-88"></span><span>  </span><span class="annot"><span class="annottext">(Type -&gt; KernelResult -&gt; AllocM GPU GPUMem ExpHint)
+-&gt; [Type] -&gt; [KernelResult] -&gt; AllocM GPU GPUMem [ExpHint]
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m [c]
+</span><span class="hs-identifier hs-var">zipWithM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegLevel
+-&gt; SegSpace -&gt; Type -&gt; KernelResult -&gt; AllocM GPU GPUMem ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#mapResultHint"><span class="hs-identifier hs-var">mapResultHint</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440832"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684440831"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684440830"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">([KernelResult] -&gt; AllocM GPU GPUMem [ExpHint])
+-&gt; [KernelResult] -&gt; AllocM GPU GPUMem [ExpHint]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; [KernelResult]
+forall rep. KernelBody rep -&gt; [KernelResult]
+</span><a href="Futhark.IR.SegOp.html#kernelBodyResult"><span class="hs-identifier hs-var hs-var">kernelBodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684440829"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-89"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#kernelExpHints"><span class="hs-identifier hs-var">kernelExpHints</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-type">Inner</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-type">SegRed</span></a></span><span> </span><span id="local-6989586621684440824"><span class="annot"><span class="annottext">lvl :: SegLevel
+</span><a href="#local-6989586621684440824"><span class="hs-identifier hs-var">lvl</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegThread"><span class="hs-identifier hs-type">SegThread</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span id="local-6989586621684440823"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684440823"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684440822"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684440822"><span class="hs-identifier hs-var">reds</span></a></span></span><span> </span><span id="local-6989586621684440821"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684440821"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684440820"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684440820"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-90"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(KernelResult -&gt; ExpHint) -&gt; [KernelResult] -&gt; [ExpHint]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ExpHint -&gt; KernelResult -&gt; ExpHint
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#NoHint"><span class="hs-identifier hs-var">NoHint</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684440817"><span class="hs-identifier hs-var">red_res</span></a></span><span> </span><span class="annot"><span class="annottext">[ExpHint] -&gt; [ExpHint] -&gt; [ExpHint]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([ExpHint] -&gt; [ExpHint])
+-&gt; AllocM GPU GPUMem [ExpHint] -&gt; AllocM GPU GPUMem [ExpHint]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; KernelResult -&gt; AllocM GPU GPUMem ExpHint)
+-&gt; [Type] -&gt; [KernelResult] -&gt; AllocM GPU GPUMem [ExpHint]
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m [c]
+</span><span class="hs-identifier hs-var">zipWithM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegLevel
+-&gt; SegSpace -&gt; Type -&gt; KernelResult -&gt; AllocM GPU GPUMem ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#mapResultHint"><span class="hs-identifier hs-var">mapResultHint</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440824"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684440823"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; [Type] -&gt; [Type]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">drop</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684440815"><span class="hs-identifier hs-var">num_reds</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684440821"><span class="hs-identifier hs-var">ts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684440814"><span class="hs-identifier hs-var">map_res</span></a></span><span>
+</span><span id="line-91"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-92"></span><span>    </span><span id="local-6989586621684440815"><span class="annot"><span class="annottext">num_reds :: Int
+</span><a href="#local-6989586621684440815"><span class="hs-identifier hs-var hs-var">num_reds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem] -&gt; Int
+forall rep. [SegBinOp rep] -&gt; Int
+</span><a href="Futhark.IR.SegOp.html#segBinOpResults"><span class="hs-identifier hs-var">segBinOpResults</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684440822"><span class="hs-identifier hs-var">reds</span></a></span><span>
+</span><span id="line-93"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684440817"><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684440817"><span class="hs-identifier hs-var">red_res</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684440814"><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684440814"><span class="hs-identifier hs-var">map_res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [KernelResult] -&gt; ([KernelResult], [KernelResult])
+forall a. Int -&gt; [a] -&gt; ([a], [a])
+</span><span class="hs-identifier hs-var">splitAt</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684440815"><span class="hs-identifier hs-var">num_reds</span></a></span><span> </span><span class="annot"><span class="annottext">([KernelResult] -&gt; ([KernelResult], [KernelResult]))
+-&gt; [KernelResult] -&gt; ([KernelResult], [KernelResult])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; [KernelResult]
+forall rep. KernelBody rep -&gt; [KernelResult]
+</span><a href="Futhark.IR.SegOp.html#kernelBodyResult"><span class="hs-identifier hs-var hs-var">kernelBodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684440820"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#kernelExpHints"><span class="hs-identifier hs-var">kernelExpHints</span></a></span><span> </span><span id="local-6989586621684440811"><span class="annot"><span class="annottext">ExpT GPUMem
+</span><a href="#local-6989586621684440811"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-95"></span><span>  </span><span class="annot"><span class="annottext">[ExpHint] -&gt; AllocM GPU GPUMem [ExpHint]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">([ExpHint] -&gt; AllocM GPU GPUMem [ExpHint])
+-&gt; [ExpHint] -&gt; AllocM GPU GPUMem [ExpHint]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ExpHint -&gt; [ExpHint]
+forall a. Int -&gt; a -&gt; [a]
+</span><span class="hs-identifier hs-var">replicate</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ExpT GPUMem -&gt; Int
+forall rep. (RepTypes rep, TypedOp (Op rep)) =&gt; Exp rep -&gt; Int
+</span><a href="Futhark.IR.Prop.TypeOf.html#expExtTypeSize"><span class="hs-identifier hs-var">expExtTypeSize</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT GPUMem
+</span><a href="#local-6989586621684440811"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#NoHint"><span class="hs-identifier hs-var">NoHint</span></a></span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#mapResultHint"><span class="hs-identifier hs-type">mapResultHint</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-98"></span><span>  </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-99"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-100"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-101"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelResult"><span class="hs-identifier hs-type">KernelResult</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-102"></span><span>  </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#AllocM"><span class="hs-identifier hs-type">AllocM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#ExpHint"><span class="hs-identifier hs-type">ExpHint</span></a></span><span>
+</span><span id="line-103"></span><span id="mapResultHint"><span class="annot"><span class="annottext">mapResultHint :: SegLevel
+-&gt; SegSpace -&gt; Type -&gt; KernelResult -&gt; AllocM GPU GPUMem ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#mapResultHint"><span class="hs-identifier hs-var hs-var">mapResultHint</span></a></span></span><span> </span><span id="local-6989586621684440808"><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440808"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684440807"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684440807"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Type -&gt; KernelResult -&gt; AllocM GPU GPUMem ExpHint
+</span><a href="#local-6989586621684440806"><span class="hs-identifier hs-var">hint</span></a></span><span>
+</span><span id="line-104"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-105"></span><span>    </span><span id="local-6989586621684440805"><span class="annot"><span class="annottext">num_threads :: TPrimExp Int64 VName
+</span><a href="#local-6989586621684440805"><span class="hs-identifier hs-var hs-var">num_threads</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-106"></span><span>      </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Count NumGroups SubExp -&gt; SubExp
+forall u e. Count u e -&gt; e
+</span><a href="Futhark.IR.GPU.Sizes.html#unCount"><span class="hs-identifier hs-var hs-var">unCount</span></a></span><span> </span><span class="annot"><span class="annottext">(Count NumGroups SubExp -&gt; SubExp)
+-&gt; Count NumGroups SubExp -&gt; SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegLevel -&gt; Count NumGroups SubExp
+</span><a href="Futhark.IR.GPU.Op.html#segNumGroups"><span class="hs-identifier hs-var hs-var">segNumGroups</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440808"><span class="hs-identifier hs-var">lvl</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">TPrimExp Int64 VName
+-&gt; TPrimExp Int64 VName -&gt; TPrimExp Int64 VName
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Count GroupSize SubExp -&gt; SubExp
+forall u e. Count u e -&gt; e
+</span><a href="Futhark.IR.GPU.Sizes.html#unCount"><span class="hs-identifier hs-var hs-var">unCount</span></a></span><span> </span><span class="annot"><span class="annottext">(Count GroupSize SubExp -&gt; SubExp)
+-&gt; Count GroupSize SubExp -&gt; SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegLevel -&gt; Count GroupSize SubExp
+</span><a href="Futhark.IR.GPU.Op.html#segGroupSize"><span class="hs-identifier hs-var hs-var">segGroupSize</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684440808"><span class="hs-identifier hs-var">lvl</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span>    </span><span class="hs-comment">-- Heuristic: do not rearrange for returned arrays that are</span><span>
+</span><span id="line-109"></span><span>    </span><span class="hs-comment">-- sufficiently small.</span><span>
+</span><span id="line-110"></span><span>    </span><span id="local-6989586621684440799"><span class="annot"><span class="annottext">coalesceReturnOfShape :: Int64 -&gt; [SubExp] -&gt; Bool
+</span><a href="#local-6989586621684440799"><span class="hs-identifier hs-var hs-var">coalesceReturnOfShape</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-111"></span><span>    </span><span class="annot"><a href="#local-6989586621684440799"><span class="hs-identifier hs-var">coalesceReturnOfShape</span></a></span><span> </span><span id="local-6989586621684440798"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621684440798"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Constant"><span class="hs-identifier hs-type">Constant</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Primitive.html#IntValue"><span class="hs-identifier hs-type">IntValue</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Primitive.html#Int64Value"><span class="hs-identifier hs-type">Int64Value</span></a></span><span> </span><span id="local-6989586621684440794"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621684440794"><span class="hs-identifier hs-var">d</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621684440798"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621684440794"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">4</span></span><span>
+</span><span id="line-112"></span><span>    </span><span class="annot"><a href="#local-6989586621684440799"><span class="hs-identifier hs-var">coalesceReturnOfShape</span></a></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span>    </span><span id="local-6989586621684440806"><span class="annot"><span class="annottext">hint :: Type -&gt; KernelResult -&gt; AllocM GPU GPUMem ExpHint
+</span><a href="#local-6989586621684440806"><span class="hs-identifier hs-var hs-var">hint</span></a></span></span><span> </span><span id="local-6989586621684440792"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440792"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#Returns"><span class="hs-identifier hs-type">Returns</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span>
+</span><span id="line-115"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; [SubExp] -&gt; Bool
+</span><a href="#local-6989586621684440799"><span class="hs-identifier hs-var">coalesceReturnOfShape</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimType -&gt; Int64
+forall a. Num a =&gt; PrimType -&gt; a
+</span><a href="Futhark.IR.Primitive.html#primByteSize"><span class="hs-identifier hs-var">primByteSize</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; PrimType
+forall shape u. TypeBase shape u -&gt; PrimType
+</span><a href="Futhark.IR.Prop.Types.html#elemType"><span class="hs-identifier hs-var">elemType</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440792"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; Bool) -&gt; [SubExp] -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440792"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-116"></span><span>        </span><span id="local-6989586621684440788"><span class="annot"><span class="annottext">ChunkMap
+</span><a href="#local-6989586621684440788"><span class="hs-identifier hs-var">chunkmap</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(AllocEnv GPU GPUMem -&gt; ChunkMap) -&gt; AllocM GPU GPUMem ChunkMap
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">asks</span></span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem -&gt; ChunkMap
+forall fromrep torep. AllocEnv fromrep torep -&gt; ChunkMap
+</span><a href="Futhark.Pass.ExplicitAllocations.html#chunkMap"><span class="hs-identifier hs-var hs-var">chunkMap</span></a></span><span>
+</span><span id="line-117"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684440785"><span class="annot"><span class="annottext">space_dims :: [SubExp]
+</span><a href="#local-6989586621684440785"><span class="hs-identifier hs-var hs-var">space_dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegSpace -&gt; [SubExp]
+</span><a href="Futhark.IR.SegOp.html#segSpaceDims"><span class="hs-identifier hs-var">segSpaceDims</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684440807"><span class="hs-identifier hs-var">space</span></a></span><span>
+</span><span id="line-118"></span><span>            </span><span id="local-6989586621684440783"><span class="annot"><span class="annottext">t_dims :: [SubExp]
+</span><a href="#local-6989586621684440783"><span class="hs-identifier hs-var hs-var">t_dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; SubExp) -&gt; [SubExp] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ChunkMap -&gt; SubExp -&gt; SubExp
+</span><a href="Futhark.Pass.ExplicitAllocations.html#dimAllocationSize"><span class="hs-identifier hs-var">dimAllocationSize</span></a></span><span> </span><span class="annot"><span class="annottext">ChunkMap
+</span><a href="#local-6989586621684440788"><span class="hs-identifier hs-var">chunkmap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; [SubExp]) -&gt; [SubExp] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440792"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-119"></span><span>        </span><span class="annot"><span class="annottext">ExpHint -&gt; AllocM GPU GPUMem ExpHint
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ExpHint -&gt; AllocM GPU GPUMem ExpHint)
+-&gt; ExpHint -&gt; AllocM GPU GPUMem ExpHint
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName) -&gt; Space -&gt; ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#Hint"><span class="hs-identifier hs-var">Hint</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; IxFun (TPrimExp Int64 VName)
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#innermost"><span class="hs-identifier hs-var">innermost</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440785"><span class="hs-identifier hs-var">space_dims</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440783"><span class="hs-identifier hs-var">t_dims</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span>
+</span><span id="line-120"></span><span>    </span><span class="annot"><a href="#local-6989586621684440806"><span class="hs-identifier hs-var">hint</span></a></span><span> </span><span id="local-6989586621684440780"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440780"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#ConcatReturns"><span class="hs-identifier hs-type">ConcatReturns</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#SplitStrided"><span class="hs-identifier hs-type">SplitStrided</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span id="local-6989586621684440777"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440777"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-121"></span><span>      </span><span id="local-6989586621684440776"><span class="annot"><span class="annottext">ChunkMap
+</span><a href="#local-6989586621684440776"><span class="hs-identifier hs-var">chunkmap</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(AllocEnv GPU GPUMem -&gt; ChunkMap) -&gt; AllocM GPU GPUMem ChunkMap
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">asks</span></span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem -&gt; ChunkMap
+forall fromrep torep. AllocEnv fromrep torep -&gt; ChunkMap
+</span><a href="Futhark.Pass.ExplicitAllocations.html#chunkMap"><span class="hs-identifier hs-var hs-var">chunkMap</span></a></span><span>
+</span><span id="line-122"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684440775"><span class="annot"><span class="annottext">t_dims :: [SubExp]
+</span><a href="#local-6989586621684440775"><span class="hs-identifier hs-var hs-var">t_dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; SubExp) -&gt; [SubExp] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ChunkMap -&gt; SubExp -&gt; SubExp
+</span><a href="Futhark.Pass.ExplicitAllocations.html#dimAllocationSize"><span class="hs-identifier hs-var">dimAllocationSize</span></a></span><span> </span><span class="annot"><span class="annottext">ChunkMap
+</span><a href="#local-6989586621684440776"><span class="hs-identifier hs-var">chunkmap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; [SubExp]) -&gt; [SubExp] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440780"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-123"></span><span>      </span><span class="annot"><span class="annottext">ExpHint -&gt; AllocM GPU GPUMem ExpHint
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ExpHint -&gt; AllocM GPU GPUMem ExpHint)
+-&gt; ExpHint -&gt; AllocM GPU GPUMem ExpHint
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName) -&gt; Space -&gt; ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#Hint"><span class="hs-identifier hs-var">Hint</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; IxFun (TPrimExp Int64 VName)
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#innermost"><span class="hs-identifier hs-var">innermost</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440777"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440775"><span class="hs-identifier hs-var">t_dims</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span>
+</span><span id="line-124"></span><span>    </span><span class="annot"><a href="#local-6989586621684440806"><span class="hs-identifier hs-var">hint</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-type">Prim</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#ConcatReturns"><span class="hs-identifier hs-type">ConcatReturns</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SplitOrdering
+</span><a href="Futhark.IR.SegOp.html#SplitContiguous"><span class="hs-identifier hs-var">SplitContiguous</span></a></span><span> </span><span id="local-6989586621684440772"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440772"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684440771"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440771"><span class="hs-identifier hs-var">elems_per_thread</span></a></span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-125"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684440770"><span class="annot"><span class="annottext">ixfun_base :: IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440770"><span class="hs-identifier hs-var hs-var">ixfun_base</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall num. IntegralExp num =&gt; Shape num -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#iota"><span class="hs-identifier hs-var">IxFun.iota</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">TPrimExp Int64 VName -&gt; TPrimExp Int64 VName
+forall t v. IntExp t =&gt; TPrimExp t v -&gt; TPrimExp Int64 v
+</span><a href="Futhark.Analysis.PrimExp.html#sExt64"><span class="hs-identifier hs-var">sExt64</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int64 VName
+</span><a href="#local-6989586621684440805"><span class="hs-identifier hs-var">num_threads</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440771"><span class="hs-identifier hs-var">elems_per_thread</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-126"></span><span>          </span><span id="local-6989586621684440768"><span class="annot"><span class="annottext">ixfun_tr :: IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440768"><span class="hs-identifier hs-var hs-var">ixfun_tr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+-&gt; [Int] -&gt; IxFun (TPrimExp Int64 VName)
+forall num. IntegralExp num =&gt; IxFun num -&gt; [Int] -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#permute"><span class="hs-identifier hs-var">IxFun.permute</span></a></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440770"><span class="hs-identifier hs-var">ixfun_base</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">]</span><span>
+</span><span id="line-127"></span><span>          </span><span id="local-6989586621684440767"><span class="annot"><span class="annottext">ixfun :: IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440767"><span class="hs-identifier hs-var hs-var">ixfun</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+-&gt; ShapeChange (TPrimExp Int64 VName)
+-&gt; IxFun (TPrimExp Int64 VName)
+forall num.
+(Eq num, IntegralExp num) =&gt;
+IxFun num -&gt; ShapeChange num -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#reshape"><span class="hs-identifier hs-var">IxFun.reshape</span></a></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440768"><span class="hs-identifier hs-var">ixfun_tr</span></a></span><span> </span><span class="annot"><span class="annottext">(ShapeChange (TPrimExp Int64 VName)
+ -&gt; IxFun (TPrimExp Int64 VName))
+-&gt; ShapeChange (TPrimExp Int64 VName)
+-&gt; IxFun (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; DimChange (TPrimExp Int64 VName))
+-&gt; [SubExp] -&gt; ShapeChange (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TPrimExp Int64 VName -&gt; DimChange (TPrimExp Int64 VName)
+forall d. d -&gt; DimChange d
+</span><a href="Futhark.IR.Syntax.html#DimNew"><span class="hs-identifier hs-var">DimNew</span></a></span><span> </span><span class="annot"><span class="annottext">(TPrimExp Int64 VName -&gt; DimChange (TPrimExp Int64 VName))
+-&gt; (SubExp -&gt; TPrimExp Int64 VName)
+-&gt; SubExp
+-&gt; DimChange (TPrimExp Int64 VName)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684440772"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-128"></span><span>      </span><span class="annot"><span class="annottext">ExpHint -&gt; AllocM GPU GPUMem ExpHint
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ExpHint -&gt; AllocM GPU GPUMem ExpHint)
+-&gt; ExpHint -&gt; AllocM GPU GPUMem ExpHint
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName) -&gt; Space -&gt; ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#Hint"><span class="hs-identifier hs-var">Hint</span></a></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440767"><span class="hs-identifier hs-var">ixfun</span></a></span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span>
+</span><span id="line-129"></span><span>    </span><span class="annot"><a href="#local-6989586621684440806"><span class="hs-identifier hs-var">hint</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">KernelResult
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ExpHint -&gt; AllocM GPU GPUMem ExpHint
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#NoHint"><span class="hs-identifier hs-var">NoHint</span></a></span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#innermost"><span class="hs-identifier hs-type">innermost</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Mem.html#IxFun"><span class="hs-identifier hs-type">IxFun</span></a></span><span>
+</span><span id="line-132"></span><span id="innermost"><span class="annot"><span class="annottext">innermost :: [SubExp] -&gt; [SubExp] -&gt; IxFun (TPrimExp Int64 VName)
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#innermost"><span class="hs-identifier hs-var hs-var">innermost</span></a></span></span><span> </span><span id="local-6989586621684440763"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440763"><span class="hs-identifier hs-var">space_dims</span></a></span></span><span> </span><span id="local-6989586621684440762"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440762"><span class="hs-identifier hs-var">t_dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-133"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684440761"><span class="annot"><span class="annottext">r :: Int
+</span><a href="#local-6989586621684440761"><span class="hs-identifier hs-var hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440762"><span class="hs-identifier hs-var">t_dims</span></a></span><span>
+</span><span id="line-134"></span><span>      </span><span id="local-6989586621684440759"><span class="annot"><span class="annottext">dims :: [SubExp]
+</span><a href="#local-6989586621684440759"><span class="hs-identifier hs-var hs-var">dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440763"><span class="hs-identifier hs-var">space_dims</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; [SubExp]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440762"><span class="hs-identifier hs-var">t_dims</span></a></span><span>
+</span><span id="line-135"></span><span>      </span><span id="local-6989586621684440758"><span class="annot"><span class="annottext">perm :: [Int]
+</span><a href="#local-6989586621684440758"><span class="hs-identifier hs-var hs-var">perm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-136"></span><span>        </span><span class="hs-special">[</span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440763"><span class="hs-identifier hs-var">space_dims</span></a></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440763"><span class="hs-identifier hs-var">space_dims</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684440761"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span>
+</span><span id="line-137"></span><span>          </span><span class="annot"><span class="annottext">[Int] -&gt; [Int] -&gt; [Int]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440763"><span class="hs-identifier hs-var">space_dims</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span>
+</span><span id="line-138"></span><span>      </span><span id="local-6989586621684440756"><span class="annot"><span class="annottext">perm_inv :: [Int]
+</span><a href="#local-6989586621684440756"><span class="hs-identifier hs-var hs-var">perm_inv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [Int]
+</span><a href="Futhark.IR.Prop.Rearrange.html#rearrangeInverse"><span class="hs-identifier hs-var">rearrangeInverse</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684440758"><span class="hs-identifier hs-var">perm</span></a></span><span>
+</span><span id="line-139"></span><span>      </span><span id="local-6989586621684440755"><span class="annot"><span class="annottext">dims_perm :: [SubExp]
+</span><a href="#local-6989586621684440755"><span class="hs-identifier hs-var hs-var">dims_perm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [SubExp] -&gt; [SubExp]
+forall a. [Int] -&gt; [a] -&gt; [a]
+</span><a href="Futhark.IR.Prop.Rearrange.html#rearrangeShape"><span class="hs-identifier hs-var">rearrangeShape</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684440758"><span class="hs-identifier hs-var">perm</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440759"><span class="hs-identifier hs-var">dims</span></a></span><span>
+</span><span id="line-140"></span><span>      </span><span id="local-6989586621684440754"><span class="annot"><span class="annottext">ixfun_base :: IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440754"><span class="hs-identifier hs-var hs-var">ixfun_base</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall num. IntegralExp num =&gt; Shape num -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#iota"><span class="hs-identifier hs-var">IxFun.iota</span></a></span><span> </span><span class="annot"><span class="annottext">(Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName))
+-&gt; Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TPrimExp Int64 VName)
+-&gt; [SubExp] -&gt; Shape (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684440755"><span class="hs-identifier hs-var">dims_perm</span></a></span><span>
+</span><span id="line-141"></span><span>      </span><span id="local-6989586621684440753"><span class="annot"><span class="annottext">ixfun_rearranged :: IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440753"><span class="hs-identifier hs-var hs-var">ixfun_rearranged</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+-&gt; [Int] -&gt; IxFun (TPrimExp Int64 VName)
+forall num. IntegralExp num =&gt; IxFun num -&gt; [Int] -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#permute"><span class="hs-identifier hs-var">IxFun.permute</span></a></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440754"><span class="hs-identifier hs-var">ixfun_base</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684440756"><span class="hs-identifier hs-var">perm_inv</span></a></span><span>
+</span><span id="line-142"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440753"><span class="hs-identifier hs-var">ixfun_rearranged</span></a></span><span>
+</span><span id="line-143"></span><span>
+</span><span id="line-144"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#semiStatic"><span class="hs-identifier hs-type">semiStatic</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.Set</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-145"></span><span id="semiStatic"><span class="annot"><span class="annottext">semiStatic :: Set VName -&gt; SubExp -&gt; Bool
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#semiStatic"><span class="hs-identifier hs-var hs-var">semiStatic</span></a></span></span><span> </span><span class="annot"><span class="annottext">Set VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Constant"><span class="hs-identifier hs-type">Constant</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-146"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#semiStatic"><span class="hs-identifier hs-var">semiStatic</span></a></span><span> </span><span id="local-6989586621684440751"><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684440751"><span class="hs-identifier hs-var">consts</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684440749"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684440749"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684440749"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Set VName -&gt; Bool
+forall a. Ord a =&gt; a -&gt; Set a -&gt; Bool
+</span><span class="hs-operator hs-var">`S.member`</span></span><span> </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684440751"><span class="hs-identifier hs-var">consts</span></a></span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#inGroupExpHints"><span class="hs-identifier hs-type">inGroupExpHints</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#AllocM"><span class="hs-identifier hs-type">AllocM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#ExpHint"><span class="hs-identifier hs-type">ExpHint</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-149"></span><span id="inGroupExpHints"><span class="annot"><span class="annottext">inGroupExpHints :: ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#inGroupExpHints"><span class="hs-identifier hs-var hs-var">inGroupExpHints</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-type">Inner</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-type">SegMap</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684440747"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684440747"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684440746"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684440746"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684440745"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684440745"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-150"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">(KernelResult -&gt; Bool) -&gt; [KernelResult] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">any</span></span><span> </span><span class="annot"><span class="annottext">KernelResult -&gt; Bool
+</span><a href="#local-6989586621684440743"><span class="hs-identifier hs-var">private</span></a></span><span> </span><span class="annot"><span class="annottext">([KernelResult] -&gt; Bool) -&gt; [KernelResult] -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; [KernelResult]
+forall rep. KernelBody rep -&gt; [KernelResult]
+</span><a href="Futhark.IR.SegOp.html#kernelBodyResult"><span class="hs-identifier hs-var hs-var">kernelBodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684440745"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-151"></span><span>    </span><span id="local-6989586621684440742"><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684440742"><span class="hs-identifier hs-var">consts</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(AllocEnv GPU GPUMem -&gt; Set VName) -&gt; AllocM GPU GPUMem (Set VName)
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">asks</span></span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem -&gt; Set VName
+forall fromrep torep. AllocEnv fromrep torep -&gt; Set VName
+</span><a href="Futhark.Pass.ExplicitAllocations.html#envConsts"><span class="hs-identifier hs-var hs-var">envConsts</span></a></span><span>
+</span><span id="line-152"></span><span>    </span><span class="annot"><span class="annottext">[ExpHint] -&gt; AllocM GPU GPUMem [ExpHint]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">([ExpHint] -&gt; AllocM GPU GPUMem [ExpHint])
+-&gt; [ExpHint] -&gt; AllocM GPU GPUMem [ExpHint]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-153"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684440740"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440740"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684440739"><span class="annot"><span class="annottext">KernelResult
+</span><a href="#local-6989586621684440739"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Type] -&gt; [KernelResult] -&gt; [(Type, KernelResult)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684440746"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">([KernelResult] -&gt; [(Type, KernelResult)])
+-&gt; [KernelResult] -&gt; [(Type, KernelResult)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; [KernelResult]
+forall rep. KernelBody rep -&gt; [KernelResult]
+</span><a href="Futhark.IR.SegOp.html#kernelBodyResult"><span class="hs-identifier hs-var hs-var">kernelBodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684440745"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-154"></span><span>      </span><span class="annot"><span class="annottext">ExpHint -&gt; [ExpHint]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(ExpHint -&gt; [ExpHint]) -&gt; ExpHint -&gt; [ExpHint]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-155"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">KernelResult -&gt; Bool
+</span><a href="#local-6989586621684440743"><span class="hs-identifier hs-var">private</span></a></span><span> </span><span class="annot"><span class="annottext">KernelResult
+</span><a href="#local-6989586621684440739"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; Bool) -&gt; [SubExp] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set VName -&gt; SubExp -&gt; Bool
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#semiStatic"><span class="hs-identifier hs-var">semiStatic</span></a></span><span> </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684440742"><span class="hs-identifier hs-var">consts</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440740"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-156"></span><span>          </span><span class="hs-keyword">then</span><span>
+</span><span id="line-157"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684440736"><span class="annot"><span class="annottext">seg_dims :: Shape (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440736"><span class="hs-identifier hs-var hs-var">seg_dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TPrimExp Int64 VName)
+-&gt; [SubExp] -&gt; Shape (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; Shape (TPrimExp Int64 VName))
+-&gt; [SubExp] -&gt; Shape (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegSpace -&gt; [SubExp]
+</span><a href="Futhark.IR.SegOp.html#segSpaceDims"><span class="hs-identifier hs-var">segSpaceDims</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684440747"><span class="hs-identifier hs-var">space</span></a></span><span>
+</span><span id="line-158"></span><span>                </span><span id="local-6989586621684440735"><span class="annot"><span class="annottext">dims :: Shape (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440735"><span class="hs-identifier hs-var hs-var">dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440736"><span class="hs-identifier hs-var">seg_dims</span></a></span><span> </span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName)
+-&gt; Shape (TPrimExp Int64 VName) -&gt; Shape (TPrimExp Int64 VName)
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TPrimExp Int64 VName)
+-&gt; [SubExp] -&gt; Shape (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440740"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-159"></span><span>                </span><span id="local-6989586621684440731"><span class="annot"><span class="annottext">nilSlice :: d -&gt; DimIndex d
+</span><a href="#local-6989586621684440731"><span class="hs-identifier hs-var hs-var">nilSlice</span></a></span></span><span> </span><span id="local-6989586621684440730"><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684440730"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">d -&gt; d -&gt; d -&gt; DimIndex d
+forall d. d -&gt; d -&gt; d -&gt; DimIndex d
+</span><a href="Futhark.IR.Syntax.Core.html#DimSlice"><span class="hs-identifier hs-var">DimSlice</span></a></span><span> </span><span class="annot"><span class="annottext">d
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">d
+</span><a href="#local-6989586621684440730"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="annot"><span class="annottext">d
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-160"></span><span>             </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName) -&gt; Space -&gt; ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#Hint"><span class="hs-identifier hs-var">Hint</span></a></span><span>
+</span><span id="line-161"></span><span>                  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+-&gt; Slice (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall num.
+(Eq num, IntegralExp num) =&gt;
+IxFun num -&gt; Slice num -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#slice"><span class="hs-identifier hs-var">IxFun.slice</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall num. IntegralExp num =&gt; Shape num -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#iota"><span class="hs-identifier hs-var">IxFun.iota</span></a></span><span> </span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440735"><span class="hs-identifier hs-var">dims</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Slice (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName))
+-&gt; Slice (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-162"></span><span>                      </span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName)
+-&gt; [DimIndex (TPrimExp Int64 VName)]
+-&gt; Slice (TPrimExp Int64 VName)
+forall d. Num d =&gt; [d] -&gt; [DimIndex d] -&gt; Slice d
+</span><a href="Futhark.Construct.html#fullSliceNum"><span class="hs-identifier hs-var">fullSliceNum</span></a></span><span> </span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440735"><span class="hs-identifier hs-var">dims</span></a></span><span> </span><span class="annot"><span class="annottext">([DimIndex (TPrimExp Int64 VName)] -&gt; Slice (TPrimExp Int64 VName))
+-&gt; [DimIndex (TPrimExp Int64 VName)]
+-&gt; Slice (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(TPrimExp Int64 VName -&gt; DimIndex (TPrimExp Int64 VName))
+-&gt; Shape (TPrimExp Int64 VName)
+-&gt; [DimIndex (TPrimExp Int64 VName)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int64 VName -&gt; DimIndex (TPrimExp Int64 VName)
+forall {d}. Num d =&gt; d -&gt; DimIndex d
+</span><a href="#local-6989586621684440731"><span class="hs-identifier hs-var">nilSlice</span></a></span><span> </span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440736"><span class="hs-identifier hs-var">seg_dims</span></a></span><span>
+</span><span id="line-163"></span><span>                  </span><span class="hs-special">)</span><span>
+</span><span id="line-164"></span><span>                  </span><span class="annot"><span class="annottext">(Space -&gt; ExpHint) -&gt; Space -&gt; ExpHint
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; PrimType -&gt; Space
+</span><a href="Futhark.IR.Syntax.Core.html#ScalarSpace"><span class="hs-identifier hs-var">ScalarSpace</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440740"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; Space) -&gt; PrimType -&gt; Space
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; PrimType
+forall shape u. TypeBase shape u -&gt; PrimType
+</span><a href="Futhark.IR.Prop.Types.html#elemType"><span class="hs-identifier hs-var">elemType</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684440740"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-165"></span><span>          </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#NoHint"><span class="hs-identifier hs-var">NoHint</span></a></span><span>
+</span><span id="line-166"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-167"></span><span>    </span><span id="local-6989586621684440743"><span class="annot"><span class="annottext">private :: KernelResult -&gt; Bool
+</span><a href="#local-6989586621684440743"><span class="hs-identifier hs-var hs-var">private</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#Returns"><span class="hs-identifier hs-type">Returns</span></a></span><span> </span><span class="annot"><span class="annottext">ResultManifest
+</span><a href="Futhark.IR.SegOp.html#ResultPrivate"><span class="hs-identifier hs-var">ResultPrivate</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-168"></span><span>    </span><span class="annot"><a href="#local-6989586621684440743"><span class="hs-identifier hs-var">private</span></a></span><span> </span><span class="annot"><span class="annottext">KernelResult
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-169"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#inGroupExpHints"><span class="hs-identifier hs-var">inGroupExpHints</span></a></span><span> </span><span id="local-6989586621684440724"><span class="annot"><span class="annottext">ExpT GPUMem
+</span><a href="#local-6989586621684440724"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ExpHint] -&gt; AllocM GPU GPUMem [ExpHint]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">([ExpHint] -&gt; AllocM GPU GPUMem [ExpHint])
+-&gt; [ExpHint] -&gt; AllocM GPU GPUMem [ExpHint]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ExpHint -&gt; [ExpHint]
+forall a. Int -&gt; a -&gt; [a]
+</span><span class="hs-identifier hs-var">replicate</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ExpT GPUMem -&gt; Int
+forall rep. (RepTypes rep, TypedOp (Op rep)) =&gt; Exp rep -&gt; Int
+</span><a href="Futhark.IR.Prop.TypeOf.html#expExtTypeSize"><span class="hs-identifier hs-var">expExtTypeSize</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT GPUMem
+</span><a href="#local-6989586621684440724"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#NoHint"><span class="hs-identifier hs-var">NoHint</span></a></span><span>
+</span><span id="line-170"></span><span>
+</span><span id="line-171"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#inThreadExpHints"><span class="hs-identifier hs-type">inThreadExpHints</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#AllocM"><span class="hs-identifier hs-type">AllocM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.html#ExpHint"><span class="hs-identifier hs-type">ExpHint</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-172"></span><span id="inThreadExpHints"><span class="annot"><span class="annottext">inThreadExpHints :: ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#inThreadExpHints"><span class="hs-identifier hs-var hs-var">inThreadExpHints</span></a></span></span><span> </span><span id="local-6989586621684440723"><span class="annot"><span class="annottext">ExpT GPUMem
+</span><a href="#local-6989586621684440723"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-173"></span><span>  </span><span id="local-6989586621684440722"><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684440722"><span class="hs-identifier hs-var">consts</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(AllocEnv GPU GPUMem -&gt; Set VName) -&gt; AllocM GPU GPUMem (Set VName)
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">asks</span></span><span> </span><span class="annot"><span class="annottext">AllocEnv GPU GPUMem -&gt; Set VName
+forall fromrep torep. AllocEnv fromrep torep -&gt; Set VName
+</span><a href="Futhark.Pass.ExplicitAllocations.html#envConsts"><span class="hs-identifier hs-var hs-var">envConsts</span></a></span><span>
+</span><span id="line-174"></span><span>  </span><span class="annot"><span class="annottext">(ExtType -&gt; AllocM GPU GPUMem ExpHint)
+-&gt; [ExtType] -&gt; AllocM GPU GPUMem [ExpHint]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set VName -&gt; ExtType -&gt; AllocM GPU GPUMem ExpHint
+forall {f :: * -&gt; *} {u}.
+Applicative f =&gt;
+Set VName -&gt; TypeBase ExtShape u -&gt; f ExpHint
+</span><a href="#local-6989586621684440720"><span class="hs-identifier hs-var">maybePrivate</span></a></span><span> </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684440722"><span class="hs-identifier hs-var">consts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([ExtType] -&gt; AllocM GPU GPUMem [ExpHint])
+-&gt; AllocM GPU GPUMem [ExtType] -&gt; AllocM GPU GPUMem [ExpHint]
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">ExpT GPUMem -&gt; AllocM GPU GPUMem [ExtType]
+forall rep (m :: * -&gt; *).
+(HasScope rep m, TypedOp (Op rep)) =&gt;
+Exp rep -&gt; m [ExtType]
+</span><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier hs-var">expExtType</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT GPUMem
+</span><a href="#local-6989586621684440723"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-175"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-176"></span><span>    </span><span id="local-6989586621684440720"><span class="annot"><span class="annottext">maybePrivate :: Set VName -&gt; TypeBase ExtShape u -&gt; f ExpHint
+</span><a href="#local-6989586621684440720"><span class="hs-identifier hs-var hs-var">maybePrivate</span></a></span></span><span> </span><span id="local-6989586621684440710"><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684440710"><span class="hs-identifier hs-var">consts</span></a></span></span><span> </span><span id="local-6989586621684440709"><span class="annot"><span class="annottext">TypeBase ExtShape u
+</span><a href="#local-6989586621684440709"><span class="hs-identifier hs-var">t</span></a></span></span><span>
+</span><span id="line-177"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Array"><span class="hs-identifier hs-type">Array</span></a></span><span> </span><span id="local-6989586621684440707"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684440707"><span class="hs-identifier hs-var">pt</span></a></span></span><span> </span><span id="local-6989586621684440706"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684440706"><span class="hs-identifier hs-var">shape</span></a></span></span><span> </span><span class="annot"><span class="annottext">u
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TypeBase ExtShape u -&gt; Maybe (TypeBase Shape u)
+forall u. TypeBase ExtShape u -&gt; Maybe (TypeBase Shape u)
+</span><a href="Futhark.IR.Prop.Types.html#hasStaticShape"><span class="hs-identifier hs-var">hasStaticShape</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase ExtShape u
+</span><a href="#local-6989586621684440709"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-178"></span><span>        </span><span class="annot"><span class="annottext">(SubExp -&gt; Bool) -&gt; [SubExp] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set VName -&gt; SubExp -&gt; Bool
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#semiStatic"><span class="hs-identifier hs-var">semiStatic</span></a></span><span> </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684440710"><span class="hs-identifier hs-var">consts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; Bool) -&gt; [SubExp] -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Shape -&gt; [SubExp]
+forall d. ShapeBase d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#shapeDims"><span class="hs-identifier hs-var hs-var">shapeDims</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684440706"><span class="hs-identifier hs-var">shape</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-179"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684440703"><span class="annot"><span class="annottext">ixfun :: IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440703"><span class="hs-identifier hs-var hs-var">ixfun</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall num. IntegralExp num =&gt; Shape num -&gt; IxFun num
+</span><a href="Futhark.IR.Mem.IxFun.html#iota"><span class="hs-identifier hs-var">IxFun.iota</span></a></span><span> </span><span class="annot"><span class="annottext">(Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName))
+-&gt; Shape (TPrimExp Int64 VName) -&gt; IxFun (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TPrimExp Int64 VName)
+-&gt; [SubExp] -&gt; Shape (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; Shape (TPrimExp Int64 VName))
+-&gt; [SubExp] -&gt; Shape (TPrimExp Int64 VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Shape -&gt; [SubExp]
+forall d. ShapeBase d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#shapeDims"><span class="hs-identifier hs-var hs-var">shapeDims</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684440706"><span class="hs-identifier hs-var">shape</span></a></span><span>
+</span><span id="line-180"></span><span>        </span><span class="annot"><span class="annottext">ExpHint -&gt; f ExpHint
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(ExpHint -&gt; f ExpHint) -&gt; ExpHint -&gt; f ExpHint
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName) -&gt; Space -&gt; ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#Hint"><span class="hs-identifier hs-var">Hint</span></a></span><span> </span><span class="annot"><span class="annottext">IxFun (TPrimExp Int64 VName)
+</span><a href="#local-6989586621684440703"><span class="hs-identifier hs-var">ixfun</span></a></span><span> </span><span class="annot"><span class="annottext">(Space -&gt; ExpHint) -&gt; Space -&gt; ExpHint
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; PrimType -&gt; Space
+</span><a href="Futhark.IR.Syntax.Core.html#ScalarSpace"><span class="hs-identifier hs-var">ScalarSpace</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape -&gt; [SubExp]
+forall d. ShapeBase d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#shapeDims"><span class="hs-identifier hs-var hs-var">shapeDims</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684440706"><span class="hs-identifier hs-var">shape</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684440707"><span class="hs-identifier hs-var">pt</span></a></span><span>
+</span><span id="line-181"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-182"></span><span>        </span><span class="annot"><span class="annottext">ExpHint -&gt; f ExpHint
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">ExpHint
+</span><a href="Futhark.Pass.ExplicitAllocations.html#NoHint"><span class="hs-identifier hs-var">NoHint</span></a></span><span>
+</span><span id="line-183"></span><span>
+</span><span id="line-184"></span><span class="hs-comment">-- | The pass from 'GPU' to 'GPUMem'.</span><span>
+</span><span id="line-185"></span><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#explicitAllocations"><span class="hs-identifier hs-type">explicitAllocations</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span>
+</span><span id="line-186"></span><span id="explicitAllocations"><span class="annot"><span class="annottext">explicitAllocations :: Pass GPU GPUMem
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#explicitAllocations"><span class="hs-identifier hs-var hs-var">explicitAllocations</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Op GPU -&gt; AllocM GPU GPUMem (Op GPUMem))
+-&gt; (ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]) -&gt; Pass GPU GPUMem
+forall fromrep torep inner.
+Allocable fromrep torep inner =&gt;
+(Op fromrep -&gt; AllocM fromrep torep (Op torep))
+-&gt; (Exp torep -&gt; AllocM fromrep torep [ExpHint])
+-&gt; Pass fromrep torep
+</span><a href="Futhark.Pass.ExplicitAllocations.html#explicitAllocationsGeneric"><span class="hs-identifier hs-var">explicitAllocationsGeneric</span></a></span><span> </span><span class="annot"><span class="annottext">Op GPU -&gt; AllocM GPU GPUMem (Op GPUMem)
+HostOp GPU (SOAC GPU)
+-&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ()))
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#handleHostOp"><span class="hs-identifier hs-var">handleHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#kernelExpHints"><span class="hs-identifier hs-var">kernelExpHints</span></a></span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span class="hs-comment">-- | Convert some 'GPU' stms to 'GPUMem'.</span><span>
+</span><span id="line-189"></span><span id="local-6989586621684441133"><span class="annot"><a href="Futhark.Pass.ExplicitAllocations.GPU.html#explicitAllocationsInStms"><span class="hs-identifier hs-type">explicitAllocationsInStms</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-190"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441133"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684441133"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-191"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-192"></span><span>  </span><span class="annot"><a href="#local-6989586621684441133"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-193"></span><span id="explicitAllocationsInStms"><span class="annot"><span class="annottext">explicitAllocationsInStms :: forall (m :: * -&gt; *).
+(MonadFreshNames m, HasScope GPUMem m) =&gt;
+Stms GPU -&gt; m (Stms GPUMem)
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#explicitAllocationsInStms"><span class="hs-identifier hs-var hs-var">explicitAllocationsInStms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Op GPU -&gt; AllocM GPU GPUMem (Op GPUMem))
+-&gt; (ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint])
+-&gt; Stms GPU
+-&gt; m (Stms GPUMem)
+forall (m :: * -&gt; *) torep fromrep inner.
+(MonadFreshNames m, HasScope torep m,
+ Allocable fromrep torep inner) =&gt;
+(Op fromrep -&gt; AllocM fromrep torep (Op torep))
+-&gt; (Exp torep -&gt; AllocM fromrep torep [ExpHint])
+-&gt; Stms fromrep
+-&gt; m (Stms torep)
+</span><a href="Futhark.Pass.ExplicitAllocations.html#explicitAllocationsInStmsGeneric"><span class="hs-identifier hs-var">explicitAllocationsInStmsGeneric</span></a></span><span> </span><span class="annot"><span class="annottext">Op GPU -&gt; AllocM GPU GPUMem (Op GPUMem)
+HostOp GPU (SOAC GPU)
+-&gt; AllocM GPU GPUMem (MemOp (HostOp GPUMem ()))
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#handleHostOp"><span class="hs-identifier hs-var">handleHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT GPUMem -&gt; AllocM GPU GPUMem [ExpHint]
+</span><a href="Futhark.Pass.ExplicitAllocations.GPU.html#kernelExpHints"><span class="hs-identifier hs-var">kernelExpHints</span></a></span><span>
+</span><span id="line-194"></span></pre></body></html>

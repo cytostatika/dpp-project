@@ -1,0 +1,933 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | This module implements facilities for determining whether a</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- reduction or fold can be expressed in a closed form (i.e. not as a</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- SOAC).</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- Right now, the module can detect only trivial cases.  In the</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- future, we would like to make it more powerful, as well as possibly</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- also being able to analyse sequential loops.</span><span>
+</span><span id="line-10"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Optimise.Simplify.Rules.ClosedForm</span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#foldClosedForm"><span class="hs-identifier">foldClosedForm</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#loopClosedForm"><span class="hs-identifier">loopClosedForm</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Construct.html"><span class="hs-identifier">Futhark.Construct</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html"><span class="hs-identifier">Futhark.Optimise.Simplify.Rule</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.Simple.html"><span class="hs-identifier">Futhark.Optimise.Simplify.Rules.Simple</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.Simple.html#VarLookup"><span class="hs-identifier">VarLookup</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Transform.Rename.html"><span class="hs-identifier">Futhark.Transform.Rename</span></a></span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-comment">{-
+Motivation:
+
+  let {*[int,x_size_27] map_computed_shape_1286} = replicate(x_size_27,
+                                                             all_equal_shape_1044) in
+  let {*[bool,x_size_27] map_size_checks_1292} = replicate(x_size_27, x_1291) in
+  let {bool all_equal_checked_1298, int all_equal_shape_1299} =
+    reduceT(fn {bool, int} (bool bacc_1293, int nacc_1294, bool belm_1295,
+                            int nelm_1296) =&gt;
+              let {bool tuplit_elems_1297} = bacc_1293 &amp;&amp; belm_1295 in
+              {tuplit_elems_1297, nelm_1296},
+            {True, 0}, map_size_checks_1292, map_computed_shape_1286)
+-}</span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- | @foldClosedForm look foldfun accargs arrargs@ determines whether</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- each of the results of @foldfun@ can be expressed in a closed form.</span><span>
+</span><span id="line-41"></span><span id="local-6989586621684365155"><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#foldClosedForm"><span class="hs-identifier hs-type">foldClosedForm</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-42"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365155"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-type">BuilderOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365155"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-43"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.Simple.html#VarLookup"><span class="hs-identifier hs-type">VarLookup</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365155"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-44"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365155"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-45"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365155"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-46"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-48"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365155"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-49"></span><span id="foldClosedForm"><span class="annot"><span class="annottext">foldClosedForm :: forall rep.
+(ASTRep rep, BuilderOps rep) =&gt;
+VarLookup rep
+-&gt; Pat rep -&gt; Lambda rep -&gt; [SubExp] -&gt; [VName] -&gt; RuleM rep ()
+</span><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#foldClosedForm"><span class="hs-identifier hs-var hs-var">foldClosedForm</span></a></span></span><span> </span><span id="local-6989586621684364947"><span class="annot"><span class="annottext">VarLookup rep
+</span><a href="#local-6989586621684364947"><span class="hs-identifier hs-var">look</span></a></span></span><span> </span><span id="local-6989586621684364946"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364946"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684364945"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684364945"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span id="local-6989586621684364944"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364944"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span id="local-6989586621684364943"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364943"><span class="hs-identifier hs-var">arrs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-50"></span><span>  </span><span id="local-6989586621684364942"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364942"><span class="hs-identifier hs-var">inputsize</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [TypeBase Shape NoUniqueness] -&gt; SubExp
+forall u. Int -&gt; [TypeBase Shape u] -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Types.html#arraysSize"><span class="hs-identifier hs-var">arraysSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">([TypeBase Shape NoUniqueness] -&gt; SubExp)
+-&gt; RuleM rep [TypeBase Shape NoUniqueness] -&gt; RuleM rep SubExp
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; RuleM rep (TypeBase Shape NoUniqueness))
+-&gt; [VName] -&gt; RuleM rep [TypeBase Shape NoUniqueness]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; RuleM rep (TypeBase Shape NoUniqueness)
+forall rep (m :: * -&gt; *).
+HasScope rep m =&gt;
+VName -&gt; m (TypeBase Shape NoUniqueness)
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364943"><span class="hs-identifier hs-var">arrs</span></a></span><span>
+</span><span id="line-51"></span><span>
+</span><span id="line-52"></span><span>  </span><span id="local-6989586621684364937"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684364937"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Pat rep -&gt; [TypeBase Shape NoUniqueness]
+forall dec. Typed dec =&gt; PatT dec -&gt; [TypeBase Shape NoUniqueness]
+</span><a href="Futhark.IR.Prop.Patterns.html#patTypes"><span class="hs-identifier hs-var">patTypes</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364946"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-type">Prim</span></a></span><span> </span><span id="local-6989586621684364934"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684364934"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; RuleM rep PrimType
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684364934"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-54"></span><span>    </span><span class="annot"><span class="annottext">[TypeBase Shape NoUniqueness]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">RuleM rep PrimType
+forall rep a. RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#cannotSimplify"><span class="hs-identifier hs-var">cannotSimplify</span></a></span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span>  </span><span id="local-6989586621684364932"><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364932"><span class="hs-identifier hs-var">closedBody</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-57"></span><span>    </span><span class="annot"><span class="annottext">[VName]
+-&gt; SubExp
+-&gt; Names
+-&gt; IntType
+-&gt; Map VName SubExp
+-&gt; [VName]
+-&gt; Body rep
+-&gt; [SubExp]
+-&gt; RuleM rep (Body rep)
+forall rep.
+BuilderOps rep =&gt;
+[VName]
+-&gt; SubExp
+-&gt; Names
+-&gt; IntType
+-&gt; Map VName SubExp
+-&gt; [VName]
+-&gt; Body rep
+-&gt; [SubExp]
+-&gt; RuleM rep (Body rep)
+</span><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#checkResults"><span class="hs-identifier hs-var">checkResults</span></a></span><span>
+</span><span id="line-58"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat rep -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364946"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-59"></span><span>      </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364942"><span class="hs-identifier hs-var">inputsize</span></a></span><span>
+</span><span id="line-60"></span><span>      </span><span class="annot"><span class="annottext">Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-61"></span><span>      </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span>
+</span><span id="line-62"></span><span>      </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684364928"><span class="hs-identifier hs-var">knownBnds</span></a></span><span>
+</span><span id="line-63"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Param (LParamInfo rep) -&gt; VName)
+-&gt; [Param (LParamInfo rep)] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param (LParamInfo rep) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; [Param (LParamInfo rep)]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684364945"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; Body rep
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684364945"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span>      </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364944"><span class="hs-identifier hs-var">accs</span></a></span><span>
+</span><span id="line-66"></span><span>  </span><span id="local-6989586621684364924"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364924"><span class="hs-identifier hs-var">isEmpty</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; RuleM rep VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;fold_input_is_empty&quot;</span></span><span>
+</span><span id="line-67"></span><span>  </span><span class="annot"><span class="annottext">[VName] -&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364924"><span class="hs-identifier hs-var">isEmpty</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (RuleM rep)) -&gt; RuleM rep ())
+-&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-68"></span><span>    </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT rep
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT rep) -&gt; BasicOp -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">CmpOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#CmpOp"><span class="hs-identifier hs-var">CmpOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimType -&gt; CmpOp
+</span><a href="Futhark.IR.Primitive.html#CmpEq"><span class="hs-identifier hs-var">CmpEq</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int64"><span class="hs-identifier hs-var">int64</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364942"><span class="hs-identifier hs-var">inputsize</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><span class="annottext">Pat (Rep (RuleM rep)) -&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Pat (Rep m) -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBind"><span class="hs-identifier hs-var">letBind</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+Pat (Rep (RuleM rep))
+</span><a href="#local-6989586621684364946"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><span class="annottext">(ExpT rep -&gt; RuleM rep ()) -&gt; RuleM rep (ExpT rep) -&gt; RuleM rep ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">SubExp
+-&gt; Body rep -&gt; Body rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep
+forall rep.
+SubExp
+-&gt; BodyT rep -&gt; BodyT rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-var">If</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364924"><span class="hs-identifier hs-var">isEmpty</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-71"></span><span>            </span><span class="annot"><span class="annottext">(Body rep -&gt; Body rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep)
+-&gt; RuleM rep (Body rep)
+-&gt; RuleM rep (Body rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; RuleM rep (Body (Rep (RuleM rep)))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[SubExp] -&gt; m (Body (Rep m))
+</span><a href="Futhark.Construct.html#resultBodyM"><span class="hs-identifier hs-var">resultBodyM</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364944"><span class="hs-identifier hs-var">accs</span></a></span><span>
+</span><span id="line-72"></span><span>            </span><span class="annot"><span class="annottext">RuleM rep (Body rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep)
+-&gt; RuleM rep (Body rep)
+-&gt; RuleM rep (IfDec (BranchType rep) -&gt; ExpT rep)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">Body rep -&gt; RuleM rep (Body rep)
+forall rep (m :: * -&gt; *).
+(Renameable rep, MonadFreshNames m) =&gt;
+Body rep -&gt; m (Body rep)
+</span><a href="Futhark.Transform.Rename.html#renameBody"><span class="hs-identifier hs-var">renameBody</span></a></span><span> </span><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364932"><span class="hs-identifier hs-var">closedBody</span></a></span><span>
+</span><span id="line-73"></span><span>            </span><span class="annot"><span class="annottext">RuleM rep (IfDec (BranchType rep) -&gt; ExpT rep)
+-&gt; RuleM rep (IfDec (BranchType rep)) -&gt; RuleM rep (ExpT rep)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType rep) -&gt; RuleM rep (IfDec (BranchType rep))
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[BranchType rep] -&gt; IfSort -&gt; IfDec (BranchType rep)
+forall rt. [rt] -&gt; IfSort -&gt; IfDec rt
+</span><a href="Futhark.IR.Syntax.html#IfDec"><span class="hs-identifier hs-var">IfDec</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; BranchType rep
+forall rt. IsBodyType rt =&gt; PrimType -&gt; rt
+</span><a href="Futhark.IR.RetType.html#primBodyType"><span class="hs-identifier hs-var">primBodyType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684364937"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">IfSort
+</span><a href="Futhark.IR.Syntax.html#IfNormal"><span class="hs-identifier hs-var">IfNormal</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>        </span><span class="hs-special">)</span><span>
+</span><span id="line-75"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-76"></span><span>    </span><span id="local-6989586621684364928"><span class="annot"><span class="annottext">knownBnds :: Map VName SubExp
+</span><a href="#local-6989586621684364928"><span class="hs-identifier hs-var hs-var">knownBnds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VarLookup rep
+-&gt; Lambda rep -&gt; [SubExp] -&gt; [VName] -&gt; Map VName SubExp
+forall rep.
+VarLookup rep
+-&gt; Lambda rep -&gt; [SubExp] -&gt; [VName] -&gt; Map VName SubExp
+</span><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#determineKnownBindings"><span class="hs-identifier hs-var">determineKnownBindings</span></a></span><span> </span><span class="annot"><span class="annottext">VarLookup rep
+</span><a href="#local-6989586621684364947"><span class="hs-identifier hs-var">look</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684364945"><span class="hs-identifier hs-var">lam</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364944"><span class="hs-identifier hs-var">accs</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364943"><span class="hs-identifier hs-var">arrs</span></a></span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- | @loopClosedForm pat respat merge bound bodys@ determines whether</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- the do-loop can be expressed in a closed form.</span><span>
+</span><span id="line-80"></span><span id="local-6989586621684365063"><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#loopClosedForm"><span class="hs-identifier hs-type">loopClosedForm</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-81"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365063"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-type">BuilderOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365063"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-82"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365063"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FParam"><span class="hs-identifier hs-type">FParam</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365063"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-84"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#Names"><span class="hs-identifier hs-type">Names</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-85"></span><span>  </span><span class="annot"><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-type">IntType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-86"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-87"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365063"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-88"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365063"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-89"></span><span id="loopClosedForm"><span class="annot"><span class="annottext">loopClosedForm :: forall rep.
+(ASTRep rep, BuilderOps rep) =&gt;
+Pat rep
+-&gt; [(FParam rep, SubExp)]
+-&gt; Names
+-&gt; IntType
+-&gt; SubExp
+-&gt; Body rep
+-&gt; RuleM rep ()
+</span><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#loopClosedForm"><span class="hs-identifier hs-var hs-var">loopClosedForm</span></a></span></span><span> </span><span id="local-6989586621684364866"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364866"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684364865"><span class="annot"><span class="annottext">[(FParam rep, SubExp)]
+</span><a href="#local-6989586621684364865"><span class="hs-identifier hs-var">merge</span></a></span></span><span> </span><span id="local-6989586621684364864"><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684364864"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684364863"><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364863"><span class="hs-identifier hs-var">it</span></a></span></span><span> </span><span id="local-6989586621684364862"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364862"><span class="hs-identifier hs-var">bound</span></a></span></span><span> </span><span id="local-6989586621684364861"><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364861"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-90"></span><span>  </span><span id="local-6989586621684364860"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684364860"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Pat rep -&gt; [TypeBase Shape NoUniqueness]
+forall dec. Typed dec =&gt; PatT dec -&gt; [TypeBase Shape NoUniqueness]
+</span><a href="Futhark.IR.Prop.Patterns.html#patTypes"><span class="hs-identifier hs-var">patTypes</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364866"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-91"></span><span>    </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-type">Prim</span></a></span><span> </span><span id="local-6989586621684364859"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684364859"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; RuleM rep PrimType
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684364859"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-92"></span><span>    </span><span class="annot"><span class="annottext">[TypeBase Shape NoUniqueness]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">RuleM rep PrimType
+forall rep a. RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#cannotSimplify"><span class="hs-identifier hs-var">cannotSimplify</span></a></span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span>  </span><span id="local-6989586621684364858"><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364858"><span class="hs-identifier hs-var">closedBody</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-95"></span><span>    </span><span class="annot"><span class="annottext">[VName]
+-&gt; SubExp
+-&gt; Names
+-&gt; IntType
+-&gt; Map VName SubExp
+-&gt; [VName]
+-&gt; Body rep
+-&gt; [SubExp]
+-&gt; RuleM rep (Body rep)
+forall rep.
+BuilderOps rep =&gt;
+[VName]
+-&gt; SubExp
+-&gt; Names
+-&gt; IntType
+-&gt; Map VName SubExp
+-&gt; [VName]
+-&gt; Body rep
+-&gt; [SubExp]
+-&gt; RuleM rep (Body rep)
+</span><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#checkResults"><span class="hs-identifier hs-var">checkResults</span></a></span><span>
+</span><span id="line-96"></span><span>      </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364857"><span class="hs-identifier hs-var">mergenames</span></a></span><span>
+</span><span id="line-97"></span><span>      </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364862"><span class="hs-identifier hs-var">bound</span></a></span><span>
+</span><span id="line-98"></span><span>      </span><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684364864"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-99"></span><span>      </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364863"><span class="hs-identifier hs-var">it</span></a></span><span>
+</span><span id="line-100"></span><span>      </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684364856"><span class="hs-identifier hs-var">knownBnds</span></a></span><span>
+</span><span id="line-101"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Ident -&gt; VName) -&gt; [Ident] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Ident -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#identName"><span class="hs-identifier hs-var hs-var">identName</span></a></span><span> </span><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684364854"><span class="hs-identifier hs-var">mergeidents</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>      </span><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364861"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-103"></span><span>      </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364853"><span class="hs-identifier hs-var">mergeexp</span></a></span><span>
+</span><span id="line-104"></span><span>  </span><span id="local-6989586621684364852"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364852"><span class="hs-identifier hs-var">isEmpty</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; RuleM rep VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;bound_is_zero&quot;</span></span><span>
+</span><span id="line-105"></span><span>  </span><span class="annot"><span class="annottext">[VName] -&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364852"><span class="hs-identifier hs-var">isEmpty</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (RuleM rep)) -&gt; RuleM rep ())
+-&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-106"></span><span>    </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT rep
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT rep) -&gt; BasicOp -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">CmpOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#CmpOp"><span class="hs-identifier hs-var">CmpOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; CmpOp
+</span><a href="Futhark.IR.Primitive.html#CmpSlt"><span class="hs-identifier hs-var">CmpSlt</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364863"><span class="hs-identifier hs-var">it</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364862"><span class="hs-identifier hs-var">bound</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364863"><span class="hs-identifier hs-var">it</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span>  </span><span class="annot"><span class="annottext">Pat (Rep (RuleM rep)) -&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Pat (Rep m) -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBind"><span class="hs-identifier hs-var">letBind</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+Pat (Rep (RuleM rep))
+</span><a href="#local-6989586621684364866"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-109"></span><span>    </span><span class="annot"><span class="annottext">(ExpT rep -&gt; RuleM rep ()) -&gt; RuleM rep (ExpT rep) -&gt; RuleM rep ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">SubExp
+-&gt; Body rep -&gt; Body rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep
+forall rep.
+SubExp
+-&gt; BodyT rep -&gt; BodyT rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-var">If</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364852"><span class="hs-identifier hs-var">isEmpty</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-110"></span><span>            </span><span class="annot"><span class="annottext">(Body rep -&gt; Body rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep)
+-&gt; RuleM rep (Body rep)
+-&gt; RuleM rep (Body rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; RuleM rep (Body (Rep (RuleM rep)))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[SubExp] -&gt; m (Body (Rep m))
+</span><a href="Futhark.Construct.html#resultBodyM"><span class="hs-identifier hs-var">resultBodyM</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364853"><span class="hs-identifier hs-var">mergeexp</span></a></span><span>
+</span><span id="line-111"></span><span>            </span><span class="annot"><span class="annottext">RuleM rep (Body rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep)
+-&gt; RuleM rep (Body rep)
+-&gt; RuleM rep (IfDec (BranchType rep) -&gt; ExpT rep)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">Body rep -&gt; RuleM rep (Body rep)
+forall rep (m :: * -&gt; *).
+(Renameable rep, MonadFreshNames m) =&gt;
+Body rep -&gt; m (Body rep)
+</span><a href="Futhark.Transform.Rename.html#renameBody"><span class="hs-identifier hs-var">renameBody</span></a></span><span> </span><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364858"><span class="hs-identifier hs-var">closedBody</span></a></span><span>
+</span><span id="line-112"></span><span>            </span><span class="annot"><span class="annottext">RuleM rep (IfDec (BranchType rep) -&gt; ExpT rep)
+-&gt; RuleM rep (IfDec (BranchType rep)) -&gt; RuleM rep (ExpT rep)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType rep) -&gt; RuleM rep (IfDec (BranchType rep))
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[BranchType rep] -&gt; IfSort -&gt; IfDec (BranchType rep)
+forall rt. [rt] -&gt; IfSort -&gt; IfDec rt
+</span><a href="Futhark.IR.Syntax.html#IfDec"><span class="hs-identifier hs-var">IfDec</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; BranchType rep
+forall rt. IsBodyType rt =&gt; PrimType -&gt; rt
+</span><a href="Futhark.IR.RetType.html#primBodyType"><span class="hs-identifier hs-var">primBodyType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684364860"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">IfSort
+</span><a href="Futhark.IR.Syntax.html#IfNormal"><span class="hs-identifier hs-var">IfNormal</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span>        </span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-115"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684364850"><span class="annot"><span class="annottext">[FParam rep]
+</span><a href="#local-6989586621684364850"><span class="hs-identifier hs-var">mergepat</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684364853"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364853"><span class="hs-identifier hs-var">mergeexp</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(FParam rep, SubExp)] -&gt; ([FParam rep], [SubExp])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">[(FParam rep, SubExp)]
+</span><a href="#local-6989586621684364865"><span class="hs-identifier hs-var">merge</span></a></span><span>
+</span><span id="line-116"></span><span>    </span><span id="local-6989586621684364854"><span class="annot"><span class="annottext">mergeidents :: [Ident]
+</span><a href="#local-6989586621684364854"><span class="hs-identifier hs-var hs-var">mergeidents</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(FParam rep -&gt; Ident) -&gt; [FParam rep] -&gt; [Ident]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">FParam rep -&gt; Ident
+forall dec. Typed dec =&gt; Param dec -&gt; Ident
+</span><a href="Futhark.IR.Prop.Patterns.html#paramIdent"><span class="hs-identifier hs-var">paramIdent</span></a></span><span> </span><span class="annot"><span class="annottext">[FParam rep]
+</span><a href="#local-6989586621684364850"><span class="hs-identifier hs-var">mergepat</span></a></span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621684364857"><span class="annot"><span class="annottext">mergenames :: [VName]
+</span><a href="#local-6989586621684364857"><span class="hs-identifier hs-var hs-var">mergenames</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(FParam rep -&gt; VName) -&gt; [FParam rep] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">FParam rep -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">[FParam rep]
+</span><a href="#local-6989586621684364850"><span class="hs-identifier hs-var">mergepat</span></a></span><span>
+</span><span id="line-118"></span><span>    </span><span id="local-6989586621684364856"><span class="annot"><span class="annottext">knownBnds :: Map VName SubExp
+</span><a href="#local-6989586621684364856"><span class="hs-identifier hs-var hs-var">knownBnds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; Map VName SubExp
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; Map VName SubExp)
+-&gt; [(VName, SubExp)] -&gt; Map VName SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; [SubExp] -&gt; [(VName, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364857"><span class="hs-identifier hs-var">mergenames</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364853"><span class="hs-identifier hs-var">mergeexp</span></a></span><span>
+</span><span id="line-119"></span><span>
+</span><span id="line-120"></span><span id="local-6989586621684365101"><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#checkResults"><span class="hs-identifier hs-type">checkResults</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-121"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-type">BuilderOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365101"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-122"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-123"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-124"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#Names"><span class="hs-identifier hs-type">Names</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-125"></span><span>  </span><span class="annot"><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-type">IntType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-126"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-127"></span><span>  </span><span class="hs-comment">-- | Lambda-bound</span><span>
+</span><span id="line-128"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-129"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365101"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-130"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-131"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365101"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365101"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-132"></span><span id="checkResults"><span class="annot"><span class="annottext">checkResults :: forall rep.
+BuilderOps rep =&gt;
+[VName]
+-&gt; SubExp
+-&gt; Names
+-&gt; IntType
+-&gt; Map VName SubExp
+-&gt; [VName]
+-&gt; Body rep
+-&gt; [SubExp]
+-&gt; RuleM rep (Body rep)
+</span><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#checkResults"><span class="hs-identifier hs-var hs-var">checkResults</span></a></span></span><span> </span><span id="local-6989586621684364834"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364834"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684364833"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364833"><span class="hs-identifier hs-var">size</span></a></span></span><span> </span><span id="local-6989586621684364832"><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684364832"><span class="hs-identifier hs-var">untouchable</span></a></span></span><span> </span><span id="local-6989586621684364831"><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364831"><span class="hs-identifier hs-var">it</span></a></span></span><span> </span><span id="local-6989586621684364830"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684364830"><span class="hs-identifier hs-var">knownBnds</span></a></span></span><span> </span><span id="local-6989586621684364829"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364829"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span id="local-6989586621684364828"><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364828"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span id="local-6989586621684364827"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364827"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-133"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684364826"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684364826"><span class="hs-identifier hs-var">stms</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-134"></span><span>    </span><span class="annot"><span class="annottext">RuleM rep () -&gt; RuleM rep ((), Stms (Rep (RuleM rep)))
+forall (m :: * -&gt; *) a.
+MonadBuilder m =&gt;
+m a -&gt; m (a, Stms (Rep m))
+</span><a href="Futhark.Builder.Class.html#collectStms"><span class="hs-identifier hs-var">collectStms</span></a></span><span> </span><span class="annot"><span class="annottext">(RuleM rep () -&gt; RuleM rep ((), Stms (Rep (RuleM rep))))
+-&gt; RuleM rep () -&gt; RuleM rep ((), Stms (Rep (RuleM rep)))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-135"></span><span>      </span><span class="annot"><span class="annottext">((VName, SubExpRes) -&gt; (VName, SubExp) -&gt; RuleM rep ())
+-&gt; [(VName, SubExpRes)] -&gt; [(VName, SubExp)] -&gt; RuleM rep ()
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m ()
+</span><span class="hs-identifier hs-var">zipWithM_</span></span><span> </span><span class="annot"><span class="annottext">(VName, SubExpRes) -&gt; (VName, SubExp) -&gt; RuleM rep ()
+forall {rep}.
+BuilderOps rep =&gt;
+(VName, SubExpRes) -&gt; (VName, SubExp) -&gt; RuleM rep ()
+</span><a href="#local-6989586621684364823"><span class="hs-identifier hs-var">checkResult</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [SubExpRes] -&gt; [(VName, SubExpRes)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364834"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExpRes]
+</span><a href="#local-6989586621684364822"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [SubExp] -&gt; [(VName, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364821"><span class="hs-identifier hs-var">accparams</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364827"><span class="hs-identifier hs-var">accs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-136"></span><span>  </span><span class="annot"><span class="annottext">Stms (Rep (RuleM rep))
+-&gt; [SubExpRes] -&gt; RuleM rep (Body (Rep (RuleM rep)))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Stms (Rep m) -&gt; [SubExpRes] -&gt; m (Body (Rep m))
+</span><a href="Futhark.Builder.Class.html#mkBodyM"><span class="hs-identifier hs-var">mkBodyM</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+Stms (Rep (RuleM rep))
+</span><a href="#local-6989586621684364826"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExpRes] -&gt; RuleM rep (Body (Rep (RuleM rep))))
+-&gt; [SubExpRes] -&gt; RuleM rep (Body (Rep (RuleM rep)))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; [SubExpRes]
+</span><a href="Futhark.IR.Syntax.html#varsRes"><span class="hs-identifier hs-var">varsRes</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364834"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-137"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-138"></span><span>    </span><span id="local-6989586621684364818"><span class="annot"><span class="annottext">stmMap :: Map VName (Exp rep)
+</span><a href="#local-6989586621684364818"><span class="hs-identifier hs-var hs-var">stmMap</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body rep -&gt; Map VName (Exp rep)
+forall rep. Body rep -&gt; Map VName (Exp rep)
+</span><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#makeBindMap"><span class="hs-identifier hs-var">makeBindMap</span></a></span><span> </span><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364828"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-139"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684364821"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364821"><span class="hs-identifier hs-var">accparams</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [VName] -&gt; ([VName], [VName])
+forall a. Int -&gt; [a] -&gt; ([a], [a])
+</span><span class="hs-identifier hs-var">splitAt</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364827"><span class="hs-identifier hs-var">accs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364829"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-140"></span><span>    </span><span id="local-6989586621684364822"><span class="annot"><span class="annottext">res :: [SubExpRes]
+</span><a href="#local-6989586621684364822"><span class="hs-identifier hs-var hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body rep -&gt; [SubExpRes]
+forall rep. BodyT rep -&gt; [SubExpRes]
+</span><a href="Futhark.IR.Syntax.html#bodyResult"><span class="hs-identifier hs-var hs-var">bodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364828"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-141"></span><span>
+</span><span id="line-142"></span><span>    </span><span id="local-6989586621684364808"><span class="annot"><span class="annottext">nonFree :: Names
+</span><a href="#local-6989586621684364808"><span class="hs-identifier hs-var hs-var">nonFree</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body rep -&gt; Names
+forall rep. Body rep -&gt; Names
+</span><a href="Futhark.IR.Prop.Names.html#boundInBody"><span class="hs-identifier hs-var">boundInBody</span></a></span><span> </span><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684364828"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="annot"><span class="annottext">Names -&gt; Names -&gt; Names
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; Names
+</span><a href="Futhark.IR.Prop.Names.html#namesFromList"><span class="hs-identifier hs-var">namesFromList</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364829"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">Names -&gt; Names -&gt; Names
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684364832"><span class="hs-identifier hs-var">untouchable</span></a></span><span>
+</span><span id="line-143"></span><span>
+</span><span id="line-144"></span><span>    </span><span id="local-6989586621684364823"><span class="annot"><span class="annottext">checkResult :: (VName, SubExpRes) -&gt; (VName, SubExp) -&gt; RuleM rep ()
+</span><a href="#local-6989586621684364823"><span class="hs-identifier hs-var hs-var">checkResult</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684364782"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364782"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#SubExpRes"><span class="hs-identifier hs-type">SubExpRes</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684364780"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364780"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684364779"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364779"><span class="hs-identifier hs-var">accparam</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684364778"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364778"><span class="hs-identifier hs-var">acc</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BinOp"><span class="hs-identifier hs-type">BinOp</span></a></span><span> </span><span id="local-6989586621684364776"><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684364776"><span class="hs-identifier hs-var">bop</span></a></span></span><span> </span><span id="local-6989586621684364775"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364775"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684364774"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364774"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Map VName (Exp rep) -&gt; Maybe (Exp rep)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364780"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (Exp rep)
+</span><a href="#local-6989586621684364818"><span class="hs-identifier hs-var">stmMap</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-146"></span><span>        </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364775"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; SubExp -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364774"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-147"></span><span>        </span><span class="hs-comment">-- One of x,y must be *this* accumulator, and the other must</span><span>
+</span><span id="line-148"></span><span>        </span><span class="hs-comment">-- be something that is free in the body.</span><span>
+</span><span id="line-149"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684364770"><span class="annot"><span class="annottext">isThisAccum :: SubExp -&gt; Bool
+</span><a href="#local-6989586621684364770"><span class="hs-identifier hs-var hs-var">isThisAccum</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; SubExp -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364779"><span class="hs-identifier hs-var">accparam</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-150"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621684364769"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364769"><span class="hs-identifier hs-var">this</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684364768"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364768"><span class="hs-identifier hs-var">el</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe (SubExp, SubExp) -&gt; RuleM rep (SubExp, SubExp)
+forall a rep. Maybe a -&gt; RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#liftMaybe"><span class="hs-identifier hs-var">liftMaybe</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe (SubExp, SubExp) -&gt; RuleM rep (SubExp, SubExp))
+-&gt; Maybe (SubExp, SubExp) -&gt; RuleM rep (SubExp, SubExp)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-151"></span><span>          </span><span class="hs-keyword">case</span><span> </span><span class="hs-special">(</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; Maybe SubExp
+</span><a href="#local-6989586621684364766"><span class="hs-identifier hs-var">asFreeSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364775"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Bool
+</span><a href="#local-6989586621684364770"><span class="hs-identifier hs-var">isThisAccum</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364774"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-152"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; Maybe SubExp
+</span><a href="#local-6989586621684364766"><span class="hs-identifier hs-var">asFreeSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364774"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Bool
+</span><a href="#local-6989586621684364770"><span class="hs-identifier hs-var">isThisAccum</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364775"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-153"></span><span>               </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-154"></span><span>            </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684364765"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364765"><span class="hs-identifier hs-var">free</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(Maybe SubExp, Bool)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(SubExp, SubExp) -&gt; Maybe (SubExp, SubExp)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364778"><span class="hs-identifier hs-var">acc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364765"><span class="hs-identifier hs-var">free</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-155"></span><span>            </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Maybe SubExp, Bool)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684364764"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364764"><span class="hs-identifier hs-var">free</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(SubExp, SubExp) -&gt; Maybe (SubExp, SubExp)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364778"><span class="hs-identifier hs-var">acc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364764"><span class="hs-identifier hs-var">free</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-156"></span><span>            </span><span class="annot"><span class="annottext">((Maybe SubExp, Bool), (Maybe SubExp, Bool))
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe (SubExp, SubExp)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-157"></span><span>
+</span><span id="line-158"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684364776"><span class="hs-identifier hs-var">bop</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-159"></span><span>          </span><span class="annot"><span class="annottext">BinOp
+</span><a href="Futhark.IR.Primitive.html#LogAnd"><span class="hs-identifier hs-var">LogAnd</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-160"></span><span>            </span><span class="annot"><span class="annottext">[VName] -&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364782"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (RuleM rep)) -&gt; RuleM rep ())
+-&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT rep
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT rep) -&gt; BasicOp -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BinOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#BinOp"><span class="hs-identifier hs-var">BinOp</span></a></span><span> </span><span class="annot"><span class="annottext">BinOp
+</span><a href="Futhark.IR.Primitive.html#LogAnd"><span class="hs-identifier hs-var">LogAnd</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364769"><span class="hs-identifier hs-var">this</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364768"><span class="hs-identifier hs-var">el</span></a></span><span>
+</span><span id="line-161"></span><span>          </span><span class="annot"><a href="Futhark.IR.Primitive.html#Add"><span class="hs-identifier hs-type">Add</span></a></span><span> </span><span id="local-6989586621684364761"><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364761"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621684364760"><span class="annot"><span class="annottext">Overflow
+</span><a href="#local-6989586621684364760"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-162"></span><span>            </span><span id="local-6989586621684364759"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364759"><span class="hs-identifier hs-var">size'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IntType -&gt; SubExp -&gt; RuleM rep SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+IntType -&gt; SubExp -&gt; m SubExp
+</span><a href="Futhark.Construct.html#asIntS"><span class="hs-identifier hs-var">asIntS</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364761"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364833"><span class="hs-identifier hs-var">size</span></a></span><span>
+</span><span id="line-163"></span><span>            </span><span class="annot"><span class="annottext">[VName] -&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364782"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-164"></span><span>              </span><span class="annot"><span class="annottext">(ExpT rep -&gt; RuleM rep ()) -&gt; RuleM rep (ExpT rep) -&gt; RuleM rep ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">BinOp
+-&gt; RuleM rep (Exp (Rep (RuleM rep)))
+-&gt; RuleM rep (Exp (Rep (RuleM rep)))
+-&gt; RuleM rep (Exp (Rep (RuleM rep)))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+BinOp -&gt; m (Exp (Rep m)) -&gt; m (Exp (Rep m)) -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#eBinOp"><span class="hs-identifier hs-var">eBinOp</span></a></span><span>
+</span><span id="line-165"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; Overflow -&gt; BinOp
+</span><a href="Futhark.IR.Primitive.html#Add"><span class="hs-identifier hs-var">Add</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364761"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Overflow
+</span><a href="#local-6989586621684364760"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-166"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; RuleM rep (Exp (Rep (RuleM rep)))
+forall (m :: * -&gt; *). MonadBuilder m =&gt; SubExp -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#eSubExp"><span class="hs-identifier hs-var">eSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364769"><span class="hs-identifier hs-var">this</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-167"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ExpT rep -&gt; RuleM rep (ExpT rep)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(ExpT rep -&gt; RuleM rep (ExpT rep))
+-&gt; ExpT rep -&gt; RuleM rep (ExpT rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT rep
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT rep) -&gt; BasicOp -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BinOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#BinOp"><span class="hs-identifier hs-var">BinOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; Overflow -&gt; BinOp
+</span><a href="Futhark.IR.Primitive.html#Mul"><span class="hs-identifier hs-var">Mul</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364761"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Overflow
+</span><a href="#local-6989586621684364760"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364768"><span class="hs-identifier hs-var">el</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364759"><span class="hs-identifier hs-var">size'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-168"></span><span>          </span><span class="annot"><a href="Futhark.IR.Primitive.html#FAdd"><span class="hs-identifier hs-type">FAdd</span></a></span><span> </span><span id="local-6989586621684364753"><span class="annot"><span class="annottext">FloatType
+</span><a href="#local-6989586621684364753"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684364752"><span class="annot"><span class="annottext">RuleM rep SubExp
+</span><a href="#local-6989586621684364752"><span class="hs-identifier hs-var">properly_typed_size</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FloatType -&gt; Maybe (RuleM rep SubExp)
+forall {m :: * -&gt; *}.
+MonadBuilder m =&gt;
+FloatType -&gt; Maybe (m SubExp)
+</span><a href="#local-6989586621684364751"><span class="hs-identifier hs-var">properFloatSize</span></a></span><span> </span><span class="annot"><span class="annottext">FloatType
+</span><a href="#local-6989586621684364753"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-169"></span><span>            </span><span id="local-6989586621684364750"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364750"><span class="hs-identifier hs-var">size'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RuleM rep SubExp
+</span><a href="#local-6989586621684364752"><span class="hs-identifier hs-var">properly_typed_size</span></a></span><span>
+</span><span id="line-170"></span><span>            </span><span class="annot"><span class="annottext">[VName] -&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364782"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-171"></span><span>              </span><span class="annot"><span class="annottext">(ExpT rep -&gt; RuleM rep ()) -&gt; RuleM rep (ExpT rep) -&gt; RuleM rep ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">BinOp
+-&gt; RuleM rep (Exp (Rep (RuleM rep)))
+-&gt; RuleM rep (Exp (Rep (RuleM rep)))
+-&gt; RuleM rep (Exp (Rep (RuleM rep)))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+BinOp -&gt; m (Exp (Rep m)) -&gt; m (Exp (Rep m)) -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#eBinOp"><span class="hs-identifier hs-var">eBinOp</span></a></span><span>
+</span><span id="line-172"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FloatType -&gt; BinOp
+</span><a href="Futhark.IR.Primitive.html#FAdd"><span class="hs-identifier hs-var">FAdd</span></a></span><span> </span><span class="annot"><span class="annottext">FloatType
+</span><a href="#local-6989586621684364753"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-173"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; RuleM rep (Exp (Rep (RuleM rep)))
+forall (m :: * -&gt; *). MonadBuilder m =&gt; SubExp -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#eSubExp"><span class="hs-identifier hs-var">eSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364769"><span class="hs-identifier hs-var">this</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-174"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ExpT rep -&gt; RuleM rep (ExpT rep)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(ExpT rep -&gt; RuleM rep (ExpT rep))
+-&gt; ExpT rep -&gt; RuleM rep (ExpT rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT rep
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT rep) -&gt; BasicOp -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BinOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#BinOp"><span class="hs-identifier hs-var">BinOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FloatType -&gt; BinOp
+</span><a href="Futhark.IR.Primitive.html#FMul"><span class="hs-identifier hs-var">FMul</span></a></span><span> </span><span class="annot"><span class="annottext">FloatType
+</span><a href="#local-6989586621684364753"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364768"><span class="hs-identifier hs-var">el</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364750"><span class="hs-identifier hs-var">size'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-175"></span><span>          </span><span class="annot"><span class="annottext">BinOp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">RuleM rep ()
+forall rep a. RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#cannotSimplify"><span class="hs-identifier hs-var">cannotSimplify</span></a></span><span> </span><span class="hs-comment">-- Um... sorry.</span><span>
+</span><span id="line-176"></span><span>    </span><span class="annot"><a href="#local-6989586621684364823"><span class="hs-identifier hs-var">checkResult</span></a></span><span> </span><span class="annot"><span class="annottext">(VName, SubExpRes)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">(VName, SubExp)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RuleM rep ()
+forall rep a. RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#cannotSimplify"><span class="hs-identifier hs-var">cannotSimplify</span></a></span><span>
+</span><span id="line-177"></span><span>
+</span><span id="line-178"></span><span>    </span><span class="annot"><a href="#local-6989586621684364766"><span class="hs-identifier hs-type">asFreeSubExp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span>
+</span><span id="line-179"></span><span>    </span><span id="local-6989586621684364766"><span class="annot"><span class="annottext">asFreeSubExp :: SubExp -&gt; Maybe SubExp
+</span><a href="#local-6989586621684364766"><span class="hs-identifier hs-var hs-var">asFreeSubExp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684364748"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364748"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-180"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364748"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; Bool
+</span><a href="Futhark.IR.Prop.Names.html#nameIn"><span class="hs-operator hs-var">`nameIn`</span></a></span><span> </span><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684364808"><span class="hs-identifier hs-var">nonFree</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Map VName SubExp -&gt; Maybe SubExp
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364748"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684364830"><span class="hs-identifier hs-var">knownBnds</span></a></span><span>
+</span><span id="line-181"></span><span>    </span><span class="annot"><a href="#local-6989586621684364766"><span class="hs-identifier hs-var">asFreeSubExp</span></a></span><span> </span><span id="local-6989586621684364746"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364746"><span class="hs-identifier hs-var">se</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Maybe SubExp
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364746"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span>    </span><span id="local-6989586621684364751"><span class="annot"><span class="annottext">properFloatSize :: FloatType -&gt; Maybe (m SubExp)
+</span><a href="#local-6989586621684364751"><span class="hs-identifier hs-var hs-var">properFloatSize</span></a></span></span><span> </span><span id="local-6989586621684364743"><span class="annot"><span class="annottext">FloatType
+</span><a href="#local-6989586621684364743"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-184"></span><span>      </span><span class="annot"><span class="annottext">m SubExp -&gt; Maybe (m SubExp)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(m SubExp -&gt; Maybe (m SubExp)) -&gt; m SubExp -&gt; Maybe (m SubExp)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-185"></span><span>        </span><span class="annot"><span class="annottext">String -&gt; Exp (Rep m) -&gt; m SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m SubExp
+</span><a href="Futhark.Construct.html#letSubExp"><span class="hs-identifier hs-var">letSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;converted_size&quot;</span></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m SubExp) -&gt; Exp (Rep m) -&gt; m SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-186"></span><span>          </span><span class="annot"><span class="annottext">BasicOp -&gt; Exp (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; Exp (Rep m)) -&gt; BasicOp -&gt; Exp (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ConvOp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#ConvOp"><span class="hs-identifier hs-var">ConvOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; FloatType -&gt; ConvOp
+</span><a href="Futhark.IR.Primitive.html#SIToFP"><span class="hs-identifier hs-var">SIToFP</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684364831"><span class="hs-identifier hs-var">it</span></a></span><span> </span><span class="annot"><span class="annottext">FloatType
+</span><a href="#local-6989586621684364743"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364833"><span class="hs-identifier hs-var">size</span></a></span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span id="local-6989586621684365064"><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#determineKnownBindings"><span class="hs-identifier hs-type">determineKnownBindings</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-189"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.Simple.html#VarLookup"><span class="hs-identifier hs-type">VarLookup</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365064"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-190"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365064"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-191"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-192"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-193"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span></span><span>
+</span><span id="line-194"></span><span id="determineKnownBindings"><span class="annot"><span class="annottext">determineKnownBindings :: forall rep.
+VarLookup rep
+-&gt; Lambda rep -&gt; [SubExp] -&gt; [VName] -&gt; Map VName SubExp
+</span><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#determineKnownBindings"><span class="hs-identifier hs-var hs-var">determineKnownBindings</span></a></span></span><span> </span><span id="local-6989586621684364736"><span class="annot"><span class="annottext">VarLookup rep
+</span><a href="#local-6989586621684364736"><span class="hs-identifier hs-var">look</span></a></span></span><span> </span><span id="local-6989586621684364735"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684364735"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span id="local-6989586621684364734"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364734"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span id="local-6989586621684364733"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364733"><span class="hs-identifier hs-var">arrs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-195"></span><span>  </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684364732"><span class="hs-identifier hs-var">accBnds</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Map VName SubExp -&gt; Map VName SubExp
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684364731"><span class="hs-identifier hs-var">arrBnds</span></a></span><span>
+</span><span id="line-196"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-197"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684364729"><span class="annot"><span class="annottext">[Param (LParamInfo rep)]
+</span><a href="#local-6989586621684364729"><span class="hs-identifier hs-var">accparams</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684364728"><span class="annot"><span class="annottext">[Param (LParamInfo rep)]
+</span><a href="#local-6989586621684364728"><span class="hs-identifier hs-var">arrparams</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-198"></span><span>      </span><span class="annot"><span class="annottext">Int
+-&gt; [Param (LParamInfo rep)]
+-&gt; ([Param (LParamInfo rep)], [Param (LParamInfo rep)])
+forall a. Int -&gt; [a] -&gt; ([a], [a])
+</span><span class="hs-identifier hs-var">splitAt</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364734"><span class="hs-identifier hs-var">accs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Param (LParamInfo rep)]
+ -&gt; ([Param (LParamInfo rep)], [Param (LParamInfo rep)]))
+-&gt; [Param (LParamInfo rep)]
+-&gt; ([Param (LParamInfo rep)], [Param (LParamInfo rep)])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; [Param (LParamInfo rep)]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684364735"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-199"></span><span>    </span><span id="local-6989586621684364732"><span class="annot"><span class="annottext">accBnds :: Map VName SubExp
+</span><a href="#local-6989586621684364732"><span class="hs-identifier hs-var hs-var">accBnds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-200"></span><span>      </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; Map VName SubExp
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; Map VName SubExp)
+-&gt; [(VName, SubExp)] -&gt; Map VName SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-201"></span><span>        </span><span class="annot"><span class="annottext">[VName] -&gt; [SubExp] -&gt; [(VName, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Param (LParamInfo rep) -&gt; VName)
+-&gt; [Param (LParamInfo rep)] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param (LParamInfo rep) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">[Param (LParamInfo rep)]
+</span><a href="#local-6989586621684364729"><span class="hs-identifier hs-var">accparams</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684364734"><span class="hs-identifier hs-var">accs</span></a></span><span>
+</span><span id="line-202"></span><span>    </span><span id="local-6989586621684364731"><span class="annot"><span class="annottext">arrBnds :: Map VName SubExp
+</span><a href="#local-6989586621684364731"><span class="hs-identifier hs-var hs-var">arrBnds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-203"></span><span>      </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; Map VName SubExp
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; Map VName SubExp)
+-&gt; [(VName, SubExp)] -&gt; Map VName SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-204"></span><span>        </span><span class="annot"><span class="annottext">((VName, VName) -&gt; Maybe (VName, SubExp))
+-&gt; [(VName, VName)] -&gt; [(VName, SubExp)]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="annot"><span class="annottext">(VName, VName) -&gt; Maybe (VName, SubExp)
+forall {a}. (a, VName) -&gt; Maybe (a, SubExp)
+</span><a href="#local-6989586621684364724"><span class="hs-identifier hs-var">isReplicate</span></a></span><span> </span><span class="annot"><span class="annottext">([(VName, VName)] -&gt; [(VName, SubExp)])
+-&gt; [(VName, VName)] -&gt; [(VName, SubExp)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-205"></span><span>          </span><span class="annot"><span class="annottext">[VName] -&gt; [VName] -&gt; [(VName, VName)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Param (LParamInfo rep) -&gt; VName)
+-&gt; [Param (LParamInfo rep)] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param (LParamInfo rep) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">[Param (LParamInfo rep)]
+</span><a href="#local-6989586621684364728"><span class="hs-identifier hs-var">arrparams</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364733"><span class="hs-identifier hs-var">arrs</span></a></span><span>
+</span><span id="line-206"></span><span>
+</span><span id="line-207"></span><span>    </span><span id="local-6989586621684364724"><span class="annot"><span class="annottext">isReplicate :: (a, VName) -&gt; Maybe (a, SubExp)
+</span><a href="#local-6989586621684364724"><span class="hs-identifier hs-var hs-var">isReplicate</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684364719"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364719"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684364718"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364718"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-208"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Replicate"><span class="hs-identifier hs-type">Replicate</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684364716"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364716"><span class="hs-identifier hs-var">ve</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684364715"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684364715"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VarLookup rep
+</span><a href="#local-6989586621684364736"><span class="hs-identifier hs-var">look</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364718"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-209"></span><span>        </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684364715"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">Certs -&gt; Certs -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Certs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-210"></span><span>        </span><span class="annot"><span class="annottext">(a, SubExp) -&gt; Maybe (a, SubExp)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364719"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364716"><span class="hs-identifier hs-var">ve</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-211"></span><span>    </span><span class="annot"><a href="#local-6989586621684364724"><span class="hs-identifier hs-var">isReplicate</span></a></span><span> </span><span class="annot"><span class="annottext">(a, VName)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (a, SubExp)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-212"></span><span>
+</span><span id="line-213"></span><span id="local-6989586621684365042"><span class="annot"><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#makeBindMap"><span class="hs-identifier hs-type">makeBindMap</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365042"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684365042"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-214"></span><span id="makeBindMap"><span class="annot"><span class="annottext">makeBindMap :: forall rep. Body rep -&gt; Map VName (Exp rep)
+</span><a href="Futhark.Optimise.Simplify.Rules.ClosedForm.html#makeBindMap"><span class="hs-identifier hs-var hs-var">makeBindMap</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, Exp rep)] -&gt; Map VName (Exp rep)
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, Exp rep)] -&gt; Map VName (Exp rep))
+-&gt; (BodyT rep -&gt; [(VName, Exp rep)])
+-&gt; BodyT rep
+-&gt; Map VName (Exp rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Stm rep -&gt; Maybe (VName, Exp rep))
+-&gt; [Stm rep] -&gt; [(VName, Exp rep)]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Maybe (VName, Exp rep)
+forall {rep}. Stm rep -&gt; Maybe (VName, Exp rep)
+</span><a href="#local-6989586621684364712"><span class="hs-identifier hs-var">isSingletonStm</span></a></span><span> </span><span class="annot"><span class="annottext">([Stm rep] -&gt; [(VName, Exp rep)])
+-&gt; (BodyT rep -&gt; [Stm rep]) -&gt; BodyT rep -&gt; [(VName, Exp rep)]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; [Stm rep]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms rep -&gt; [Stm rep])
+-&gt; (BodyT rep -&gt; Stms rep) -&gt; BodyT rep -&gt; [Stm rep]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep -&gt; Stms rep
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span>
+</span><span id="line-215"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-216"></span><span>    </span><span id="local-6989586621684364712"><span class="annot"><span class="annottext">isSingletonStm :: Stm rep -&gt; Maybe (VName, Exp rep)
+</span><a href="#local-6989586621684364712"><span class="hs-identifier hs-var hs-var">isSingletonStm</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684364708"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364708"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684364707"><span class="annot"><span class="annottext">Exp rep
+</span><a href="#local-6989586621684364707"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Pat rep -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364708"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-217"></span><span>      </span><span class="hs-special">[</span><span id="local-6989586621684364706"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364706"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(VName, Exp rep) -&gt; Maybe (VName, Exp rep)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684364706"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Exp rep
+</span><a href="#local-6989586621684364707"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-218"></span><span>      </span><span class="annot"><span class="annottext">[VName]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe (VName, Exp rep)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-219"></span></pre></body></html>

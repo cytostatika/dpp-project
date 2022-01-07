@@ -1,0 +1,733 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE QuasiQuotes #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE TemplateHaskell #-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# LANGUAGE Trustworthy #-}</span><span>
+</span><span id="line-7"></span><span class="hs-pragma">{-# LANGUAGE TupleSections #-}</span><span>
+</span><span id="line-8"></span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- | Code generation for server executables.</span><span>
+</span><span id="line-10"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CodeGen.Backends.GenericC.Server</span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#serverDefs"><span class="hs-identifier">serverDefs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-14"></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bifunctor</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">first</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">second</span></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Options.html"><span class="hs-identifier">Futhark.CodeGen.Backends.GenericC.Options</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.SimpleRep.html"><span class="hs-identifier">Futhark.CodeGen.Backends.SimpleRep</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.RTS.C.html"><span class="hs-identifier">Futhark.CodeGen.RTS.C</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.RTS.C.html#serverH"><span class="hs-identifier">serverH</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.CodeGen.RTS.C.html#tuningH"><span class="hs-identifier">tuningH</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.CodeGen.RTS.C.html#valuesH"><span class="hs-identifier">valuesH</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Futhark.Manifest</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.html"><span class="hs-identifier">Futhark.Util</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.html#zEncodeString"><span class="hs-identifier">zEncodeString</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Pretty.html"><span class="hs-identifier">Futhark.Util.Pretty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.Pretty.html#prettyText"><span class="hs-identifier">prettyText</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Language.C.Quote.OpenCL</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">C</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Language.C.Syntax</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">C</span></span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#genericOptions"><span class="hs-identifier hs-type">genericOptions</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-28"></span><span id="genericOptions"><span class="annot"><span class="annottext">genericOptions :: [Option]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#genericOptions"><span class="hs-identifier hs-var hs-var">genericOptions</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Option :: EncodedString
+-&gt; Maybe Char -&gt; OptionArgument -&gt; EncodedString -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-30"></span><span>      </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;debugging&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-31"></span><span>        </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Maybe Char
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'D'</span></span><span class="hs-special">,</span><span>
+</span><span id="line-32"></span><span>        </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#NoArgument"><span class="hs-identifier hs-var">NoArgument</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-33"></span><span>        </span><span class="annot"><span class="annottext">optionDescription :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;Perform possibly expensive internal correctness checks and verbose logging.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-34"></span><span>        </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cstm|futhark_context_config_set_debugging(cfg, 1);|]</span></span><span>
+</span><span id="line-35"></span><span>      </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-36"></span><span>    </span><span class="annot"><span class="annottext">Option :: EncodedString
+-&gt; Maybe Char -&gt; OptionArgument -&gt; EncodedString -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-37"></span><span>      </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;log&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-38"></span><span>        </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Maybe Char
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'L'</span></span><span class="hs-special">,</span><span>
+</span><span id="line-39"></span><span>        </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#NoArgument"><span class="hs-identifier hs-var">NoArgument</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-40"></span><span>        </span><span class="annot"><span class="annottext">optionDescription :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;Print various low-overhead logging information while running.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-41"></span><span>        </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cstm|futhark_context_config_set_logging(cfg, 1);|]</span></span><span>
+</span><span id="line-42"></span><span>      </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-43"></span><span>    </span><span class="annot"><span class="annottext">Option :: EncodedString
+-&gt; Maybe Char -&gt; OptionArgument -&gt; EncodedString -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-44"></span><span>      </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;help&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-45"></span><span>        </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Maybe Char
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'h'</span></span><span class="hs-special">,</span><span>
+</span><span id="line-46"></span><span>        </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#NoArgument"><span class="hs-identifier hs-var">NoArgument</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-47"></span><span>        </span><span class="annot"><span class="annottext">optionDescription :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;Print help information and exit.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-48"></span><span>        </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-49"></span><span>          </span><span class="annot"><span class="">[C.cstm|{
+                   printf(&quot;Usage: %s [OPTIONS]...\nOptions:\n\n%s\nFor more information, consult the Futhark User's Guide or the man pages.\n&quot;,
+                          fut_progname, option_descriptions);
+                   exit(0);
+                  }|]</span></span><span>
+</span><span id="line-54"></span><span>      </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-55"></span><span>    </span><span class="annot"><span class="annottext">Option :: EncodedString
+-&gt; Maybe Char -&gt; OptionArgument -&gt; EncodedString -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-56"></span><span>      </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;print-params&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-57"></span><span>        </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Char
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-58"></span><span>        </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#NoArgument"><span class="hs-identifier hs-var">NoArgument</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-59"></span><span>        </span><span class="annot"><span class="annottext">optionDescription :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;Print all tuning parameters that can be set with --param or --tuning.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-60"></span><span>        </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-61"></span><span>          </span><span class="annot"><span class="">[C.cstm|{
+                int n = futhark_get_tuning_param_count();
+                for (int i = 0; i &lt; n; i++) {
+                  printf(&quot;%s (%s)\n&quot;, futhark_get_tuning_param_name(i),
+                                      futhark_get_tuning_param_class(i));
+                }
+                exit(0);
+              }|]</span></span><span>
+</span><span id="line-69"></span><span>      </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><span class="annottext">Option :: EncodedString
+-&gt; Maybe Char -&gt; OptionArgument -&gt; EncodedString -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-71"></span><span>      </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;param&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-72"></span><span>        </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Char
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-73"></span><span>        </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#RequiredArgument"><span class="hs-identifier hs-var">RequiredArgument</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;ASSIGNMENT&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-74"></span><span>        </span><span class="annot"><span class="annottext">optionDescription :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;Set a tuning parameter to the given value.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-75"></span><span>        </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-76"></span><span>          </span><span class="annot"><span class="">[C.cstm|{
+                char *name = optarg;
+                char *equals = strstr(optarg, &quot;=&quot;);
+                char *value_str = equals != NULL ? equals+1 : optarg;
+                int value = atoi(value_str);
+                if (equals != NULL) {
+                  *equals = 0;
+                  if (futhark_context_config_set_tuning_param(cfg, name, value) != 0) {
+                    futhark_panic(1, &quot;Unknown size: %s\n&quot;, name);
+                  }
+                } else {
+                  futhark_panic(1, &quot;Invalid argument for size option: %s\n&quot;, optarg);
+                }}|]</span></span><span>
+</span><span id="line-89"></span><span>      </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-90"></span><span>    </span><span class="annot"><span class="annottext">Option :: EncodedString
+-&gt; Maybe Char -&gt; OptionArgument -&gt; EncodedString -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-91"></span><span>      </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;tuning&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-92"></span><span>        </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Char
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-93"></span><span>        </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#RequiredArgument"><span class="hs-identifier hs-var">RequiredArgument</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;FILE&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-94"></span><span>        </span><span class="annot"><span class="annottext">optionDescription :: EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;Read size=value assignments from the given file.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-95"></span><span>        </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-96"></span><span>          </span><span class="annot"><span class="">[C.cstm|{
+                char *ret = load_tuning_file(optarg, cfg, (int(*)(void*, const char*, size_t))
+                                                          futhark_context_config_set_tuning_param);
+                if (ret != NULL) {
+                  futhark_panic(1, &quot;When loading tuning from '%s': %s\n&quot;, optarg, ret);
+                }}|]</span></span><span>
+</span><span id="line-102"></span><span>      </span><span class="hs-special">}</span><span>
+</span><span id="line-103"></span><span>  </span><span class="hs-special">]</span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#typeStructName"><span class="hs-identifier hs-type">typeStructName</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span>
+</span><span id="line-106"></span><span id="typeStructName"><span class="annot"><span class="annottext">typeStructName :: Text -&gt; EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#typeStructName"><span class="hs-identifier hs-var hs-var">typeStructName</span></a></span></span><span> </span><span id="local-6989586621684474962"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474962"><span class="hs-identifier hs-var">tname</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;type_&quot;</span></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString
+</span><a href="Futhark.Util.html#zEncodeString"><span class="hs-identifier hs-var">zEncodeString</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text -&gt; EncodedString
+</span><span class="hs-identifier hs-var">T.unpack</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474962"><span class="hs-identifier hs-var">tname</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#typeBoilerplate"><span class="hs-identifier hs-type">typeBoilerplate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Type</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">C.Initializer</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Definition</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span id="typeBoilerplate"><span class="annot"><span class="annottext">typeBoilerplate :: (Text, Type) -&gt; (Initializer, [Definition])
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#typeBoilerplate"><span class="hs-identifier hs-var hs-var">typeBoilerplate</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684474959"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474959"><span class="hs-identifier hs-var">tname</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">TypeArray</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684474957"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474957"><span class="hs-identifier hs-var">et</span></a></span></span><span> </span><span id="local-6989586621684474956"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684474956"><span class="hs-identifier hs-var">rank</span></a></span></span><span> </span><span id="local-6989586621684474955"><span class="annot"><span class="annottext">ArrayOps
+</span><a href="#local-6989586621684474955"><span class="hs-identifier hs-var">ops</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684474954"><span class="annot"><span class="annottext">type_name :: EncodedString
+</span><a href="#local-6989586621684474954"><span class="hs-identifier hs-var hs-var">type_name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#typeStructName"><span class="hs-identifier hs-var">typeStructName</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474959"><span class="hs-identifier hs-var">tname</span></a></span><span>
+</span><span id="line-111"></span><span>      </span><span id="local-6989586621684474951"><span class="annot"><span class="annottext">aux_name :: EncodedString
+</span><a href="#local-6989586621684474951"><span class="hs-identifier hs-var hs-var">aux_name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><a href="#local-6989586621684474954"><span class="hs-identifier hs-var">type_name</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;_aux&quot;</span></span><span>
+</span><span id="line-112"></span><span>      </span><span id="local-6989586621684474948"><span class="annot"><span class="annottext">info_name :: EncodedString
+</span><a href="#local-6989586621684474948"><span class="hs-identifier hs-var hs-var">info_name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; EncodedString
+</span><span class="hs-identifier hs-var">T.unpack</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474957"><span class="hs-identifier hs-var">et</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;_info&quot;</span></span><span>
+</span><span id="line-113"></span><span>      </span><span id="local-6989586621684474938"><span class="annot"><span class="annottext">shape_args :: [Exp]
+</span><a href="#local-6989586621684474938"><span class="hs-identifier hs-var hs-var">shape_args</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="">[C.cexp|shape[$int:i]|]</span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="local-6989586621684474937"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684474937"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684474956"><span class="hs-identifier hs-var">rank</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span class="hs-special">]</span><span>
+</span><span id="line-114"></span><span>      </span><span id="local-6989586621684474930"><span class="annot"><span class="annottext">array_new_wrap :: Text
+</span><a href="#local-6989586621684474930"><span class="hs-identifier hs-var hs-var">array_new_wrap</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ArrayOps -&gt; Text
+</span><span class="hs-identifier hs-var hs-var">arrayNew</span></span><span> </span><span class="annot"><span class="annottext">ArrayOps
+</span><a href="#local-6989586621684474955"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;_wrap&quot;</span></span><span>
+</span><span id="line-115"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cinit|&amp;$id:type_name|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-116"></span><span>        </span><span class="annot"><span class="">[C.cunit|
+              void* $id:array_new_wrap(struct futhark_context *ctx,
+                                       const void* p,
+                                       const typename int64_t* shape) {
+                return $id:(arrayNew ops)(ctx, p, $args:shape_args);
+              }
+              struct array_aux $id:aux_name = {
+                .name = $string:(T.unpack tname),
+                .rank = $int:rank,
+                .info = &amp;$id:info_name,
+                .new = (typename array_new_fn)$id:array_new_wrap,
+                .free = (typename array_free_fn)$id:(arrayFree ops),
+                .shape = (typename array_shape_fn)$id:(arrayShape ops),
+                .values = (typename array_values_fn)$id:(arrayValues ops)
+              };
+              struct type $id:type_name = {
+                .name = $string:(T.unpack tname),
+                .restore = (typename restore_fn)restore_array,
+                .store = (typename store_fn)store_array,
+                .free = (typename free_fn)free_array,
+                .aux = &amp;$id:aux_name
+              };|]</span></span><span>
+</span><span id="line-138"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#typeBoilerplate"><span class="hs-identifier hs-var">typeBoilerplate</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684474913"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474913"><span class="hs-identifier hs-var">tname</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">TypeOpaque</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684474911"><span class="annot"><span class="annottext">OpaqueOps
+</span><a href="#local-6989586621684474911"><span class="hs-identifier hs-var">ops</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-140"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684474910"><span class="annot"><span class="annottext">type_name :: EncodedString
+</span><a href="#local-6989586621684474910"><span class="hs-identifier hs-var hs-var">type_name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; EncodedString
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#typeStructName"><span class="hs-identifier hs-var">typeStructName</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474913"><span class="hs-identifier hs-var">tname</span></a></span><span>
+</span><span id="line-141"></span><span>      </span><span id="local-6989586621684474907"><span class="annot"><span class="annottext">aux_name :: EncodedString
+</span><a href="#local-6989586621684474907"><span class="hs-identifier hs-var hs-var">aux_name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><a href="#local-6989586621684474910"><span class="hs-identifier hs-var">type_name</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;_aux&quot;</span></span><span>
+</span><span id="line-142"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cinit|&amp;$id:type_name|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-143"></span><span>        </span><span class="annot"><span class="">[C.cunit|
+              struct opaque_aux $id:aux_name = {
+                .store = (typename opaque_store_fn)$id:(opaqueStore ops),
+                .restore = (typename opaque_restore_fn)$id:(opaqueRestore ops),
+                .free = (typename opaque_free_fn)$id:(opaqueFree ops)
+              };
+              struct type $id:type_name = {
+                .name = $string:(T.unpack tname),
+                .restore = (typename restore_fn)restore_opaque,
+                .store = (typename store_fn)store_opaque,
+                .free = (typename free_fn)free_opaque,
+                .aux = &amp;$id:aux_name
+              };|]</span></span><span>
+</span><span id="line-156"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-157"></span><span>
+</span><span id="line-158"></span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#entryTypeBoilerplate"><span class="hs-identifier hs-type">entryTypeBoilerplate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Manifest</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Initializer</span></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Definition</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-159"></span><span id="entryTypeBoilerplate"><span class="annot"><span class="annottext">entryTypeBoilerplate :: Manifest -&gt; ([Initializer], [Definition])
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#entryTypeBoilerplate"><span class="hs-identifier hs-var hs-var">entryTypeBoilerplate</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-160"></span><span>  </span><span class="annot"><span class="annottext">([[Definition]] -&gt; [Definition])
+-&gt; ([Initializer], [[Definition]]) -&gt; ([Initializer], [Definition])
+forall (p :: * -&gt; * -&gt; *) b c a.
+Bifunctor p =&gt;
+(b -&gt; c) -&gt; p a b -&gt; p a c
+</span><span class="hs-identifier hs-var">second</span></span><span> </span><span class="annot"><span class="annottext">[[Definition]] -&gt; [Definition]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">(([Initializer], [[Definition]]) -&gt; ([Initializer], [Definition]))
+-&gt; (Manifest -&gt; ([Initializer], [[Definition]]))
+-&gt; Manifest
+-&gt; ([Initializer], [Definition])
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[(Initializer, [Definition])] -&gt; ([Initializer], [[Definition]])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">([(Initializer, [Definition])] -&gt; ([Initializer], [[Definition]]))
+-&gt; (Manifest -&gt; [(Initializer, [Definition])])
+-&gt; Manifest
+-&gt; ([Initializer], [[Definition]])
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">((Text, Type) -&gt; (Initializer, [Definition]))
+-&gt; [(Text, Type)] -&gt; [(Initializer, [Definition])]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(Text, Type) -&gt; (Initializer, [Definition])
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#typeBoilerplate"><span class="hs-identifier hs-var">typeBoilerplate</span></a></span><span> </span><span class="annot"><span class="annottext">([(Text, Type)] -&gt; [(Initializer, [Definition])])
+-&gt; (Manifest -&gt; [(Text, Type)])
+-&gt; Manifest
+-&gt; [(Initializer, [Definition])]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Map Text Type -&gt; [(Text, Type)]
+forall k a. Map k a -&gt; [(k, a)]
+</span><span class="hs-identifier hs-var">M.toList</span></span><span> </span><span class="annot"><span class="annottext">(Map Text Type -&gt; [(Text, Type)])
+-&gt; (Manifest -&gt; Map Text Type) -&gt; Manifest -&gt; [(Text, Type)]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Manifest -&gt; Map Text Type
+</span><span class="hs-identifier hs-var hs-var">manifestTypes</span></span><span>
+</span><span id="line-161"></span><span>
+</span><span id="line-162"></span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#oneEntryBoilerplate"><span class="hs-identifier hs-type">oneEntryBoilerplate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Manifest</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">EntryPoint</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Definition</span></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">C.Initializer</span></span><span class="hs-special">)</span><span>
+</span><span id="line-163"></span><span id="oneEntryBoilerplate"><span class="annot"><span class="annottext">oneEntryBoilerplate :: Manifest -&gt; (Text, EntryPoint) -&gt; ([Definition], Initializer)
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#oneEntryBoilerplate"><span class="hs-identifier hs-var hs-var">oneEntryBoilerplate</span></a></span></span><span> </span><span id="local-6989586621684474896"><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474896"><span class="hs-identifier hs-var">manifest</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684474895"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474895"><span class="hs-identifier hs-var">name</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">EntryPoint</span></span><span> </span><span id="local-6989586621684474893"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474893"><span class="hs-identifier hs-var">cfun</span></a></span></span><span> </span><span id="local-6989586621684474892"><span class="annot"><span class="annottext">[Output]
+</span><a href="#local-6989586621684474892"><span class="hs-identifier hs-var">outputs</span></a></span></span><span> </span><span id="local-6989586621684474891"><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684474891"><span class="hs-identifier hs-var">inputs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-164"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684474888"><span class="annot"><span class="annottext">call_f :: EncodedString
+</span><a href="#local-6989586621684474888"><span class="hs-identifier hs-var hs-var">call_f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;call_&quot;</span></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; EncodedString
+</span><span class="hs-identifier hs-var">T.unpack</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474895"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-165"></span><span>      </span><span id="local-6989586621684474887"><span class="annot"><span class="annottext">out_types :: [Text]
+</span><a href="#local-6989586621684474887"><span class="hs-identifier hs-var hs-var">out_types</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Output -&gt; Text) -&gt; [Output] -&gt; [Text]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Output -&gt; Text
+</span><span class="hs-identifier hs-var hs-var">outputType</span></span><span> </span><span class="annot"><span class="annottext">[Output]
+</span><a href="#local-6989586621684474892"><span class="hs-identifier hs-var">outputs</span></a></span><span>
+</span><span id="line-166"></span><span>      </span><span id="local-6989586621684474885"><span class="annot"><span class="annottext">in_types :: [Text]
+</span><a href="#local-6989586621684474885"><span class="hs-identifier hs-var hs-var">in_types</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Input -&gt; Text) -&gt; [Input] -&gt; [Text]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Input -&gt; Text
+</span><span class="hs-identifier hs-var hs-var">inputType</span></span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684474891"><span class="hs-identifier hs-var">inputs</span></a></span><span>
+</span><span id="line-167"></span><span>      </span><span id="local-6989586621684474881"><span class="annot"><span class="annottext">out_types_name :: EncodedString
+</span><a href="#local-6989586621684474881"><span class="hs-identifier hs-var hs-var">out_types_name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; EncodedString
+</span><span class="hs-identifier hs-var">T.unpack</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474895"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;_out_types&quot;</span></span><span>
+</span><span id="line-168"></span><span>      </span><span id="local-6989586621684474878"><span class="annot"><span class="annottext">in_types_name :: EncodedString
+</span><a href="#local-6989586621684474878"><span class="hs-identifier hs-var hs-var">in_types_name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; EncodedString
+</span><span class="hs-identifier hs-var">T.unpack</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474895"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;_in_types&quot;</span></span><span>
+</span><span id="line-169"></span><span>      </span><span id="local-6989586621684474875"><span class="annot"><span class="annottext">out_unique_name :: EncodedString
+</span><a href="#local-6989586621684474875"><span class="hs-identifier hs-var hs-var">out_unique_name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; EncodedString
+</span><span class="hs-identifier hs-var">T.unpack</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474895"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;_out_unique&quot;</span></span><span>
+</span><span id="line-170"></span><span>      </span><span id="local-6989586621684474872"><span class="annot"><span class="annottext">in_unique_name :: EncodedString
+</span><a href="#local-6989586621684474872"><span class="hs-identifier hs-var hs-var">in_unique_name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; EncodedString
+</span><span class="hs-identifier hs-var">T.unpack</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474895"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;_in_unique&quot;</span></span><span>
+</span><span id="line-171"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684474866"><span class="annot"><span class="annottext">[BlockItem]
+</span><a href="#local-6989586621684474866"><span class="hs-identifier hs-var">out_items</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684474865"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684474865"><span class="hs-identifier hs-var">out_args</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">[Text] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">null</span></span><span> </span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621684474887"><span class="hs-identifier hs-var">out_types</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="">[C.citems|(void)outs;|]</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Exp]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-173"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(BlockItem, Exp)] -&gt; ([BlockItem], [Exp])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">([(BlockItem, Exp)] -&gt; ([BlockItem], [Exp]))
+-&gt; [(BlockItem, Exp)] -&gt; ([BlockItem], [Exp])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Text -&gt; (BlockItem, Exp))
+-&gt; [Int] -&gt; [Text] -&gt; [(BlockItem, Exp)]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Text -&gt; (BlockItem, Exp)
+</span><a href="#local-6989586621684474862"><span class="hs-identifier hs-var">loadOut</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621684474887"><span class="hs-identifier hs-var">out_types</span></a></span><span>
+</span><span id="line-174"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684474857"><span class="annot"><span class="annottext">[BlockItem]
+</span><a href="#local-6989586621684474857"><span class="hs-identifier hs-var">in_items</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684474856"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684474856"><span class="hs-identifier hs-var">in_args</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-175"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">[Text] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">null</span></span><span> </span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621684474885"><span class="hs-identifier hs-var">in_types</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="">[C.citems|(void)ins;|]</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Exp]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-176"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(BlockItem, Exp)] -&gt; ([BlockItem], [Exp])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">([(BlockItem, Exp)] -&gt; ([BlockItem], [Exp]))
+-&gt; [(BlockItem, Exp)] -&gt; ([BlockItem], [Exp])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Text -&gt; (BlockItem, Exp))
+-&gt; [Int] -&gt; [Text] -&gt; [(BlockItem, Exp)]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Text -&gt; (BlockItem, Exp)
+</span><a href="#local-6989586621684474855"><span class="hs-identifier hs-var">loadIn</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621684474885"><span class="hs-identifier hs-var">in_types</span></a></span><span>
+</span><span id="line-177"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cunit|
+                struct type* $id:out_types_name[] = {
+                  $inits:(map typeStructInit out_types),
+                  NULL
+                };
+                bool $id:out_unique_name[] = {
+                  $inits:(map outputUniqueInit outputs)
+                };
+                struct type* $id:in_types_name[] = {
+                  $inits:(map typeStructInit in_types),
+                  NULL
+                };
+                bool $id:in_unique_name[] = {
+                  $inits:(map inputUniqueInit inputs)
+                };
+                int $id:call_f(struct futhark_context *ctx, void **outs, void **ins) {
+                  $items:out_items
+                  $items:in_items
+                  return $id:cfun(ctx, $args:out_args, $args:in_args);
+                }
+                |]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-198"></span><span>        </span><span class="annot"><span class="">[C.cinit|{
+            .name = $string:(T.unpack name),
+            .f = $id:call_f,
+            .in_types = $id:in_types_name,
+            .out_types = $id:out_types_name,
+            .in_unique = $id:in_unique_name,
+            .out_unique = $id:out_unique_name
+            }|]</span></span><span>
+</span><span id="line-206"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-207"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-208"></span><span>    </span><span id="local-6989586621684474854"><span class="annot"><span class="annottext">typeStructInit :: Text -&gt; Initializer
+</span><a href="#local-6989586621684474854"><span class="hs-identifier hs-var hs-var">typeStructInit</span></a></span></span><span> </span><span id="local-6989586621684474842"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474842"><span class="hs-identifier hs-var">tname</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cinit|&amp;$id:(typeStructName tname)|]</span></span><span>
+</span><span id="line-209"></span><span>    </span><span id="local-6989586621684474853"><span class="annot"><span class="annottext">inputUniqueInit :: Input -&gt; Initializer
+</span><a href="#local-6989586621684474853"><span class="hs-identifier hs-var hs-var">inputUniqueInit</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Initializer
+</span><a href="#local-6989586621684474841"><span class="hs-identifier hs-var">uniqueInit</span></a></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Initializer) -&gt; (Input -&gt; Bool) -&gt; Input -&gt; Initializer
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Input -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var">inputUnique</span></span><span>
+</span><span id="line-210"></span><span>    </span><span id="local-6989586621684474852"><span class="annot"><span class="annottext">outputUniqueInit :: Output -&gt; Initializer
+</span><a href="#local-6989586621684474852"><span class="hs-identifier hs-var hs-var">outputUniqueInit</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Initializer
+</span><a href="#local-6989586621684474841"><span class="hs-identifier hs-var">uniqueInit</span></a></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Initializer) -&gt; (Output -&gt; Bool) -&gt; Output -&gt; Initializer
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Output -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var">outputUnique</span></span><span>
+</span><span id="line-211"></span><span>    </span><span id="local-6989586621684474841"><span class="annot"><span class="annottext">uniqueInit :: Bool -&gt; Initializer
+</span><a href="#local-6989586621684474841"><span class="hs-identifier hs-var hs-var">uniqueInit</span></a></span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cinit|true|]</span></span><span>
+</span><span id="line-212"></span><span>    </span><span class="annot"><a href="#local-6989586621684474841"><span class="hs-identifier hs-var">uniqueInit</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cinit|false|]</span></span><span>
+</span><span id="line-213"></span><span>
+</span><span id="line-214"></span><span>    </span><span id="local-6989586621684474834"><span class="annot"><span class="annottext">cType :: Text -&gt; Type
+</span><a href="#local-6989586621684474834"><span class="hs-identifier hs-var hs-var">cType</span></a></span></span><span> </span><span id="local-6989586621684474833"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474833"><span class="hs-identifier hs-var">tname</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-215"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Map Text Type -&gt; Maybe Type
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474833"><span class="hs-identifier hs-var">tname</span></a></span><span> </span><span class="annot"><span class="annottext">(Map Text Type -&gt; Maybe Type) -&gt; Map Text Type -&gt; Maybe Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Manifest -&gt; Map Text Type
+</span><span class="hs-identifier hs-var hs-var">manifestTypes</span></span><span> </span><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474896"><span class="hs-identifier hs-var">manifest</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-216"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">TypeArray</span></span><span> </span><span id="local-6989586621684474831"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474831"><span class="hs-identifier hs-var">ctype</span></a></span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">ArrayOps
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="">[C.cty|typename $id:(T.unpack ctype)|]</span></span><span>
+</span><span id="line-217"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">TypeOpaque</span></span><span> </span><span id="local-6989586621684474830"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474830"><span class="hs-identifier hs-var">ctype</span></a></span></span><span> </span><span class="annot"><span class="annottext">OpaqueOps
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="">[C.cty|typename $id:(T.unpack ctype)|]</span></span><span>
+</span><span id="line-218"></span><span>        </span><span class="annot"><span class="annottext">Maybe Type
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Signedness -&gt; PrimType -&gt; Type) -&gt; (Signedness, PrimType) -&gt; Type
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="annot"><span class="annottext">Signedness -&gt; PrimType -&gt; Type
+</span><a href="Futhark.CodeGen.Backends.SimpleRep.html#primAPIType"><span class="hs-identifier hs-var">primAPIType</span></a></span><span> </span><span class="annot"><span class="annottext">((Signedness, PrimType) -&gt; Type) -&gt; (Signedness, PrimType) -&gt; Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; (Signedness, PrimType)
+</span><a href="Futhark.CodeGen.Backends.SimpleRep.html#scalarToPrim"><span class="hs-identifier hs-var">scalarToPrim</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474833"><span class="hs-identifier hs-var">tname</span></a></span><span>
+</span><span id="line-219"></span><span>
+</span><span id="line-220"></span><span>    </span><span id="local-6989586621684474862"><span class="annot"><span class="annottext">loadOut :: Int -&gt; Text -&gt; (BlockItem, Exp)
+</span><a href="#local-6989586621684474862"><span class="hs-identifier hs-var hs-var">loadOut</span></a></span></span><span> </span><span id="local-6989586621684474821"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684474821"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684474820"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474820"><span class="hs-identifier hs-var">tname</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-221"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684474816"><span class="annot"><span class="annottext">v :: EncodedString
+</span><a href="#local-6989586621684474816"><span class="hs-identifier hs-var hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;out&quot;</span></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; EncodedString
+forall a. Show a =&gt; a -&gt; EncodedString
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684474821"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-222"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.citem|$ty:(cType tname) *$id:v = outs[$int:i];|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-223"></span><span>            </span><span class="annot"><span class="">[C.cexp|$id:v|]</span></span><span>
+</span><span id="line-224"></span><span>          </span><span class="hs-special">)</span><span>
+</span><span id="line-225"></span><span>    </span><span id="local-6989586621684474855"><span class="annot"><span class="annottext">loadIn :: Int -&gt; Text -&gt; (BlockItem, Exp)
+</span><a href="#local-6989586621684474855"><span class="hs-identifier hs-var hs-var">loadIn</span></a></span></span><span> </span><span id="local-6989586621684474805"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684474805"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684474804"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474804"><span class="hs-identifier hs-var">tname</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-226"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684474800"><span class="annot"><span class="annottext">v :: EncodedString
+</span><a href="#local-6989586621684474800"><span class="hs-identifier hs-var hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;in&quot;</span></span><span> </span><span class="annot"><span class="annottext">EncodedString -&gt; EncodedString -&gt; EncodedString
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; EncodedString
+forall a. Show a =&gt; a -&gt; EncodedString
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684474805"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-227"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.citem|$ty:(cType tname) $id:v = *($ty:(cType tname)*)ins[$int:i];|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-228"></span><span>            </span><span class="annot"><span class="">[C.cexp|$id:v|]</span></span><span>
+</span><span id="line-229"></span><span>          </span><span class="hs-special">)</span><span>
+</span><span id="line-230"></span><span>
+</span><span id="line-231"></span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#entryBoilerplate"><span class="hs-identifier hs-type">entryBoilerplate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Manifest</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Definition</span></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Initializer</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-232"></span><span id="entryBoilerplate"><span class="annot"><span class="annottext">entryBoilerplate :: Manifest -&gt; ([Definition], [Initializer])
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#entryBoilerplate"><span class="hs-identifier hs-var hs-var">entryBoilerplate</span></a></span></span><span> </span><span id="local-6989586621684474788"><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474788"><span class="hs-identifier hs-var">manifest</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-233"></span><span>  </span><span class="annot"><span class="annottext">([[Definition]] -&gt; [Definition])
+-&gt; ([[Definition]], [Initializer]) -&gt; ([Definition], [Initializer])
+forall (p :: * -&gt; * -&gt; *) a b c.
+Bifunctor p =&gt;
+(a -&gt; b) -&gt; p a c -&gt; p b c
+</span><span class="hs-identifier hs-var">first</span></span><span> </span><span class="annot"><span class="annottext">[[Definition]] -&gt; [Definition]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">(([[Definition]], [Initializer]) -&gt; ([Definition], [Initializer]))
+-&gt; ([[Definition]], [Initializer]) -&gt; ([Definition], [Initializer])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-234"></span><span>    </span><span class="annot"><span class="annottext">[([Definition], Initializer)] -&gt; ([[Definition]], [Initializer])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">([([Definition], Initializer)] -&gt; ([[Definition]], [Initializer]))
+-&gt; [([Definition], Initializer)] -&gt; ([[Definition]], [Initializer])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-235"></span><span>      </span><span class="annot"><span class="annottext">((Text, EntryPoint) -&gt; ([Definition], Initializer))
+-&gt; [(Text, EntryPoint)] -&gt; [([Definition], Initializer)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Manifest -&gt; (Text, EntryPoint) -&gt; ([Definition], Initializer)
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#oneEntryBoilerplate"><span class="hs-identifier hs-var">oneEntryBoilerplate</span></a></span><span> </span><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474788"><span class="hs-identifier hs-var">manifest</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(Text, EntryPoint)] -&gt; [([Definition], Initializer)])
+-&gt; [(Text, EntryPoint)] -&gt; [([Definition], Initializer)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-236"></span><span>        </span><span class="annot"><span class="annottext">Map Text EntryPoint -&gt; [(Text, EntryPoint)]
+forall k a. Map k a -&gt; [(k, a)]
+</span><span class="hs-identifier hs-var">M.toList</span></span><span> </span><span class="annot"><span class="annottext">(Map Text EntryPoint -&gt; [(Text, EntryPoint)])
+-&gt; Map Text EntryPoint -&gt; [(Text, EntryPoint)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Manifest -&gt; Map Text EntryPoint
+</span><span class="hs-identifier hs-var hs-var">manifestEntryPoints</span></span><span> </span><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474788"><span class="hs-identifier hs-var">manifest</span></a></span><span>
+</span><span id="line-237"></span><span>
+</span><span id="line-238"></span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#mkBoilerplate"><span class="hs-identifier hs-type">mkBoilerplate</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-239"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Manifest</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-240"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Definition</span></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Initializer</span></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Initializer</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-241"></span><span id="mkBoilerplate"><span class="annot"><span class="annottext">mkBoilerplate :: Manifest -&gt; ([Definition], [Initializer], [Initializer])
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#mkBoilerplate"><span class="hs-identifier hs-var hs-var">mkBoilerplate</span></a></span></span><span> </span><span id="local-6989586621684474785"><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474785"><span class="hs-identifier hs-var">manifest</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-242"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684474784"><span class="annot"><span class="annottext">[Initializer]
+</span><a href="#local-6989586621684474784"><span class="hs-identifier hs-var">type_inits</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684474783"><span class="annot"><span class="annottext">[Definition]
+</span><a href="#local-6989586621684474783"><span class="hs-identifier hs-var">type_defs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Manifest -&gt; ([Initializer], [Definition])
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#entryTypeBoilerplate"><span class="hs-identifier hs-var">entryTypeBoilerplate</span></a></span><span> </span><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474785"><span class="hs-identifier hs-var">manifest</span></a></span><span>
+</span><span id="line-243"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684474782"><span class="annot"><span class="annottext">[Definition]
+</span><a href="#local-6989586621684474782"><span class="hs-identifier hs-var">entry_defs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684474781"><span class="annot"><span class="annottext">[Initializer]
+</span><a href="#local-6989586621684474781"><span class="hs-identifier hs-var">entry_inits</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Manifest -&gt; ([Definition], [Initializer])
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#entryBoilerplate"><span class="hs-identifier hs-var">entryBoilerplate</span></a></span><span> </span><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474785"><span class="hs-identifier hs-var">manifest</span></a></span><span>
+</span><span id="line-244"></span><span>      </span><span id="local-6989586621684474780"><span class="annot"><span class="annottext">scalar_type_inits :: [Initializer]
+</span><a href="#local-6989586621684474780"><span class="hs-identifier hs-var hs-var">scalar_type_inits</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Initializer) -&gt; [Text] -&gt; [Initializer]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Initializer
+</span><a href="#local-6989586621684474779"><span class="hs-identifier hs-var">scalarTypeInit</span></a></span><span> </span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621684474778"><span class="hs-identifier hs-var">scalar_types</span></a></span><span>
+</span><span id="line-245"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Definition]
+</span><a href="#local-6989586621684474783"><span class="hs-identifier hs-var">type_defs</span></a></span><span> </span><span class="annot"><span class="annottext">[Definition] -&gt; [Definition] -&gt; [Definition]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Definition]
+</span><a href="#local-6989586621684474782"><span class="hs-identifier hs-var">entry_defs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Initializer]
+</span><a href="#local-6989586621684474780"><span class="hs-identifier hs-var">scalar_type_inits</span></a></span><span> </span><span class="annot"><span class="annottext">[Initializer] -&gt; [Initializer] -&gt; [Initializer]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Initializer]
+</span><a href="#local-6989586621684474784"><span class="hs-identifier hs-var">type_inits</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Initializer]
+</span><a href="#local-6989586621684474781"><span class="hs-identifier hs-var">entry_inits</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-246"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-247"></span><span>    </span><span id="local-6989586621684474779"><span class="annot"><span class="annottext">scalarTypeInit :: Text -&gt; Initializer
+</span><a href="#local-6989586621684474779"><span class="hs-identifier hs-var hs-var">scalarTypeInit</span></a></span></span><span> </span><span id="local-6989586621684474776"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684474776"><span class="hs-identifier hs-var">tname</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cinit|&amp;$id:(typeStructName tname)|]</span></span><span>
+</span><span id="line-248"></span><span>    </span><span id="local-6989586621684474778"><span class="annot"><span class="annottext">scalar_types :: [Text]
+</span><a href="#local-6989586621684474778"><span class="hs-identifier hs-var hs-var">scalar_types</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-249"></span><span>      </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;i8&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-250"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;i16&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-251"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;i32&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-252"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;i64&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-253"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;u8&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-254"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;u16&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-255"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;u32&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-256"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;u64&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-257"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;f16&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-258"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;f32&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-259"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;f64&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-260"></span><span>        </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;bool&quot;</span></span><span>
+</span><span id="line-261"></span><span>      </span><span class="hs-special">]</span><span>
+</span><span id="line-262"></span><span>
+</span><span id="line-263"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#serverDefs"><span class="hs-pragma hs-type">serverDefs</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-264"></span><span>
+</span><span id="line-265"></span><span class="hs-comment">-- | Generate Futhark server executable code.</span><span>
+</span><span id="line-266"></span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Server.html#serverDefs"><span class="hs-identifier hs-type">serverDefs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Manifest</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span>
+</span><span id="line-267"></span><span id="serverDefs"><span class="annot"><span class="annottext">serverDefs :: [Option] -&gt; Manifest -&gt; Text
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#serverDefs"><span class="hs-identifier hs-var hs-var">serverDefs</span></a></span></span><span> </span><span id="local-6989586621684474763"><span class="annot"><span class="annottext">[Option]
+</span><a href="#local-6989586621684474763"><span class="hs-identifier hs-var">options</span></a></span></span><span> </span><span id="local-6989586621684474762"><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474762"><span class="hs-identifier hs-var">manifest</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-268"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684474761"><span class="annot"><span class="annottext">option_parser :: Func
+</span><a href="#local-6989586621684474761"><span class="hs-identifier hs-var hs-var">option_parser</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-269"></span><span>        </span><span class="annot"><span class="annottext">EncodedString -&gt; [Option] -&gt; Func
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#generateOptionParser"><span class="hs-identifier hs-var">generateOptionParser</span></a></span><span> </span><span class="annot"><span class="annottext">EncodedString
+</span><span class="hs-string">&quot;parse_options&quot;</span></span><span> </span><span class="annot"><span class="annottext">([Option] -&gt; Func) -&gt; [Option] -&gt; Func
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Option]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#genericOptions"><span class="hs-identifier hs-var">genericOptions</span></a></span><span> </span><span class="annot"><span class="annottext">[Option] -&gt; [Option] -&gt; [Option]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Option]
+</span><a href="#local-6989586621684474763"><span class="hs-identifier hs-var">options</span></a></span><span>
+</span><span id="line-270"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684474759"><span class="annot"><span class="annottext">[Definition]
+</span><a href="#local-6989586621684474759"><span class="hs-identifier hs-var">boilerplate_defs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684474758"><span class="annot"><span class="annottext">[Initializer]
+</span><a href="#local-6989586621684474758"><span class="hs-identifier hs-var">type_inits</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684474757"><span class="annot"><span class="annottext">[Initializer]
+</span><a href="#local-6989586621684474757"><span class="hs-identifier hs-var">entry_point_inits</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-271"></span><span>        </span><span class="annot"><span class="annottext">Manifest -&gt; ([Definition], [Initializer], [Initializer])
+</span><a href="Futhark.CodeGen.Backends.GenericC.Server.html#mkBoilerplate"><span class="hs-identifier hs-var">mkBoilerplate</span></a></span><span> </span><span class="annot"><span class="annottext">Manifest
+</span><a href="#local-6989586621684474762"><span class="hs-identifier hs-var">manifest</span></a></span><span>
+</span><span id="line-272"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">[Definition] -&gt; Text
+forall a. Pretty a =&gt; a -&gt; Text
+</span><a href="Futhark.Util.Pretty.html#prettyText"><span class="hs-identifier hs-var">prettyText</span></a></span><span>
+</span><span id="line-273"></span><span>        </span><span class="annot"><span class="">[C.cunit|
+$esc:(&quot;#include &lt;getopt.h&gt;&quot;)
+$esc:(&quot;#include &lt;ctype.h&gt;&quot;)
+$esc:(&quot;#include &lt;inttypes.h&gt;&quot;)
+
+// If the entry point is NULL, the program will terminate after doing initialisation and such.  It is not used for anything else in server mode.
+static const char *entry_point = &quot;main&quot;;
+
+$esc:(T.unpack valuesH)
+$esc:(T.unpack serverH)
+$esc:(T.unpack tuningH)
+
+$edecls:boilerplate_defs
+
+struct type* types[] = {
+  $inits:type_inits,
+  NULL
+};
+
+struct entry_point entry_points[] = {
+  $inits:entry_point_inits,
+  { .name = NULL }
+};
+
+struct futhark_prog prog = {
+  .types = types,
+  .entry_points = entry_points
+};
+
+$func:option_parser
+
+int main(int argc, char** argv) {
+  fut_progname = argv[0];
+
+  struct futhark_context_config *cfg = futhark_context_config_new();
+  assert(cfg != NULL);
+
+  int parsed_options = parse_options(cfg, argc, argv);
+  argc -= parsed_options;
+  argv += parsed_options;
+
+  if (argc != 0) {
+    futhark_panic(1, &quot;Excess non-option: %s\n&quot;, argv[0]);
+  }
+
+  struct futhark_context *ctx = futhark_context_new(cfg);
+  assert (ctx != NULL);
+
+  futhark_context_set_logging_file(ctx, stdout);
+
+  char* error = futhark_context_get_error(ctx);
+  if (error != NULL) {
+    futhark_panic(1, &quot;Error during context initialisation:\n%s&quot;, error);
+  }
+
+  if (entry_point != NULL) {
+    run_server(&amp;prog, cfg, ctx);
+  }
+
+  futhark_context_free(ctx);
+  futhark_context_config_free(cfg);
+}
+|]</span></span><span>
+</span><span id="line-336"></span></pre></body></html>

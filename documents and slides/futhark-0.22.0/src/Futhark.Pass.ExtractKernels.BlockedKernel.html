@@ -1,0 +1,1277 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ConstraintKinds #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Pass.ExtractKernels.BlockedKernel</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier">DistRep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#MkSegLevel"><span class="hs-identifier">MkSegLevel</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#ThreadRecommendation"><span class="hs-identifier">ThreadRecommendation</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segRed"><span class="hs-identifier">segRed</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#nonSegRed"><span class="hs-identifier">nonSegRed</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segScan"><span class="hs-identifier">segScan</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segHist"><span class="hs-identifier">segHist</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segMap"><span class="hs-identifier">segMap</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mapKernel"><span class="hs-identifier">mapKernel</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier">KernelInput</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#readKernelInput"><span class="hs-identifier">readKernelInput</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mkSegSpace"><span class="hs-identifier">mkSegSpace</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#dummyDim"><span class="hs-identifier">dummyDim</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Writer</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html"><span class="hs-identifier">Futhark.Analysis.PrimExp</span></a></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html"><span class="hs-identifier">Futhark.IR.Prop.Aliases</span></a></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html"><span class="hs-identifier">Futhark.IR.SegOp</span></a></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Tools.html"><span class="hs-identifier">Futhark.Tools</span></a></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Transform.Rename.html"><span class="hs-identifier">Futhark.Transform.Rename</span></a></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">quot</span></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- | Constraints pertinent to performing distribution/flattening.</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">type</span><span> </span><span id="DistRep"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-var">DistRep</span></a></span></span><span> </span><span id="local-6989586621684401429"><span class="annot"><a href="#local-6989586621684401429"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-35"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401429"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-36"></span><span>    </span><span class="annot"><a href="Futhark.IR.SegOp.html#HasSegOp"><span class="hs-identifier hs-type">HasSegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401429"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-37"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-type">BuilderOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401429"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-38"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401429"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-39"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401429"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-40"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#BodyDec"><span class="hs-identifier hs-type">BodyDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401429"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-41"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401429"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-42"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">data</span><span> </span><span id="ThreadRecommendation"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#ThreadRecommendation"><span class="hs-identifier hs-var">ThreadRecommendation</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ManyThreads"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#ManyThreads"><span class="hs-identifier hs-var">ManyThreads</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="NoRecommendation"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#NoRecommendation"><span class="hs-identifier hs-var">NoRecommendation</span></a></span></span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegVirt"><span class="hs-identifier hs-type">SegVirt</span></a></span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="hs-keyword">type</span><span> </span><span id="MkSegLevel"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#MkSegLevel"><span class="hs-identifier hs-var">MkSegLevel</span></a></span></span><span> </span><span id="local-6989586621684401426"><span class="annot"><a href="#local-6989586621684401426"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684401425"><span class="annot"><a href="#local-6989586621684401425"><span class="hs-identifier hs-type">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#ThreadRecommendation"><span class="hs-identifier hs-type">ThreadRecommendation</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401426"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401425"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOpLevel"><span class="hs-identifier hs-type">SegOpLevel</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401426"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span id="local-6989586621684401683"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mkSegSpace"><span class="hs-identifier hs-type">mkSegSpace</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401683"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684401683"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span></span><span>
+</span><span id="line-50"></span><span id="mkSegSpace"><span class="annot"><span class="annottext">mkSegSpace :: forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+[(VName, SubExp)] -&gt; m SegSpace
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mkSegSpace"><span class="hs-identifier hs-var hs-var">mkSegSpace</span></a></span></span><span> </span><span id="local-6989586621684401415"><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401415"><span class="hs-identifier hs-var">dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; [(VName, SubExp)] -&gt; SegSpace
+</span><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-var">SegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; [(VName, SubExp)] -&gt; SegSpace)
+-&gt; m VName -&gt; m ([(VName, SubExp)] -&gt; SegSpace)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; m VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;phys_tid&quot;</span></span><span> </span><span class="annot"><span class="annottext">m ([(VName, SubExp)] -&gt; SegSpace)
+-&gt; m [(VName, SubExp)] -&gt; m SegSpace
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; m [(VName, SubExp)]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401415"><span class="hs-identifier hs-var">dims</span></a></span><span>
+</span><span id="line-51"></span><span>
+</span><span id="line-52"></span><span id="local-6989586621684401668"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#prepareRedOrScan"><span class="hs-identifier hs-type">prepareRedOrScan</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401668"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401668"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-54"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Certs"><span class="hs-identifier hs-type">Certs</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-55"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401668"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-57"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-58"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-type">KernelInput</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-60"></span><span>  </span><span class="annot"><a href="#local-6989586621684401668"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401668"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span><span>
+</span><span id="line-61"></span><span id="prepareRedOrScan"><span class="annot"><span class="annottext">prepareRedOrScan :: forall (m :: * -&gt; *).
+(MonadBuilder m, DistRep (Rep m)) =&gt;
+Certs
+-&gt; SubExp
+-&gt; Lambda (Rep m)
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; m (SegSpace, KernelBody (Rep m))
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#prepareRedOrScan"><span class="hs-identifier hs-var hs-var">prepareRedOrScan</span></a></span></span><span> </span><span id="local-6989586621684401304"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684401304"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span id="local-6989586621684401303"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401303"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684401302"><span class="annot"><span class="annottext">Lambda (Rep m)
+</span><a href="#local-6989586621684401302"><span class="hs-identifier hs-var">map_lam</span></a></span></span><span> </span><span id="local-6989586621684401301"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684401301"><span class="hs-identifier hs-var">arrs</span></a></span></span><span> </span><span id="local-6989586621684401300"><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401300"><span class="hs-identifier hs-var">ispace</span></a></span></span><span> </span><span id="local-6989586621684401299"><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684401299"><span class="hs-identifier hs-var">inps</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-62"></span><span>  </span><span id="local-6989586621684401298"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401298"><span class="hs-identifier hs-var">gtid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; m VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;gtid&quot;</span></span><span>
+</span><span id="line-63"></span><span>  </span><span id="local-6989586621684401297"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684401297"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; m SegSpace
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+[(VName, SubExp)] -&gt; m SegSpace
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mkSegSpace"><span class="hs-identifier hs-var">mkSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; m SegSpace)
+-&gt; [(VName, SubExp)] -&gt; m SegSpace
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401300"><span class="hs-identifier hs-var">ispace</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; [(VName, SubExp)] -&gt; [(VName, SubExp)]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401298"><span class="hs-identifier hs-var">gtid</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401303"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-64"></span><span>  </span><span id="local-6989586621684401296"><span class="annot"><span class="annottext">KernelBody (Rep m)
+</span><a href="#local-6989586621684401296"><span class="hs-identifier hs-var">kbody</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(([KernelResult], Stms (Rep m)) -&gt; KernelBody (Rep m))
+-&gt; m ([KernelResult], Stms (Rep m)) -&gt; m (KernelBody (Rep m))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">([KernelResult] -&gt; Stms (Rep m) -&gt; KernelBody (Rep m))
+-&gt; ([KernelResult], Stms (Rep m)) -&gt; KernelBody (Rep m)
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Stms (Rep m) -&gt; [KernelResult] -&gt; KernelBody (Rep m))
+-&gt; [KernelResult] -&gt; Stms (Rep m) -&gt; KernelBody (Rep m)
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyDec (Rep m)
+-&gt; Stms (Rep m) -&gt; [KernelResult] -&gt; KernelBody (Rep m)
+forall rep.
+BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+</span><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-var">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(m ([KernelResult], Stms (Rep m)) -&gt; m (KernelBody (Rep m)))
+-&gt; m ([KernelResult], Stms (Rep m)) -&gt; m (KernelBody (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-65"></span><span>    </span><span class="annot"><span class="annottext">Builder (Rep m) [KernelResult] -&gt; m ([KernelResult], Stms (Rep m))
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder"><span class="hs-identifier hs-var">runBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder (Rep m) [KernelResult]
+ -&gt; m ([KernelResult], Stms (Rep m)))
+-&gt; Builder (Rep m) [KernelResult]
+-&gt; m ([KernelResult], Stms (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-66"></span><span>      </span><span class="annot"><span class="annottext">Scope (Rep m)
+-&gt; Builder (Rep m) [KernelResult] -&gt; Builder (Rep m) [KernelResult]
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; Scope (Rep m)
+forall rep. SegSpace -&gt; Scope rep
+</span><a href="Futhark.IR.SegOp.html#scopeOfSegSpace"><span class="hs-identifier hs-var">scopeOfSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684401297"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Builder (Rep m) [KernelResult] -&gt; Builder (Rep m) [KernelResult])
+-&gt; Builder (Rep m) [KernelResult] -&gt; Builder (Rep m) [KernelResult]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-67"></span><span>        </span><span class="annot"><span class="annottext">(KernelInput -&gt; BuilderT (Rep m) (State VNameSource) ())
+-&gt; [KernelInput] -&gt; BuilderT (Rep m) (State VNameSource) ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="annot"><span class="annottext">KernelInput -&gt; BuilderT (Rep m) (State VNameSource) ()
+forall (m :: * -&gt; *).
+(DistRep (Rep m), MonadBuilder m) =&gt;
+KernelInput -&gt; m ()
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#readKernelInput"><span class="hs-identifier hs-var">readKernelInput</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684401299"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-68"></span><span>        </span><span class="annot"><span class="annottext">Certs
+-&gt; BuilderT (Rep m) (State VNameSource) ()
+-&gt; BuilderT (Rep m) (State VNameSource) ()
+forall (m :: * -&gt; *) a. MonadBuilder m =&gt; Certs -&gt; m a -&gt; m a
+</span><a href="Futhark.Builder.Class.html#certifying"><span class="hs-identifier hs-var">certifying</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684401304"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT (Rep m) (State VNameSource) ()
+ -&gt; BuilderT (Rep m) (State VNameSource) ())
+-&gt; ([KernelInput] -&gt; BuilderT (Rep m) (State VNameSource) ())
+-&gt; [KernelInput]
+-&gt; BuilderT (Rep m) (State VNameSource) ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(KernelInput -&gt; BuilderT (Rep m) (State VNameSource) ())
+-&gt; [KernelInput] -&gt; BuilderT (Rep m) (State VNameSource) ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="annot"><span class="annottext">KernelInput -&gt; BuilderT (Rep m) (State VNameSource) ()
+forall (m :: * -&gt; *).
+(DistRep (Rep m), MonadBuilder m) =&gt;
+KernelInput -&gt; m ()
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#readKernelInput"><span class="hs-identifier hs-var">readKernelInput</span></a></span><span> </span><span class="annot"><span class="annottext">([KernelInput] -&gt; BuilderT (Rep m) (State VNameSource) ())
+-&gt; [KernelInput] -&gt; BuilderT (Rep m) (State VNameSource) ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-69"></span><span>          </span><span class="hs-special">(</span><span id="local-6989586621684401286"><span class="annot"><span class="annottext">Param Type
+</span><a href="#local-6989586621684401286"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684401285"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401285"><span class="hs-identifier hs-var">arr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Param Type] -&gt; [VName] -&gt; [(Param Type, VName)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda (Rep m) -&gt; [LParam (Rep m)]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda (Rep m)
+</span><a href="#local-6989586621684401302"><span class="hs-identifier hs-var">map_lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684401301"><span class="hs-identifier hs-var">arrs</span></a></span><span>
+</span><span id="line-70"></span><span>          </span><span class="annot"><span class="annottext">KernelInput -&gt; [KernelInput]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(KernelInput -&gt; [KernelInput]) -&gt; KernelInput -&gt; [KernelInput]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Type -&gt; VName -&gt; [SubExp] -&gt; KernelInput
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-var">KernelInput</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Param Type -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">Param Type
+</span><a href="#local-6989586621684401286"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Param Type -&gt; Type
+forall dec. Typed dec =&gt; Param dec -&gt; Type
+</span><a href="Futhark.IR.Prop.Patterns.html#paramType"><span class="hs-identifier hs-var">paramType</span></a></span><span> </span><span class="annot"><span class="annottext">Param Type
+</span><a href="#local-6989586621684401286"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401285"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401298"><span class="hs-identifier hs-var">gtid</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-71"></span><span>        </span><span id="local-6989586621684401279"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684401279"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Body (Rep (BuilderT (Rep m) (State VNameSource)))
+-&gt; BuilderT (Rep m) (State VNameSource) Result
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Body (Rep m) -&gt; m Result
+</span><a href="Futhark.Builder.Class.html#bodyBind"><span class="hs-identifier hs-var">bodyBind</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda (Rep m) -&gt; BodyT (Rep m)
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda (Rep m)
+</span><a href="#local-6989586621684401302"><span class="hs-identifier hs-var">map_lam</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span>        </span><span class="annot"><span class="annottext">Result
+-&gt; (SubExpRes -&gt; BuilderT (Rep m) (State VNameSource) KernelResult)
+-&gt; Builder (Rep m) [KernelResult]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m (t b)
+</span><span class="hs-identifier hs-var">forM</span></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684401279"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="annot"><span class="annottext">((SubExpRes -&gt; BuilderT (Rep m) (State VNameSource) KernelResult)
+ -&gt; Builder (Rep m) [KernelResult])
+-&gt; (SubExpRes -&gt; BuilderT (Rep m) (State VNameSource) KernelResult)
+-&gt; Builder (Rep m) [KernelResult]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#SubExpRes"><span class="hs-identifier hs-type">SubExpRes</span></a></span><span> </span><span id="local-6989586621684401274"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684401274"><span class="hs-identifier hs-var">res_cs</span></a></span></span><span> </span><span id="local-6989586621684401273"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401273"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">KernelResult -&gt; BuilderT (Rep m) (State VNameSource) KernelResult
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(KernelResult -&gt; BuilderT (Rep m) (State VNameSource) KernelResult)
+-&gt; KernelResult
+-&gt; BuilderT (Rep m) (State VNameSource) KernelResult
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ResultManifest -&gt; Certs -&gt; SubExp -&gt; KernelResult
+</span><a href="Futhark.IR.SegOp.html#Returns"><span class="hs-identifier hs-var">Returns</span></a></span><span> </span><span class="annot"><span class="annottext">ResultManifest
+</span><a href="Futhark.IR.SegOp.html#ResultMaySimplify"><span class="hs-identifier hs-var">ResultMaySimplify</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684401274"><span class="hs-identifier hs-var">res_cs</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401273"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span>  </span><span class="annot"><span class="annottext">(SegSpace, KernelBody (Rep m)) -&gt; m (SegSpace, KernelBody (Rep m))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684401297"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">KernelBody (Rep m)
+</span><a href="#local-6989586621684401296"><span class="hs-identifier hs-var">kbody</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span id="local-6989586621684401561"><span id="local-6989586621684401562"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segRed"><span class="hs-identifier hs-type">segRed</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401562"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401561"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401561"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401562"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-78"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOpLevel"><span class="hs-identifier hs-type">SegOpLevel</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401561"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-79"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401561"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-80"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Certs"><span class="hs-identifier hs-type">Certs</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-81"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- segment size</span><span>
+</span><span id="line-82"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegBinOp"><span class="hs-identifier hs-type">SegBinOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401561"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-83"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401561"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-85"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- ispace = pair of (gtid, size) for the maps on &quot;top&quot; of this reduction</span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-type">KernelInput</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- inps = inputs that can be looked up by using the gtids from ispace</span><span>
+</span><span id="line-87"></span><span>  </span><span class="annot"><a href="#local-6989586621684401562"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401561"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-88"></span><span id="segRed"><span class="annot"><span class="annottext">segRed :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, DistRep rep, HasScope rep m) =&gt;
+SegOpLevel rep
+-&gt; Pat rep
+-&gt; Certs
+-&gt; SubExp
+-&gt; [SegBinOp rep]
+-&gt; Lambda rep
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; m (Stms rep)
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segRed"><span class="hs-identifier hs-var hs-var">segRed</span></a></span></span><span> </span><span id="local-6989586621684401224"><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684401224"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684401223"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684401223"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684401222"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684401222"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span id="local-6989586621684401221"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401221"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684401220"><span class="annot"><span class="annottext">[SegBinOp rep]
+</span><a href="#local-6989586621684401220"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span id="local-6989586621684401219"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684401219"><span class="hs-identifier hs-var">map_lam</span></a></span></span><span> </span><span id="local-6989586621684401218"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684401218"><span class="hs-identifier hs-var">arrs</span></a></span></span><span> </span><span id="local-6989586621684401217"><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401217"><span class="hs-identifier hs-var">ispace</span></a></span></span><span> </span><span id="local-6989586621684401216"><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684401216"><span class="hs-identifier hs-var">inps</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Builder rep () -&gt; m (Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var">runBuilder_</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder rep () -&gt; m (Stms rep)) -&gt; Builder rep () -&gt; m (Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-89"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684401214"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684401214"><span class="hs-identifier hs-var">kspace</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684401213"><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684401213"><span class="hs-identifier hs-var">kbody</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Certs
+-&gt; SubExp
+-&gt; Lambda (Rep (BuilderT rep (State VNameSource)))
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; BuilderT
+     rep
+     (State VNameSource)
+     (SegSpace, KernelBody (Rep (BuilderT rep (State VNameSource))))
+forall (m :: * -&gt; *).
+(MonadBuilder m, DistRep (Rep m)) =&gt;
+Certs
+-&gt; SubExp
+-&gt; Lambda (Rep m)
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; m (SegSpace, KernelBody (Rep m))
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#prepareRedOrScan"><span class="hs-identifier hs-var">prepareRedOrScan</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684401222"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401221"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+Lambda (Rep (BuilderT rep (State VNameSource)))
+</span><a href="#local-6989586621684401219"><span class="hs-identifier hs-var">map_lam</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684401218"><span class="hs-identifier hs-var">arrs</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401217"><span class="hs-identifier hs-var">ispace</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684401216"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-90"></span><span>  </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT rep (State VNameSource)))
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Pat (Rep m) -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBind"><span class="hs-identifier hs-var">letBind</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+Pat (Rep (BuilderT rep (State VNameSource)))
+</span><a href="#local-6989586621684401223"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ())
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-91"></span><span>    </span><span class="annot"><span class="annottext">Op rep -&gt; ExpT rep
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op rep -&gt; ExpT rep) -&gt; Op rep -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-92"></span><span>      </span><span class="annot"><span class="annottext">SegOp (SegOpLevel rep) rep -&gt; Op rep
+forall rep. HasSegOp rep =&gt; SegOp (SegOpLevel rep) rep -&gt; Op rep
+</span><a href="Futhark.IR.SegOp.html#segOp"><span class="hs-identifier hs-var">segOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp (SegOpLevel rep) rep -&gt; Op rep)
+-&gt; SegOp (SegOpLevel rep) rep -&gt; Op rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-93"></span><span>        </span><span class="annot"><span class="annottext">SegOpLevel rep
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp (SegOpLevel rep) rep
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-var">SegRed</span></a></span><span> </span><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684401224"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684401214"><span class="hs-identifier hs-var">kspace</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp rep]
+</span><a href="#local-6989586621684401220"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684401219"><span class="hs-identifier hs-var">map_lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684401213"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span id="local-6989586621684401206"><span id="local-6989586621684401207"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segScan"><span class="hs-identifier hs-type">segScan</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-96"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401207"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401206"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401206"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401207"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-97"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOpLevel"><span class="hs-identifier hs-type">SegOpLevel</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401206"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-98"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401206"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-99"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Certs"><span class="hs-identifier hs-type">Certs</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-100"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- segment size</span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegBinOp"><span class="hs-identifier hs-type">SegBinOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401206"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-102"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401206"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-103"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-104"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- ispace = pair of (gtid, size) for the maps on &quot;top&quot; of this scan</span><span>
+</span><span id="line-105"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-type">KernelInput</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- inps = inputs that can be looked up by using the gtids from ispace</span><span>
+</span><span id="line-106"></span><span>  </span><span class="annot"><a href="#local-6989586621684401207"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401206"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-107"></span><span id="segScan"><span class="annot"><span class="annottext">segScan :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, DistRep rep, HasScope rep m) =&gt;
+SegOpLevel rep
+-&gt; Pat rep
+-&gt; Certs
+-&gt; SubExp
+-&gt; [SegBinOp rep]
+-&gt; Lambda rep
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; m (Stms rep)
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segScan"><span class="hs-identifier hs-var hs-var">segScan</span></a></span></span><span> </span><span id="local-6989586621684401161"><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684401161"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684401160"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684401160"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684401159"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684401159"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span id="local-6989586621684401158"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401158"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684401157"><span class="annot"><span class="annottext">[SegBinOp rep]
+</span><a href="#local-6989586621684401157"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span id="local-6989586621684401156"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684401156"><span class="hs-identifier hs-var">map_lam</span></a></span></span><span> </span><span id="local-6989586621684401155"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684401155"><span class="hs-identifier hs-var">arrs</span></a></span></span><span> </span><span id="local-6989586621684401154"><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401154"><span class="hs-identifier hs-var">ispace</span></a></span></span><span> </span><span id="local-6989586621684401153"><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684401153"><span class="hs-identifier hs-var">inps</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Builder rep () -&gt; m (Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var">runBuilder_</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder rep () -&gt; m (Stms rep)) -&gt; Builder rep () -&gt; m (Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-108"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684401152"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684401152"><span class="hs-identifier hs-var">kspace</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684401151"><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684401151"><span class="hs-identifier hs-var">kbody</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Certs
+-&gt; SubExp
+-&gt; Lambda (Rep (BuilderT rep (State VNameSource)))
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; BuilderT
+     rep
+     (State VNameSource)
+     (SegSpace, KernelBody (Rep (BuilderT rep (State VNameSource))))
+forall (m :: * -&gt; *).
+(MonadBuilder m, DistRep (Rep m)) =&gt;
+Certs
+-&gt; SubExp
+-&gt; Lambda (Rep m)
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; m (SegSpace, KernelBody (Rep m))
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#prepareRedOrScan"><span class="hs-identifier hs-var">prepareRedOrScan</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684401159"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401158"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+Lambda (Rep (BuilderT rep (State VNameSource)))
+</span><a href="#local-6989586621684401156"><span class="hs-identifier hs-var">map_lam</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684401155"><span class="hs-identifier hs-var">arrs</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401154"><span class="hs-identifier hs-var">ispace</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684401153"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-109"></span><span>  </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT rep (State VNameSource)))
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Pat (Rep m) -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBind"><span class="hs-identifier hs-var">letBind</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+Pat (Rep (BuilderT rep (State VNameSource)))
+</span><a href="#local-6989586621684401160"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ())
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-110"></span><span>    </span><span class="annot"><span class="annottext">Op rep -&gt; ExpT rep
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op rep -&gt; ExpT rep) -&gt; Op rep -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-111"></span><span>      </span><span class="annot"><span class="annottext">SegOp (SegOpLevel rep) rep -&gt; Op rep
+forall rep. HasSegOp rep =&gt; SegOp (SegOpLevel rep) rep -&gt; Op rep
+</span><a href="Futhark.IR.SegOp.html#segOp"><span class="hs-identifier hs-var">segOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp (SegOpLevel rep) rep -&gt; Op rep)
+-&gt; SegOp (SegOpLevel rep) rep -&gt; Op rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-112"></span><span>        </span><span class="annot"><span class="annottext">SegOpLevel rep
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp (SegOpLevel rep) rep
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegScan"><span class="hs-identifier hs-var">SegScan</span></a></span><span> </span><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684401161"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684401152"><span class="hs-identifier hs-var">kspace</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp rep]
+</span><a href="#local-6989586621684401157"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684401156"><span class="hs-identifier hs-var">map_lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684401151"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span id="local-6989586621684401540"><span id="local-6989586621684401541"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segMap"><span class="hs-identifier hs-type">segMap</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-115"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401541"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401540"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401540"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401541"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-116"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOpLevel"><span class="hs-identifier hs-type">SegOpLevel</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401540"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-117"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401540"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-118"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- segment size</span><span>
+</span><span id="line-119"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401540"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-120"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-121"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- ispace = pair of (gtid, size) for the maps on &quot;top&quot; of this map</span><span>
+</span><span id="line-122"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-type">KernelInput</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-comment">-- inps = inputs that can be looked up by using the gtids from ispace</span><span>
+</span><span id="line-123"></span><span>  </span><span class="annot"><a href="#local-6989586621684401541"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401540"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-124"></span><span id="segMap"><span class="annot"><span class="annottext">segMap :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, DistRep rep, HasScope rep m) =&gt;
+SegOpLevel rep
+-&gt; Pat rep
+-&gt; SubExp
+-&gt; Lambda rep
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; m (Stms rep)
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segMap"><span class="hs-identifier hs-var hs-var">segMap</span></a></span></span><span> </span><span id="local-6989586621684401103"><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684401103"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684401102"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684401102"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684401101"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401101"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684401100"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684401100"><span class="hs-identifier hs-var">map_lam</span></a></span></span><span> </span><span id="local-6989586621684401099"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684401099"><span class="hs-identifier hs-var">arrs</span></a></span></span><span> </span><span id="local-6989586621684401098"><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401098"><span class="hs-identifier hs-var">ispace</span></a></span></span><span> </span><span id="local-6989586621684401097"><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684401097"><span class="hs-identifier hs-var">inps</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Builder rep () -&gt; m (Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var">runBuilder_</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder rep () -&gt; m (Stms rep)) -&gt; Builder rep () -&gt; m (Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684401096"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684401096"><span class="hs-identifier hs-var">kspace</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684401095"><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684401095"><span class="hs-identifier hs-var">kbody</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Certs
+-&gt; SubExp
+-&gt; Lambda (Rep (BuilderT rep (State VNameSource)))
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; BuilderT
+     rep
+     (State VNameSource)
+     (SegSpace, KernelBody (Rep (BuilderT rep (State VNameSource))))
+forall (m :: * -&gt; *).
+(MonadBuilder m, DistRep (Rep m)) =&gt;
+Certs
+-&gt; SubExp
+-&gt; Lambda (Rep m)
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; m (SegSpace, KernelBody (Rep m))
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#prepareRedOrScan"><span class="hs-identifier hs-var">prepareRedOrScan</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684401101"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+Lambda (Rep (BuilderT rep (State VNameSource)))
+</span><a href="#local-6989586621684401100"><span class="hs-identifier hs-var">map_lam</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684401099"><span class="hs-identifier hs-var">arrs</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401098"><span class="hs-identifier hs-var">ispace</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684401097"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-126"></span><span>  </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT rep (State VNameSource)))
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Pat (Rep m) -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBind"><span class="hs-identifier hs-var">letBind</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+Pat (Rep (BuilderT rep (State VNameSource)))
+</span><a href="#local-6989586621684401102"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ())
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-127"></span><span>    </span><span class="annot"><span class="annottext">Op rep -&gt; ExpT rep
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op rep -&gt; ExpT rep) -&gt; Op rep -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-128"></span><span>      </span><span class="annot"><span class="annottext">SegOp (SegOpLevel rep) rep -&gt; Op rep
+forall rep. HasSegOp rep =&gt; SegOp (SegOpLevel rep) rep -&gt; Op rep
+</span><a href="Futhark.IR.SegOp.html#segOp"><span class="hs-identifier hs-var">segOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp (SegOpLevel rep) rep -&gt; Op rep)
+-&gt; SegOp (SegOpLevel rep) rep -&gt; Op rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-129"></span><span>        </span><span class="annot"><span class="annottext">SegOpLevel rep
+-&gt; SegSpace
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp (SegOpLevel rep) rep
+forall lvl rep.
+lvl -&gt; SegSpace -&gt; [Type] -&gt; KernelBody rep -&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-var">SegMap</span></a></span><span> </span><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684401103"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684401096"><span class="hs-identifier hs-var">kspace</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684401100"><span class="hs-identifier hs-var">map_lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684401095"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span id="local-6989586621684401536"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#dummyDim"><span class="hs-identifier hs-type">dummyDim</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-132"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401536"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401536"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401536"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-133"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401536"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-134"></span><span>  </span><span class="annot"><a href="#local-6989586621684401536"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401536"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621684401536"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span></span><span>
+</span><span id="line-135"></span><span id="dummyDim"><span class="annot"><span class="annottext">dummyDim :: forall (m :: * -&gt; *).
+(MonadFreshNames m, MonadBuilder m, DistRep (Rep m)) =&gt;
+Pat (Rep m) -&gt; m (Pat (Rep m), [(VName, SubExp)], m ())
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#dummyDim"><span class="hs-identifier hs-var hs-var">dummyDim</span></a></span></span><span> </span><span id="local-6989586621684401057"><span class="annot"><span class="annottext">Pat (Rep m)
+</span><a href="#local-6989586621684401057"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-136"></span><span>  </span><span class="hs-comment">-- We add a unit-size segment on top to ensure that the result</span><span>
+</span><span id="line-137"></span><span>  </span><span class="hs-comment">-- of the SegRed is an array, which we then immediately index.</span><span>
+</span><span id="line-138"></span><span>  </span><span class="hs-comment">-- This is useful in the case that the value is used on the</span><span>
+</span><span id="line-139"></span><span>  </span><span class="hs-comment">-- device afterwards, as this may save an expensive</span><span>
+</span><span id="line-140"></span><span>  </span><span class="hs-comment">-- host-device copy (scalars are kept on the host, but arrays</span><span>
+</span><span id="line-141"></span><span>  </span><span class="hs-comment">-- may be on the device).</span><span>
+</span><span id="line-142"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684401054"><span class="annot"><span class="annottext">addDummyDim :: Type -&gt; Type
+</span><a href="#local-6989586621684401054"><span class="hs-identifier hs-var hs-var">addDummyDim</span></a></span></span><span> </span><span id="local-6989586621684401053"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684401053"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684401053"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Type -&gt; SubExp -&gt; Type
+forall d.
+ArrayShape (ShapeBase d) =&gt;
+TypeBase (ShapeBase d) NoUniqueness
+-&gt; d -&gt; TypeBase (ShapeBase d) NoUniqueness
+</span><a href="Futhark.IR.Prop.Types.html#arrayOfRow"><span class="hs-operator hs-var">`arrayOfRow`</span></a></span><span> </span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-143"></span><span>  </span><span id="local-6989586621684401049"><span class="annot"><span class="annottext">PatT Type
+</span><a href="#local-6989586621684401049"><span class="hs-identifier hs-var">pat'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Type -&gt; Type) -&gt; PatT Type -&gt; PatT Type
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; Type
+</span><a href="#local-6989586621684401054"><span class="hs-identifier hs-var">addDummyDim</span></a></span><span> </span><span class="annot"><span class="annottext">(PatT Type -&gt; PatT Type) -&gt; m (PatT Type) -&gt; m (PatT Type)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">PatT Type -&gt; m (PatT Type)
+forall dec (m :: * -&gt; *).
+(Rename dec, MonadFreshNames m) =&gt;
+PatT dec -&gt; m (PatT dec)
+</span><a href="Futhark.Transform.Rename.html#renamePat"><span class="hs-identifier hs-var">renamePat</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+Pat (Rep m)
+</span><a href="#local-6989586621684401057"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-144"></span><span>  </span><span id="local-6989586621684401047"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401047"><span class="hs-identifier hs-var">dummy</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; m VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;dummy&quot;</span></span><span>
+</span><span id="line-145"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684401046"><span class="annot"><span class="annottext">ispace :: [(VName, SubExp)]
+</span><a href="#local-6989586621684401046"><span class="hs-identifier hs-var hs-var">ispace</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401047"><span class="hs-identifier hs-var">dummy</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-146"></span><span>
+</span><span id="line-147"></span><span>  </span><span class="annot"><span class="annottext">(PatT Type, [(VName, SubExp)], m ())
+-&gt; m (PatT Type, [(VName, SubExp)], m ())
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span>
+</span><span id="line-148"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">PatT Type
+</span><a href="#local-6989586621684401049"><span class="hs-identifier hs-var">pat'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-149"></span><span>      </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684401046"><span class="hs-identifier hs-var">ispace</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-150"></span><span>      </span><span class="annot"><span class="annottext">[(VName, VName)] -&gt; ((VName, VName) -&gt; m ()) -&gt; m ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m ()
+</span><span class="hs-identifier hs-var">forM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [VName] -&gt; [(VName, VName)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT Type -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+</span><a href="#local-6989586621684401049"><span class="hs-identifier hs-var">pat'</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT Type -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+Pat (Rep m)
+</span><a href="#local-6989586621684401057"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(((VName, VName) -&gt; m ()) -&gt; m ())
+-&gt; ((VName, VName) -&gt; m ()) -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684401043"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401043"><span class="hs-identifier hs-var">from</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684401042"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401042"><span class="hs-identifier hs-var">to</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-151"></span><span>        </span><span id="local-6989586621684401041"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684401041"><span class="hs-identifier hs-var">from_t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401043"><span class="hs-identifier hs-var">from</span></a></span><span>
+</span><span id="line-152"></span><span>        </span><span class="annot"><span class="annottext">[VName] -&gt; Exp (Rep m) -&gt; m ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401042"><span class="hs-identifier hs-var">to</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m ()) -&gt; Exp (Rep m) -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-153"></span><span>          </span><span class="annot"><span class="annottext">BasicOp -&gt; Exp (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; Exp (Rep m)) -&gt; BasicOp -&gt; Exp (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-154"></span><span>            </span><span class="annot"><span class="annottext">VName -&gt; Slice SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Index"><span class="hs-identifier hs-var">Index</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684401043"><span class="hs-identifier hs-var">from</span></a></span><span> </span><span class="annot"><span class="annottext">(Slice SubExp -&gt; BasicOp) -&gt; Slice SubExp -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-155"></span><span>              </span><span class="annot"><span class="annottext">Type -&gt; [DimIndex SubExp] -&gt; Slice SubExp
+</span><a href="Futhark.Construct.html#fullSlice"><span class="hs-identifier hs-var">fullSlice</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684401041"><span class="hs-identifier hs-var">from_t</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SubExp -&gt; DimIndex SubExp
+forall d. d -&gt; DimIndex d
+</span><a href="Futhark.IR.Syntax.Core.html#DimFix"><span class="hs-identifier hs-var">DimFix</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; DimIndex SubExp) -&gt; SubExp -&gt; DimIndex SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span class="hs-special">]</span><span>
+</span><span id="line-156"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-157"></span><span>
+</span><span id="line-158"></span><span id="local-6989586621684401502"><span id="local-6989586621684401503"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#nonSegRed"><span class="hs-identifier hs-type">nonSegRed</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-159"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401503"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401502"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401502"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401503"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-160"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOpLevel"><span class="hs-identifier hs-type">SegOpLevel</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401502"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-161"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401502"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-162"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-163"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegBinOp"><span class="hs-identifier hs-type">SegBinOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401502"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-164"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401502"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-165"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-166"></span><span>  </span><span class="annot"><a href="#local-6989586621684401503"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401502"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-167"></span><span id="nonSegRed"><span class="annot"><span class="annottext">nonSegRed :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, DistRep rep, HasScope rep m) =&gt;
+SegOpLevel rep
+-&gt; Pat rep
+-&gt; SubExp
+-&gt; [SegBinOp rep]
+-&gt; Lambda rep
+-&gt; [VName]
+-&gt; m (Stms rep)
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#nonSegRed"><span class="hs-identifier hs-var hs-var">nonSegRed</span></a></span></span><span> </span><span id="local-6989586621684400983"><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684400983"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684400982"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684400982"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684400981"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684400981"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684400980"><span class="annot"><span class="annottext">[SegBinOp rep]
+</span><a href="#local-6989586621684400980"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span id="local-6989586621684400979"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684400979"><span class="hs-identifier hs-var">map_lam</span></a></span></span><span> </span><span id="local-6989586621684400978"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684400978"><span class="hs-identifier hs-var">arrs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Builder rep () -&gt; m (Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var">runBuilder_</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder rep () -&gt; m (Stms rep)) -&gt; Builder rep () -&gt; m (Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-168"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684400977"><span class="annot"><span class="annottext">PatT Type
+</span><a href="#local-6989586621684400977"><span class="hs-identifier hs-var">pat'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684400976"><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684400976"><span class="hs-identifier hs-var">ispace</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684400975"><span class="annot"><span class="annottext">Builder rep ()
+</span><a href="#local-6989586621684400975"><span class="hs-identifier hs-var">read_dummy</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT rep (State VNameSource)))
+-&gt; BuilderT
+     rep
+     (State VNameSource)
+     (Pat (Rep (BuilderT rep (State VNameSource))), [(VName, SubExp)],
+      Builder rep ())
+forall (m :: * -&gt; *).
+(MonadFreshNames m, MonadBuilder m, DistRep (Rep m)) =&gt;
+Pat (Rep m) -&gt; m (Pat (Rep m), [(VName, SubExp)], m ())
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#dummyDim"><span class="hs-identifier hs-var">dummyDim</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+Pat (Rep (BuilderT rep (State VNameSource)))
+</span><a href="#local-6989586621684400982"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-169"></span><span>  </span><span class="annot"><span class="annottext">Stms rep -&gt; Builder rep ()
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Stms (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#addStms"><span class="hs-identifier hs-var">addStms</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms rep -&gt; Builder rep ())
+-&gt; BuilderT rep (State VNameSource) (Stms rep) -&gt; Builder rep ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">SegOpLevel rep
+-&gt; Pat rep
+-&gt; Certs
+-&gt; SubExp
+-&gt; [SegBinOp rep]
+-&gt; Lambda rep
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; BuilderT rep (State VNameSource) (Stms rep)
+forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, DistRep rep, HasScope rep m) =&gt;
+SegOpLevel rep
+-&gt; Pat rep
+-&gt; Certs
+-&gt; SubExp
+-&gt; [SegBinOp rep]
+-&gt; Lambda rep
+-&gt; [VName]
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; m (Stms rep)
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segRed"><span class="hs-identifier hs-var">segRed</span></a></span><span> </span><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684400983"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+Pat rep
+</span><a href="#local-6989586621684400977"><span class="hs-identifier hs-var">pat'</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684400981"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp rep]
+</span><a href="#local-6989586621684400980"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684400979"><span class="hs-identifier hs-var">map_lam</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684400978"><span class="hs-identifier hs-var">arrs</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684400976"><span class="hs-identifier hs-var">ispace</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-170"></span><span>  </span><span class="annot"><span class="annottext">Builder rep ()
+</span><a href="#local-6989586621684400975"><span class="hs-identifier hs-var">read_dummy</span></a></span><span>
+</span><span id="line-171"></span><span>
+</span><span id="line-172"></span><span id="local-6989586621684401490"><span id="local-6989586621684401491"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segHist"><span class="hs-identifier hs-type">segHist</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-173"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401491"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401490"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401491"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401490"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-174"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOpLevel"><span class="hs-identifier hs-type">SegOpLevel</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401491"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-175"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401491"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-176"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-177"></span><span>  </span><span class="hs-comment">-- | Segment indexes and sizes.</span><span>
+</span><span id="line-178"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-179"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-type">KernelInput</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-180"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SegOp.html#HistOp"><span class="hs-identifier hs-type">HistOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401491"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-181"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401491"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-182"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-183"></span><span>  </span><span class="annot"><a href="#local-6989586621684401490"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401491"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-184"></span><span id="segHist"><span class="annot"><span class="annottext">segHist :: forall rep (m :: * -&gt; *).
+(DistRep rep, MonadFreshNames m, HasScope rep m) =&gt;
+SegOpLevel rep
+-&gt; Pat rep
+-&gt; SubExp
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; [HistOp rep]
+-&gt; Lambda rep
+-&gt; [VName]
+-&gt; m (Stms rep)
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#segHist"><span class="hs-identifier hs-var hs-var">segHist</span></a></span></span><span> </span><span id="local-6989586621684400900"><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684400900"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684400899"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684400899"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684400898"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684400898"><span class="hs-identifier hs-var">arr_w</span></a></span></span><span> </span><span id="local-6989586621684400897"><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684400897"><span class="hs-identifier hs-var">ispace</span></a></span></span><span> </span><span id="local-6989586621684400896"><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684400896"><span class="hs-identifier hs-var">inps</span></a></span></span><span> </span><span id="local-6989586621684400895"><span class="annot"><span class="annottext">[HistOp rep]
+</span><a href="#local-6989586621684400895"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span id="local-6989586621684400894"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684400894"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span id="local-6989586621684400893"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684400893"><span class="hs-identifier hs-var">arrs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Builder rep () -&gt; m (Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var">runBuilder_</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder rep () -&gt; m (Stms rep)) -&gt; Builder rep () -&gt; m (Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-185"></span><span>  </span><span id="local-6989586621684400892"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684400892"><span class="hs-identifier hs-var">gtid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; BuilderT rep (State VNameSource) VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;gtid&quot;</span></span><span>
+</span><span id="line-186"></span><span>  </span><span id="local-6989586621684400891"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684400891"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; BuilderT rep (State VNameSource) SegSpace
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+[(VName, SubExp)] -&gt; m SegSpace
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mkSegSpace"><span class="hs-identifier hs-var">mkSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; BuilderT rep (State VNameSource) SegSpace)
+-&gt; [(VName, SubExp)] -&gt; BuilderT rep (State VNameSource) SegSpace
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684400897"><span class="hs-identifier hs-var">ispace</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; [(VName, SubExp)] -&gt; [(VName, SubExp)]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684400892"><span class="hs-identifier hs-var">gtid</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684400898"><span class="hs-identifier hs-var">arr_w</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span>  </span><span id="local-6989586621684400890"><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684400890"><span class="hs-identifier hs-var">kbody</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(([KernelResult], Stms rep) -&gt; KernelBody rep)
+-&gt; BuilderT rep (State VNameSource) ([KernelResult], Stms rep)
+-&gt; BuilderT rep (State VNameSource) (KernelBody rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">([KernelResult] -&gt; Stms rep -&gt; KernelBody rep)
+-&gt; ([KernelResult], Stms rep) -&gt; KernelBody rep
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Stms rep -&gt; [KernelResult] -&gt; KernelBody rep)
+-&gt; [KernelResult] -&gt; Stms rep -&gt; KernelBody rep
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">((Stms rep -&gt; [KernelResult] -&gt; KernelBody rep)
+ -&gt; [KernelResult] -&gt; Stms rep -&gt; KernelBody rep)
+-&gt; (Stms rep -&gt; [KernelResult] -&gt; KernelBody rep)
+-&gt; [KernelResult]
+-&gt; Stms rep
+-&gt; KernelBody rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+forall rep.
+BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+</span><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-var">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(BuilderT rep (State VNameSource) ([KernelResult], Stms rep)
+ -&gt; BuilderT rep (State VNameSource) (KernelBody rep))
+-&gt; BuilderT rep (State VNameSource) ([KernelResult], Stms rep)
+-&gt; BuilderT rep (State VNameSource) (KernelBody rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-189"></span><span>    </span><span class="annot"><span class="annottext">Builder rep [KernelResult]
+-&gt; BuilderT rep (State VNameSource) ([KernelResult], Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder"><span class="hs-identifier hs-var">runBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder rep [KernelResult]
+ -&gt; BuilderT rep (State VNameSource) ([KernelResult], Stms rep))
+-&gt; Builder rep [KernelResult]
+-&gt; BuilderT rep (State VNameSource) ([KernelResult], Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-190"></span><span>      </span><span class="annot"><span class="annottext">Scope rep
+-&gt; Builder rep [KernelResult] -&gt; Builder rep [KernelResult]
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; Scope rep
+forall rep. SegSpace -&gt; Scope rep
+</span><a href="Futhark.IR.SegOp.html#scopeOfSegSpace"><span class="hs-identifier hs-var">scopeOfSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684400891"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Builder rep [KernelResult] -&gt; Builder rep [KernelResult])
+-&gt; Builder rep [KernelResult] -&gt; Builder rep [KernelResult]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-191"></span><span>        </span><span class="annot"><span class="annottext">(KernelInput -&gt; Builder rep ()) -&gt; [KernelInput] -&gt; Builder rep ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="annot"><span class="annottext">KernelInput -&gt; Builder rep ()
+forall (m :: * -&gt; *).
+(DistRep (Rep m), MonadBuilder m) =&gt;
+KernelInput -&gt; m ()
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#readKernelInput"><span class="hs-identifier hs-var">readKernelInput</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684400896"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-192"></span><span>        </span><span class="annot"><span class="annottext">[(Param Type, VName)]
+-&gt; ((Param Type, VName) -&gt; Builder rep ()) -&gt; Builder rep ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m ()
+</span><span class="hs-identifier hs-var">forM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param Type] -&gt; [VName] -&gt; [(Param Type, VName)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; [LParam rep]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684400894"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684400893"><span class="hs-identifier hs-var">arrs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(((Param Type, VName) -&gt; Builder rep ()) -&gt; Builder rep ())
+-&gt; ((Param Type, VName) -&gt; Builder rep ()) -&gt; Builder rep ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684400889"><span class="annot"><span class="annottext">Param Type
+</span><a href="#local-6989586621684400889"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684400888"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684400888"><span class="hs-identifier hs-var">arr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-193"></span><span>          </span><span id="local-6989586621684400887"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684400887"><span class="hs-identifier hs-var">arr_t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; BuilderT rep (State VNameSource) Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684400888"><span class="hs-identifier hs-var">arr</span></a></span><span>
+</span><span id="line-194"></span><span>          </span><span class="annot"><span class="annottext">[VName]
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Param Type -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">Param Type
+</span><a href="#local-6989586621684400889"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ())
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-195"></span><span>            </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT rep
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT rep) -&gt; BasicOp -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Slice SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Index"><span class="hs-identifier hs-var">Index</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684400888"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">(Slice SubExp -&gt; BasicOp) -&gt; Slice SubExp -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [DimIndex SubExp] -&gt; Slice SubExp
+</span><a href="Futhark.Construct.html#fullSlice"><span class="hs-identifier hs-var">fullSlice</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684400887"><span class="hs-identifier hs-var">arr_t</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SubExp -&gt; DimIndex SubExp
+forall d. d -&gt; DimIndex d
+</span><a href="Futhark.IR.Syntax.Core.html#DimFix"><span class="hs-identifier hs-var">DimFix</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; DimIndex SubExp) -&gt; SubExp -&gt; DimIndex SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684400892"><span class="hs-identifier hs-var">gtid</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-196"></span><span>        </span><span id="local-6989586621684400886"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684400886"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Body (Rep (BuilderT rep (State VNameSource)))
+-&gt; BuilderT rep (State VNameSource) Result
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Body (Rep m) -&gt; m Result
+</span><a href="Futhark.Builder.Class.html#bodyBind"><span class="hs-identifier hs-var">bodyBind</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; BodyT rep
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684400894"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-197"></span><span>        </span><span class="annot"><span class="annottext">Result
+-&gt; (SubExpRes -&gt; BuilderT rep (State VNameSource) KernelResult)
+-&gt; Builder rep [KernelResult]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m (t b)
+</span><span class="hs-identifier hs-var">forM</span></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684400886"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="annot"><span class="annottext">((SubExpRes -&gt; BuilderT rep (State VNameSource) KernelResult)
+ -&gt; Builder rep [KernelResult])
+-&gt; (SubExpRes -&gt; BuilderT rep (State VNameSource) KernelResult)
+-&gt; Builder rep [KernelResult]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#SubExpRes"><span class="hs-identifier hs-type">SubExpRes</span></a></span><span> </span><span id="local-6989586621684400885"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684400885"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span id="local-6989586621684400884"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684400884"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-198"></span><span>          </span><span class="annot"><span class="annottext">KernelResult -&gt; BuilderT rep (State VNameSource) KernelResult
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(KernelResult -&gt; BuilderT rep (State VNameSource) KernelResult)
+-&gt; KernelResult -&gt; BuilderT rep (State VNameSource) KernelResult
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ResultManifest -&gt; Certs -&gt; SubExp -&gt; KernelResult
+</span><a href="Futhark.IR.SegOp.html#Returns"><span class="hs-identifier hs-var">Returns</span></a></span><span> </span><span class="annot"><span class="annottext">ResultManifest
+</span><a href="Futhark.IR.SegOp.html#ResultMaySimplify"><span class="hs-identifier hs-var">ResultMaySimplify</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684400885"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684400884"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-199"></span><span>
+</span><span id="line-200"></span><span>  </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT rep (State VNameSource)))
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Pat (Rep m) -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBind"><span class="hs-identifier hs-var">letBind</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+Pat (Rep (BuilderT rep (State VNameSource)))
+</span><a href="#local-6989586621684400899"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ())
+-&gt; Exp (Rep (BuilderT rep (State VNameSource))) -&gt; Builder rep ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Op rep -&gt; ExpT rep
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op rep -&gt; ExpT rep) -&gt; Op rep -&gt; ExpT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOp (SegOpLevel rep) rep -&gt; Op rep
+forall rep. HasSegOp rep =&gt; SegOp (SegOpLevel rep) rep -&gt; Op rep
+</span><a href="Futhark.IR.SegOp.html#segOp"><span class="hs-identifier hs-var">segOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp (SegOpLevel rep) rep -&gt; Op rep)
+-&gt; SegOp (SegOpLevel rep) rep -&gt; Op rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOpLevel rep
+-&gt; SegSpace
+-&gt; [HistOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp (SegOpLevel rep) rep
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [HistOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-var">SegHist</span></a></span><span> </span><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684400900"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684400891"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[HistOp rep]
+</span><a href="#local-6989586621684400895"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684400894"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684400890"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-201"></span><span>
+</span><span id="line-202"></span><span id="local-6989586621684401483"><span id="local-6989586621684401484"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mapKernelSkeleton"><span class="hs-identifier hs-type">mapKernelSkeleton</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-203"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401484"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401484"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401483"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401483"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-204"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-205"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-type">KernelInput</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-206"></span><span>  </span><span class="annot"><a href="#local-6989586621684401483"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401484"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-207"></span><span id="mapKernelSkeleton"><span class="annot"><span class="annottext">mapKernelSkeleton :: forall rep (m :: * -&gt; *).
+(DistRep rep, HasScope rep m, MonadFreshNames m) =&gt;
+[(VName, SubExp)] -&gt; [KernelInput] -&gt; m (SegSpace, Stms rep)
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mapKernelSkeleton"><span class="hs-identifier hs-var hs-var">mapKernelSkeleton</span></a></span></span><span> </span><span id="local-6989586621684400834"><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684400834"><span class="hs-identifier hs-var">ispace</span></a></span></span><span> </span><span id="local-6989586621684400833"><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684400833"><span class="hs-identifier hs-var">inputs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-208"></span><span>  </span><span id="local-6989586621684400832"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684400832"><span class="hs-identifier hs-var">read_input_stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Builder rep [()] -&gt; m (Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var">runBuilder_</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder rep [()] -&gt; m (Stms rep))
+-&gt; Builder rep [()] -&gt; m (Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(KernelInput -&gt; BuilderT rep (State VNameSource) ())
+-&gt; [KernelInput] -&gt; Builder rep [()]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">KernelInput -&gt; BuilderT rep (State VNameSource) ()
+forall (m :: * -&gt; *).
+(DistRep (Rep m), MonadBuilder m) =&gt;
+KernelInput -&gt; m ()
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#readKernelInput"><span class="hs-identifier hs-var">readKernelInput</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684400833"><span class="hs-identifier hs-var">inputs</span></a></span><span>
+</span><span id="line-209"></span><span>
+</span><span id="line-210"></span><span>  </span><span id="local-6989586621684400830"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684400830"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; m SegSpace
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+[(VName, SubExp)] -&gt; m SegSpace
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mkSegSpace"><span class="hs-identifier hs-var">mkSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684400834"><span class="hs-identifier hs-var">ispace</span></a></span><span>
+</span><span id="line-211"></span><span>  </span><span class="annot"><span class="annottext">(SegSpace, Stms rep) -&gt; m (SegSpace, Stms rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684400830"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684400832"><span class="hs-identifier hs-var">read_input_stms</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-212"></span><span>
+</span><span id="line-213"></span><span id="local-6989586621684401475"><span id="local-6989586621684401476"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mapKernel"><span class="hs-identifier hs-type">mapKernel</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-214"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401476"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401476"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401475"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401475"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-215"></span><span>  </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#MkSegLevel"><span class="hs-identifier hs-type">MkSegLevel</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401476"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401475"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-216"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-217"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-type">KernelInput</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-218"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-219"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401476"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-220"></span><span>  </span><span class="annot"><a href="#local-6989586621684401475"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOpLevel"><span class="hs-identifier hs-type">SegOpLevel</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401476"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684401476"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401476"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-221"></span><span id="mapKernel"><span class="annot"><span class="annottext">mapKernel :: forall rep (m :: * -&gt; *).
+(DistRep rep, HasScope rep m, MonadFreshNames m) =&gt;
+MkSegLevel rep m
+-&gt; [(VName, SubExp)]
+-&gt; [KernelInput]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; m (SegOp (SegOpLevel rep) rep, Stms rep)
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mapKernel"><span class="hs-identifier hs-var hs-var">mapKernel</span></a></span></span><span> </span><span id="local-6989586621684400786"><span class="annot"><span class="annottext">MkSegLevel rep m
+</span><a href="#local-6989586621684400786"><span class="hs-identifier hs-var">mk_lvl</span></a></span></span><span> </span><span id="local-6989586621684400785"><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684400785"><span class="hs-identifier hs-var">ispace</span></a></span></span><span> </span><span id="local-6989586621684400784"><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684400784"><span class="hs-identifier hs-var">inputs</span></a></span></span><span> </span><span id="local-6989586621684400783"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684400783"><span class="hs-identifier hs-var">rts</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span id="local-6989586621684400782"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684400782"><span class="hs-identifier hs-var">kstms</span></a></span></span><span> </span><span id="local-6989586621684400781"><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684400781"><span class="hs-identifier hs-var">krets</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BuilderT rep m (SegOp (SegOpLevel rep) rep)
+-&gt; m (SegOp (SegOpLevel rep) rep, Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+BuilderT rep m a -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT%27"><span class="hs-identifier hs-var">runBuilderT'</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT rep m (SegOp (SegOpLevel rep) rep)
+ -&gt; m (SegOp (SegOpLevel rep) rep, Stms rep))
+-&gt; BuilderT rep m (SegOp (SegOpLevel rep) rep)
+-&gt; m (SegOp (SegOpLevel rep) rep, Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-222"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684400779"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684400779"><span class="hs-identifier hs-var">space</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684400778"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684400778"><span class="hs-identifier hs-var">read_input_stms</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+-&gt; [KernelInput] -&gt; BuilderT rep m (SegSpace, Stms rep)
+forall rep (m :: * -&gt; *).
+(DistRep rep, HasScope rep m, MonadFreshNames m) =&gt;
+[(VName, SubExp)] -&gt; [KernelInput] -&gt; m (SegSpace, Stms rep)
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#mapKernelSkeleton"><span class="hs-identifier hs-var">mapKernelSkeleton</span></a></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684400785"><span class="hs-identifier hs-var">ispace</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelInput]
+</span><a href="#local-6989586621684400784"><span class="hs-identifier hs-var">inputs</span></a></span><span>
+</span><span id="line-223"></span><span>
+</span><span id="line-224"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684400777"><span class="annot"><span class="annottext">kbody' :: KernelBody rep
+</span><a href="#local-6989586621684400777"><span class="hs-identifier hs-var hs-var">kbody'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+forall rep.
+BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+</span><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-var">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684400778"><span class="hs-identifier hs-var">read_input_stms</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; Stms rep -&gt; Stms rep
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684400782"><span class="hs-identifier hs-var">kstms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684400781"><span class="hs-identifier hs-var">krets</span></a></span><span>
+</span><span id="line-225"></span><span>
+</span><span id="line-226"></span><span>  </span><span class="hs-comment">-- If the kernel creates arrays (meaning it will require memory</span><span>
+</span><span id="line-227"></span><span>  </span><span class="hs-comment">-- expansion), we want to truncate the amount of threads.</span><span>
+</span><span id="line-228"></span><span>  </span><span class="hs-comment">-- Otherwise, have at it!  This is a bit of a hack - in principle,</span><span>
+</span><span id="line-229"></span><span>  </span><span class="hs-comment">-- we should make this decision later, when we have a clearer idea</span><span>
+</span><span id="line-230"></span><span>  </span><span class="hs-comment">-- of what is happening inside the kernel.</span><span>
+</span><span id="line-231"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684400776"><span class="annot"><span class="annottext">r :: ThreadRecommendation
+</span><a href="#local-6989586621684400776"><span class="hs-identifier hs-var hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">(Type -&gt; Bool) -&gt; [Type] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; Bool
+forall shape u. TypeBase shape u -&gt; Bool
+</span><a href="Futhark.IR.Prop.Types.html#primType"><span class="hs-identifier hs-var">primType</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684400783"><span class="hs-identifier hs-var">rts</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ThreadRecommendation
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#ManyThreads"><span class="hs-identifier hs-var">ManyThreads</span></a></span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">SegVirt -&gt; ThreadRecommendation
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#NoRecommendation"><span class="hs-identifier hs-var">NoRecommendation</span></a></span><span> </span><span class="annot"><span class="annottext">SegVirt
+</span><a href="Futhark.IR.SegOp.html#SegVirt"><span class="hs-identifier hs-var">SegVirt</span></a></span><span>
+</span><span id="line-232"></span><span>
+</span><span id="line-233"></span><span>  </span><span id="local-6989586621684400772"><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684400772"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MkSegLevel rep m
+</span><a href="#local-6989586621684400786"><span class="hs-identifier hs-var">mk_lvl</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((VName, SubExp) -&gt; SubExp) -&gt; [(VName, SubExp)] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(VName, SubExp) -&gt; SubExp
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+</span><a href="#local-6989586621684400785"><span class="hs-identifier hs-var">ispace</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;segmap&quot;</span></span><span> </span><span class="annot"><span class="annottext">ThreadRecommendation
+</span><a href="#local-6989586621684400776"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-234"></span><span>
+</span><span id="line-235"></span><span>  </span><span class="annot"><span class="annottext">SegOp (SegOpLevel rep) rep
+-&gt; BuilderT rep m (SegOp (SegOpLevel rep) rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SegOp (SegOpLevel rep) rep
+ -&gt; BuilderT rep m (SegOp (SegOpLevel rep) rep))
+-&gt; SegOp (SegOpLevel rep) rep
+-&gt; BuilderT rep m (SegOp (SegOpLevel rep) rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOpLevel rep
+-&gt; SegSpace
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp (SegOpLevel rep) rep
+forall lvl rep.
+lvl -&gt; SegSpace -&gt; [Type] -&gt; KernelBody rep -&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-var">SegMap</span></a></span><span> </span><span class="annot"><span class="annottext">SegOpLevel rep
+</span><a href="#local-6989586621684400772"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684400779"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684400783"><span class="hs-identifier hs-var">rts</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody rep
+</span><a href="#local-6989586621684400777"><span class="hs-identifier hs-var">kbody'</span></a></span><span>
+</span><span id="line-236"></span><span>
+</span><span id="line-237"></span><span class="hs-keyword">data</span><span> </span><span id="KernelInput"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-var">KernelInput</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="KernelInput"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-var">KernelInput</span></a></span></span><span>
+</span><span id="line-238"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="kernelInputName"><span class="annot"><span class="annottext">KernelInput -&gt; VName
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputName"><span class="hs-identifier hs-var hs-var">kernelInputName</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-239"></span><span>    </span><span id="kernelInputType"><span class="annot"><span class="annottext">KernelInput -&gt; Type
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputType"><span class="hs-identifier hs-var hs-var">kernelInputType</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-240"></span><span>    </span><span id="kernelInputArray"><span class="annot"><span class="annottext">KernelInput -&gt; VName
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputArray"><span class="hs-identifier hs-var hs-var">kernelInputArray</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-241"></span><span>    </span><span id="kernelInputIndices"><span class="annot"><span class="annottext">KernelInput -&gt; [SubExp]
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputIndices"><span class="hs-identifier hs-var hs-var">kernelInputIndices</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-242"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-243"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684400750"><span id="local-6989586621684400752"><span id="local-6989586621684400766"><span class="annot"><span class="annottext">Int -&gt; KernelInput -&gt; ShowS
+[KernelInput] -&gt; ShowS
+KernelInput -&gt; String
+(Int -&gt; KernelInput -&gt; ShowS)
+-&gt; (KernelInput -&gt; String)
+-&gt; ([KernelInput] -&gt; ShowS)
+-&gt; Show KernelInput
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [KernelInput] -&gt; ShowS
+$cshowList :: [KernelInput] -&gt; ShowS
+show :: KernelInput -&gt; String
+$cshow :: KernelInput -&gt; String
+showsPrec :: Int -&gt; KernelInput -&gt; ShowS
+$cshowsPrec :: Int -&gt; KernelInput -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-244"></span><span>
+</span><span id="line-245"></span><span id="local-6989586621684401587"><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#readKernelInput"><span class="hs-identifier hs-type">readKernelInput</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-246"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#DistRep"><span class="hs-identifier hs-type">DistRep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401587"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684401587"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-247"></span><span>  </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#KernelInput"><span class="hs-identifier hs-type">KernelInput</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-248"></span><span>  </span><span class="annot"><a href="#local-6989586621684401587"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-249"></span><span id="readKernelInput"><span class="annot"><span class="annottext">readKernelInput :: forall (m :: * -&gt; *).
+(DistRep (Rep m), MonadBuilder m) =&gt;
+KernelInput -&gt; m ()
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#readKernelInput"><span class="hs-identifier hs-var hs-var">readKernelInput</span></a></span></span><span> </span><span id="local-6989586621684400737"><span class="annot"><span class="annottext">KernelInput
+</span><a href="#local-6989586621684400737"><span class="hs-identifier hs-var">inp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-250"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684400736"><span class="annot"><span class="annottext">pe :: PatElemT Type
+</span><a href="#local-6989586621684400736"><span class="hs-identifier hs-var hs-var">pe</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Type -&gt; PatElemT Type
+forall dec. VName -&gt; dec -&gt; PatElemT dec
+</span><a href="Futhark.IR.Syntax.Core.html#PatElem"><span class="hs-identifier hs-var">PatElem</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelInput -&gt; VName
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputName"><span class="hs-identifier hs-var hs-var">kernelInputName</span></a></span><span> </span><span class="annot"><span class="annottext">KernelInput
+</span><a href="#local-6989586621684400737"><span class="hs-identifier hs-var">inp</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Type -&gt; PatElemT Type) -&gt; Type -&gt; PatElemT Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelInput -&gt; Type
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputType"><span class="hs-identifier hs-var hs-var">kernelInputType</span></a></span><span> </span><span class="annot"><span class="annottext">KernelInput
+</span><a href="#local-6989586621684400737"><span class="hs-identifier hs-var">inp</span></a></span><span>
+</span><span id="line-251"></span><span>  </span><span class="annot"><span class="annottext">Pat (Rep m) -&gt; ExpT (Rep m) -&gt; m ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Pat (Rep m) -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBind"><span class="hs-identifier hs-var">letBind</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[PatElemT Type] -&gt; PatT Type
+forall dec. [PatElemT dec] -&gt; PatT dec
+</span><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-var">Pat</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PatElemT Type
+</span><a href="#local-6989586621684400736"><span class="hs-identifier hs-var">pe</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ExpT (Rep m) -&gt; m ())
+-&gt; (BasicOp -&gt; ExpT (Rep m)) -&gt; BasicOp -&gt; m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; m ()) -&gt; BasicOp -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-252"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">KernelInput -&gt; Type
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputType"><span class="hs-identifier hs-var hs-var">kernelInputType</span></a></span><span> </span><span class="annot"><span class="annottext">KernelInput
+</span><a href="#local-6989586621684400737"><span class="hs-identifier hs-var">inp</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-253"></span><span>      </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Acc"><span class="hs-identifier hs-type">Acc</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-254"></span><span>        </span><span class="annot"><span class="annottext">SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#SubExp"><span class="hs-identifier hs-var">SubExp</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; BasicOp) -&gt; SubExp -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; VName -&gt; SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelInput -&gt; VName
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputArray"><span class="hs-identifier hs-var hs-var">kernelInputArray</span></a></span><span> </span><span class="annot"><span class="annottext">KernelInput
+</span><a href="#local-6989586621684400737"><span class="hs-identifier hs-var">inp</span></a></span><span>
+</span><span id="line-255"></span><span>      </span><span class="annot"><span class="annottext">Type
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-256"></span><span>        </span><span class="annot"><span class="annottext">VName -&gt; Slice SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Index"><span class="hs-identifier hs-var">Index</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelInput -&gt; VName
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputArray"><span class="hs-identifier hs-var hs-var">kernelInputArray</span></a></span><span> </span><span class="annot"><span class="annottext">KernelInput
+</span><a href="#local-6989586621684400737"><span class="hs-identifier hs-var">inp</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Slice SubExp -&gt; BasicOp)
+-&gt; ([DimIndex SubExp] -&gt; Slice SubExp)
+-&gt; [DimIndex SubExp]
+-&gt; BasicOp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[DimIndex SubExp] -&gt; Slice SubExp
+forall d. [DimIndex d] -&gt; Slice d
+</span><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-var">Slice</span></a></span><span> </span><span class="annot"><span class="annottext">([DimIndex SubExp] -&gt; BasicOp) -&gt; [DimIndex SubExp] -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-257"></span><span>          </span><span class="annot"><span class="annottext">(SubExp -&gt; DimIndex SubExp) -&gt; [SubExp] -&gt; [DimIndex SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; DimIndex SubExp
+forall d. d -&gt; DimIndex d
+</span><a href="Futhark.IR.Syntax.Core.html#DimFix"><span class="hs-identifier hs-var">DimFix</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelInput -&gt; [SubExp]
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputIndices"><span class="hs-identifier hs-var hs-var">kernelInputIndices</span></a></span><span> </span><span class="annot"><span class="annottext">KernelInput
+</span><a href="#local-6989586621684400737"><span class="hs-identifier hs-var">inp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-258"></span><span>            </span><span class="annot"><span class="annottext">[DimIndex SubExp] -&gt; [DimIndex SubExp] -&gt; [DimIndex SubExp]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; DimIndex SubExp) -&gt; [SubExp] -&gt; [DimIndex SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; DimIndex SubExp
+</span><a href="Futhark.Construct.html#sliceDim"><span class="hs-identifier hs-var">sliceDim</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase (ShapeBase SubExp) u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelInput -&gt; Type
+</span><a href="Futhark.Pass.ExtractKernels.BlockedKernel.html#kernelInputType"><span class="hs-identifier hs-var hs-var">kernelInputType</span></a></span><span> </span><span class="annot"><span class="annottext">KernelInput
+</span><a href="#local-6989586621684400737"><span class="hs-identifier hs-var">inp</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-259"></span></pre></body></html>

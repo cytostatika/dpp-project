@@ -1,0 +1,181 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | C code generator.  This module can convert a correct ImpCode</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- program to an equivalent C program.  This C program is expected to</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- be converted to WebAssembly, so we also produce the intended</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- JavaScript wrapper.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CodeGen.Backends.SequentialWASM</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.SequentialWASM.html#compileProg"><span class="hs-identifier">compileProg</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericWASM.html#runServer"><span class="hs-identifier">runServer</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericWASM.html#libraryExports"><span class="hs-identifier">libraryExports</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CParts"><span class="hs-identifier">GC.CParts</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#asLibrary"><span class="hs-identifier">GC.asLibrary</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#asExecutable"><span class="hs-identifier">GC.asExecutable</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#asServer"><span class="hs-identifier">GC.asServer</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html"><span class="hs-identifier">Futhark.CodeGen.Backends.GenericC</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">GC</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericWASM.html"><span class="hs-identifier">Futhark.CodeGen.Backends.GenericWASM</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.SequentialC.Boilerplate.html"><span class="hs-identifier">Futhark.CodeGen.Backends.SequentialC.Boilerplate</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.Sequential.html"><span class="hs-identifier">Futhark.CodeGen.ImpCode.Sequential</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Imp</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Sequential.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen.Sequential</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">ImpGen</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SeqMem.html"><span class="hs-identifier">Futhark.IR.SeqMem</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- | Compile the program to sequential C with a JavaScript wrapper.</span><span>
+</span><span id="line-29"></span><span id="local-6989586621684531005"><span class="annot"><a href="Futhark.CodeGen.Backends.SequentialWASM.html#compileProg"><span class="hs-identifier hs-type">compileProg</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684531005"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SeqMem.html#SeqMem"><span class="hs-identifier hs-type">SeqMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684531005"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Warnings.html#Warnings"><span class="hs-identifier hs-type">ImpGen.Warnings</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CParts"><span class="hs-identifier hs-type">GC.CParts</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span></span><span>
+</span><span id="line-30"></span><span id="compileProg"><span class="annot"><span class="annottext">compileProg :: forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Text -&gt; Prog SeqMem -&gt; m (Warnings, (CParts, Text, [String]))
+</span><a href="Futhark.CodeGen.Backends.SequentialWASM.html#compileProg"><span class="hs-identifier hs-var hs-var">compileProg</span></a></span></span><span> </span><span id="local-6989586621684530929"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684530929"><span class="hs-identifier hs-var">version</span></a></span></span><span> </span><span id="local-6989586621684530928"><span class="annot"><span class="annottext">Prog SeqMem
+</span><a href="#local-6989586621684530928"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-31"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684530927"><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684530927"><span class="hs-identifier hs-var">ws</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684530926"><span class="annot"><span class="annottext">Program
+</span><a href="#local-6989586621684530926"><span class="hs-identifier hs-var">prog'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Prog SeqMem -&gt; m (Warnings, Program)
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Prog SeqMem -&gt; m (Warnings, Program)
+</span><a href="Futhark.CodeGen.ImpGen.Sequential.html#compileProg"><span class="hs-identifier hs-var">ImpGen.compileProg</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SeqMem
+</span><a href="#local-6989586621684530928"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span>  </span><span id="local-6989586621684530924"><span class="annot"><span class="annottext">CParts
+</span><a href="#local-6989586621684530924"><span class="hs-identifier hs-var">prog''</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-34"></span><span>    </span><span class="annot"><span class="annottext">Text
+-&gt; Text
+-&gt; Operations Sequential ()
+-&gt; CompilerM Sequential () ()
+-&gt; Text
+-&gt; [Space]
+-&gt; [Option]
+-&gt; Program
+-&gt; m CParts
+forall (m :: * -&gt; *) op.
+MonadFreshNames m =&gt;
+Text
+-&gt; Text
+-&gt; Operations op ()
+-&gt; CompilerM op () ()
+-&gt; Text
+-&gt; [Space]
+-&gt; [Option]
+-&gt; Definitions op
+-&gt; m CParts
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileProg"><span class="hs-identifier hs-var">GC.compileProg</span></a></span><span>
+</span><span id="line-35"></span><span>      </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;wasm&quot;</span></span><span>
+</span><span id="line-36"></span><span>      </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684530929"><span class="hs-identifier hs-var">version</span></a></span><span>
+</span><span id="line-37"></span><span>      </span><span class="annot"><span class="annottext">Operations Sequential ()
+</span><a href="#local-6989586621684530922"><span class="hs-identifier hs-var">operations</span></a></span><span>
+</span><span id="line-38"></span><span>      </span><span class="annot"><span class="annottext">CompilerM Sequential () ()
+forall op s. CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.SequentialC.Boilerplate.html#generateBoilerplate"><span class="hs-identifier hs-var">generateBoilerplate</span></a></span><span>
+</span><span id="line-39"></span><span>      </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;&quot;</span></span><span>
+</span><span id="line-40"></span><span>      </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-41"></span><span>      </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-42"></span><span>      </span><span class="annot"><span class="annottext">Program
+</span><a href="#local-6989586621684530926"><span class="hs-identifier hs-var">prog'</span></a></span><span>
+</span><span id="line-43"></span><span>  </span><span class="annot"><span class="annottext">(Warnings, (CParts, Text, [String]))
+-&gt; m (Warnings, (CParts, Text, [String]))
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684530927"><span class="hs-identifier hs-var">ws</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CParts
+</span><a href="#local-6989586621684530924"><span class="hs-identifier hs-var">prog''</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[JSEntryPoint] -&gt; Text
+</span><a href="Futhark.CodeGen.Backends.GenericWASM.html#javascriptWrapper"><span class="hs-identifier hs-var">javascriptWrapper</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Program -&gt; [JSEntryPoint]
+</span><a href="Futhark.CodeGen.Backends.SequentialWASM.html#fRepMyRep"><span class="hs-identifier hs-var">fRepMyRep</span></a></span><span> </span><span class="annot"><span class="annottext">Program
+</span><a href="#local-6989586621684530926"><span class="hs-identifier hs-var">prog'</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[JSEntryPoint] -&gt; [String]
+</span><a href="Futhark.CodeGen.Backends.GenericWASM.html#emccExportNames"><span class="hs-identifier hs-var">emccExportNames</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Program -&gt; [JSEntryPoint]
+</span><a href="Futhark.CodeGen.Backends.SequentialWASM.html#fRepMyRep"><span class="hs-identifier hs-var">fRepMyRep</span></a></span><span> </span><span class="annot"><span class="annottext">Program
+</span><a href="#local-6989586621684530926"><span class="hs-identifier hs-var">prog'</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-45"></span><span>    </span><span class="annot"><a href="#local-6989586621684530922"><span class="hs-identifier hs-type">operations</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#Operations"><span class="hs-identifier hs-type">GC.Operations</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.Sequential.html#Sequential"><span class="hs-identifier hs-type">Imp.Sequential</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span>    </span><span id="local-6989586621684530922"><span class="annot"><span class="annottext">operations :: Operations Sequential ()
+</span><a href="#local-6989586621684530922"><span class="hs-identifier hs-var hs-var">operations</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-47"></span><span>      </span><span class="annot"><span class="annottext">Operations Sequential ()
+forall op s. Operations op s
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#defaultOperations"><span class="hs-identifier hs-var">GC.defaultOperations</span></a></span><span>
+</span><span id="line-48"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">opsCompiler :: OpCompiler Sequential ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#opsCompiler"><span class="hs-identifier hs-var">GC.opsCompiler</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CompilerM Sequential () () -&gt; OpCompiler Sequential ()
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">(CompilerM Sequential () () -&gt; OpCompiler Sequential ())
+-&gt; CompilerM Sequential () () -&gt; OpCompiler Sequential ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">() -&gt; CompilerM Sequential () ()
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="annot"><a href="Futhark.CodeGen.Backends.SequentialWASM.html#fRepMyRep"><span class="hs-identifier hs-type">fRepMyRep</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.Sequential.html#Program"><span class="hs-identifier hs-type">Imp.Program</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericWASM.html#JSEntryPoint"><span class="hs-identifier hs-type">JSEntryPoint</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-52"></span><span id="fRepMyRep"><span class="annot"><span class="annottext">fRepMyRep :: Program -&gt; [JSEntryPoint]
+</span><a href="Futhark.CodeGen.Backends.SequentialWASM.html#fRepMyRep"><span class="hs-identifier hs-var hs-var">fRepMyRep</span></a></span></span><span> </span><span id="local-6989586621684530913"><span class="annot"><span class="annottext">Program
+</span><a href="#local-6989586621684530913"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.html#Functions"><span class="hs-identifier hs-type">Imp.Functions</span></a></span><span> </span><span id="local-6989586621684530911"><span class="annot"><span class="annottext">[(Name, Function Sequential)]
+</span><a href="#local-6989586621684530911"><span class="hs-identifier hs-var">fs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Program -&gt; Functions Sequential
+forall a. Definitions a -&gt; Functions a
+</span><a href="Futhark.CodeGen.ImpCode.html#defFuns"><span class="hs-identifier hs-var hs-var">Imp.defFuns</span></a></span><span> </span><span class="annot"><span class="annottext">Program
+</span><a href="#local-6989586621684530913"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-54"></span><span>      </span><span id="local-6989586621684530907"><span class="annot"><span class="annottext">function :: FunctionT a -&gt; Maybe JSEntryPoint
+</span><a href="#local-6989586621684530907"><span class="hs-identifier hs-var hs-var">function</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.html#Function"><span class="hs-identifier hs-type">Imp.Function</span></a></span><span> </span><span id="local-6989586621684530905"><span class="annot"><span class="annottext">Maybe Name
+</span><a href="#local-6989586621684530905"><span class="hs-identifier hs-var">entry</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Param]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Param]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Code a
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684530904"><span class="annot"><span class="annottext">[ExternalValue]
+</span><a href="#local-6989586621684530904"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span id="local-6989586621684530903"><span class="annot"><span class="annottext">[(Name, ExternalValue)]
+</span><a href="#local-6989586621684530903"><span class="hs-identifier hs-var">args</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-55"></span><span>        </span><span id="local-6989586621684530902"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684530902"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe Name
+</span><a href="#local-6989586621684530905"><span class="hs-identifier hs-var">entry</span></a></span><span>
+</span><span id="line-56"></span><span>        </span><span class="annot"><span class="annottext">JSEntryPoint -&gt; Maybe JSEntryPoint
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(JSEntryPoint -&gt; Maybe JSEntryPoint)
+-&gt; JSEntryPoint -&gt; Maybe JSEntryPoint
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-57"></span><span>          </span><span class="annot"><span class="annottext">JSEntryPoint :: String -&gt; [String] -&gt; [String] -&gt; JSEntryPoint
+</span><a href="Futhark.CodeGen.Backends.GenericWASM.html#JSEntryPoint"><span class="hs-identifier hs-type">JSEntryPoint</span></a></span><span>
+</span><span id="line-58"></span><span>            </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">name :: String
+</span><a href="Futhark.CodeGen.Backends.GenericWASM.html#name"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Name -&gt; String
+</span><a href="Language.Futhark.Core.html#nameToString"><span class="hs-identifier hs-var">nameToString</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684530902"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-59"></span><span>              </span><span class="annot"><span class="annottext">parameters :: [String]
+</span><a href="Futhark.CodeGen.Backends.GenericWASM.html#parameters"><span class="hs-identifier hs-var">parameters</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((Name, ExternalValue) -&gt; String)
+-&gt; [(Name, ExternalValue)] -&gt; [String]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ExternalValue -&gt; String
+</span><a href="Futhark.CodeGen.Backends.GenericWASM.html#extToString"><span class="hs-identifier hs-var">extToString</span></a></span><span> </span><span class="annot"><span class="annottext">(ExternalValue -&gt; String)
+-&gt; ((Name, ExternalValue) -&gt; ExternalValue)
+-&gt; (Name, ExternalValue)
+-&gt; String
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Name, ExternalValue) -&gt; ExternalValue
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(Name, ExternalValue)]
+</span><a href="#local-6989586621684530903"><span class="hs-identifier hs-var">args</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-60"></span><span>              </span><span class="annot"><span class="annottext">ret :: [String]
+</span><a href="Futhark.CodeGen.Backends.GenericWASM.html#ret"><span class="hs-identifier hs-var">ret</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(ExternalValue -&gt; String) -&gt; [ExternalValue] -&gt; [String]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">ExternalValue -&gt; String
+</span><a href="Futhark.CodeGen.Backends.GenericWASM.html#extToString"><span class="hs-identifier hs-var">extToString</span></a></span><span> </span><span class="annot"><span class="annottext">[ExternalValue]
+</span><a href="#local-6989586621684530904"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-61"></span><span>            </span><span class="hs-special">}</span><span>
+</span><span id="line-62"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">((Name, Function Sequential) -&gt; Maybe JSEntryPoint)
+-&gt; [(Name, Function Sequential)] -&gt; [JSEntryPoint]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Function Sequential -&gt; Maybe JSEntryPoint
+forall {a}. FunctionT a -&gt; Maybe JSEntryPoint
+</span><a href="#local-6989586621684530907"><span class="hs-identifier hs-var">function</span></a></span><span> </span><span class="annot"><span class="annottext">(Function Sequential -&gt; Maybe JSEntryPoint)
+-&gt; ((Name, Function Sequential) -&gt; Function Sequential)
+-&gt; (Name, Function Sequential)
+-&gt; Maybe JSEntryPoint
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Name, Function Sequential) -&gt; Function Sequential
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(Name, Function Sequential)]
+</span><a href="#local-6989586621684530911"><span class="hs-identifier hs-var">fs</span></a></span><span>
+</span><span id="line-63"></span></pre></body></html>

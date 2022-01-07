@@ -1,0 +1,893 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | Sequentialise any remaining SOACs.  It is very important that</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- this is run *after* any access-pattern-related optimisation,</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- because this pass will destroy information.</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- This pass conceptually contains three subpasses:</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- 1. Sequentialise 'Stream' operations, leaving other SOACs intact.</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- 2. Apply whole-program simplification.</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- 3. Sequentialise remaining SOACs.</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- This is because sequentialisation of streams creates many SOACs</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- operating on single-element arrays, which can be efficiently</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- simplified away, but only *before* they are turned into loops.  In</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- principle this pass could be split into multiple, but for now it is</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- kept together.</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Optimise.Unstream</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Unstream.html#unstreamGPU"><span class="hs-identifier">unstreamGPU</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#unstreamMC"><span class="hs-identifier">unstreamMC</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html"><span class="hs-identifier">Futhark.IR.GPU</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html"><span class="hs-identifier">Futhark.IR.GPU</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">GPU</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html"><span class="hs-identifier">Futhark.IR.GPU.Simplify</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Simplify.html#simplifyGPU"><span class="hs-identifier">simplifyGPU</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.MC.html"><span class="hs-identifier">Futhark.IR.MC</span></a></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.MC.html"><span class="hs-identifier">Futhark.IR.MC</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">MC</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pass.html"><span class="hs-identifier">Futhark.Pass</span></a></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Tools.html"><span class="hs-identifier">Futhark.Tools</span></a></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Transform.FirstOrderTransform.html"><span class="hs-identifier">Futhark.Transform.FirstOrderTransform</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">FOT</span></span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- | The pass for GPU kernels.</span><span>
+</span><span id="line-36"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#unstreamGPU"><span class="hs-identifier hs-type">unstreamGPU</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span>
+</span><span id="line-37"></span><span id="unstreamGPU"><span class="annot"><span class="annottext">unstreamGPU :: Pass GPU GPU
+</span><a href="Futhark.Optimise.Unstream.html#unstreamGPU"><span class="hs-identifier hs-var hs-var">unstreamGPU</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Stage -&gt; OnOp GPU)
+-&gt; (Prog GPU -&gt; PassM (Prog GPU)) -&gt; Pass GPU GPU
+forall rep.
+ASTRep rep =&gt;
+(Stage -&gt; OnOp rep)
+-&gt; (Prog rep -&gt; PassM (Prog rep)) -&gt; Pass rep rep
+</span><a href="Futhark.Optimise.Unstream.html#unstream"><span class="hs-identifier hs-var">unstream</span></a></span><span> </span><span class="annot"><span class="annottext">Stage -&gt; OnOp GPU
+</span><a href="Futhark.Optimise.Unstream.html#onHostOp"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">Prog GPU -&gt; PassM (Prog GPU)
+</span><a href="Futhark.IR.GPU.Simplify.html#simplifyGPU"><span class="hs-identifier hs-var">simplifyGPU</span></a></span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- | The pass for multicore.</span><span>
+</span><span id="line-40"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#unstreamMC"><span class="hs-identifier hs-type">unstreamMC</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MC.html#MC"><span class="hs-identifier hs-type">MC</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MC.html#MC"><span class="hs-identifier hs-type">MC</span></a></span><span>
+</span><span id="line-41"></span><span id="unstreamMC"><span class="annot"><span class="annottext">unstreamMC :: Pass MC MC
+</span><a href="Futhark.Optimise.Unstream.html#unstreamMC"><span class="hs-identifier hs-var hs-var">unstreamMC</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Stage -&gt; OnOp MC) -&gt; (Prog MC -&gt; PassM (Prog MC)) -&gt; Pass MC MC
+forall rep.
+ASTRep rep =&gt;
+(Stage -&gt; OnOp rep)
+-&gt; (Prog rep -&gt; PassM (Prog rep)) -&gt; Pass rep rep
+</span><a href="Futhark.Optimise.Unstream.html#unstream"><span class="hs-identifier hs-var">unstream</span></a></span><span> </span><span class="annot"><span class="annottext">Stage -&gt; OnOp MC
+</span><a href="Futhark.Optimise.Unstream.html#onMCOp"><span class="hs-identifier hs-var">onMCOp</span></a></span><span> </span><span class="annot"><span class="annottext">Prog MC -&gt; PassM (Prog MC)
+</span><a href="Futhark.IR.MC.html#simplifyProg"><span class="hs-identifier hs-var">MC.simplifyProg</span></a></span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">data</span><span> </span><span id="Stage"><span class="annot"><a href="Futhark.Optimise.Unstream.html#Stage"><span class="hs-identifier hs-var">Stage</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="SeqStreams"><span class="annot"><a href="Futhark.Optimise.Unstream.html#SeqStreams"><span class="hs-identifier hs-var">SeqStreams</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="SeqAll"><span class="annot"><a href="Futhark.Optimise.Unstream.html#SeqAll"><span class="hs-identifier hs-var">SeqAll</span></a></span></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span id="local-6989586621684437726"><span class="annot"><a href="Futhark.Optimise.Unstream.html#unstream"><span class="hs-identifier hs-type">unstream</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-46"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437726"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Unstream.html#Stage"><span class="hs-identifier hs-type">Stage</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-type">OnOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437726"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-48"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437726"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437726"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-49"></span><span>  </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437726"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437726"><span class="hs-identifier hs-type">rep</span></a></span></span><span>
+</span><span id="line-50"></span><span id="unstream"><span class="annot"><span class="annottext">unstream :: forall rep.
+ASTRep rep =&gt;
+(Stage -&gt; OnOp rep)
+-&gt; (Prog rep -&gt; PassM (Prog rep)) -&gt; Pass rep rep
+</span><a href="Futhark.Optimise.Unstream.html#unstream"><span class="hs-identifier hs-var hs-var">unstream</span></a></span></span><span> </span><span id="local-6989586621684437454"><span class="annot"><span class="annottext">Stage -&gt; OnOp rep
+</span><a href="#local-6989586621684437454"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span id="local-6989586621684437453"><span class="annot"><span class="annottext">Prog rep -&gt; PassM (Prog rep)
+</span><a href="#local-6989586621684437453"><span class="hs-identifier hs-var">simplify</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-51"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; String -&gt; (Prog rep -&gt; PassM (Prog rep)) -&gt; Pass rep rep
+forall fromrep torep.
+String
+-&gt; String
+-&gt; (Prog fromrep -&gt; PassM (Prog torep))
+-&gt; Pass fromrep torep
+</span><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-var">Pass</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;unstream&quot;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;sequentialise remaining SOACs&quot;</span></span><span> </span><span class="annot"><span class="annottext">((Prog rep -&gt; PassM (Prog rep)) -&gt; Pass rep rep)
+-&gt; (Prog rep -&gt; PassM (Prog rep)) -&gt; Pass rep rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-52"></span><span>    </span><span class="annot"><span class="annottext">(Scope rep -&gt; Stms rep -&gt; PassM (Stms rep))
+-&gt; Prog rep -&gt; PassM (Prog rep)
+forall rep.
+(Scope rep -&gt; Stms rep -&gt; PassM (Stms rep))
+-&gt; Prog rep -&gt; PassM (Prog rep)
+</span><a href="Futhark.Pass.html#intraproceduralTransformation"><span class="hs-identifier hs-var">intraproceduralTransformation</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; Scope rep -&gt; Stms rep -&gt; PassM (Stms rep)
+</span><a href="#local-6989586621684437450"><span class="hs-identifier hs-var">optimise</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="Futhark.Optimise.Unstream.html#SeqStreams"><span class="hs-identifier hs-var">SeqStreams</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-53"></span><span>      </span><span class="annot"><span class="annottext">(Prog rep -&gt; PassM (Prog rep))
+-&gt; (Prog rep -&gt; PassM (Prog rep)) -&gt; Prog rep -&gt; PassM (Prog rep)
+forall (m :: * -&gt; *) a b c.
+Monad m =&gt;
+(a -&gt; m b) -&gt; (b -&gt; m c) -&gt; a -&gt; m c
+</span><span class="hs-operator hs-var">&gt;=&gt;</span></span><span> </span><span class="annot"><span class="annottext">Prog rep -&gt; PassM (Prog rep)
+</span><a href="#local-6989586621684437453"><span class="hs-identifier hs-var">simplify</span></a></span><span>
+</span><span id="line-54"></span><span>      </span><span class="annot"><span class="annottext">(Prog rep -&gt; PassM (Prog rep))
+-&gt; (Prog rep -&gt; PassM (Prog rep)) -&gt; Prog rep -&gt; PassM (Prog rep)
+forall (m :: * -&gt; *) a b c.
+Monad m =&gt;
+(a -&gt; m b) -&gt; (b -&gt; m c) -&gt; a -&gt; m c
+</span><span class="hs-operator hs-var">&gt;=&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Stms rep -&gt; PassM (Stms rep))
+-&gt; Prog rep -&gt; PassM (Prog rep)
+forall rep.
+(Scope rep -&gt; Stms rep -&gt; PassM (Stms rep))
+-&gt; Prog rep -&gt; PassM (Prog rep)
+</span><a href="Futhark.Pass.html#intraproceduralTransformation"><span class="hs-identifier hs-var">intraproceduralTransformation</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; Scope rep -&gt; Stms rep -&gt; PassM (Stms rep)
+</span><a href="#local-6989586621684437450"><span class="hs-identifier hs-var">optimise</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="Futhark.Optimise.Unstream.html#SeqAll"><span class="hs-identifier hs-var">SeqAll</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-56"></span><span>    </span><span id="local-6989586621684437450"><span class="annot"><span class="annottext">optimise :: Stage -&gt; Scope rep -&gt; Stms rep -&gt; PassM (Stms rep)
+</span><a href="#local-6989586621684437450"><span class="hs-identifier hs-var hs-var">optimise</span></a></span></span><span> </span><span id="local-6989586621684437448"><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437448"><span class="hs-identifier hs-var">stage</span></a></span></span><span> </span><span id="local-6989586621684437447"><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684437447"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span id="local-6989586621684437446"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437446"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-57"></span><span>      </span><span class="annot"><span class="annottext">(VNameSource -&gt; (Stms rep, VNameSource)) -&gt; PassM (Stms rep)
+forall (m :: * -&gt; *) a.
+MonadFreshNames m =&gt;
+(VNameSource -&gt; (a, VNameSource)) -&gt; m a
+</span><a href="Futhark.MonadFreshNames.html#modifyNameSource"><span class="hs-identifier hs-var">modifyNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">((VNameSource -&gt; (Stms rep, VNameSource)) -&gt; PassM (Stms rep))
+-&gt; (VNameSource -&gt; (Stms rep, VNameSource)) -&gt; PassM (Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-58"></span><span>        </span><span class="annot"><span class="annottext">State VNameSource (Stms rep)
+-&gt; VNameSource -&gt; (Stms rep, VNameSource)
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><span class="hs-identifier hs-var">runState</span></span><span> </span><span class="annot"><span class="annottext">(State VNameSource (Stms rep)
+ -&gt; VNameSource -&gt; (Stms rep, VNameSource))
+-&gt; State VNameSource (Stms rep)
+-&gt; VNameSource
+-&gt; (Stms rep, VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-59"></span><span>          </span><span class="annot"><span class="annottext">ReaderT (Scope rep) (State VNameSource) (Stms rep)
+-&gt; Scope rep -&gt; State VNameSource (Stms rep)
+forall r (m :: * -&gt; *) a. ReaderT r m a -&gt; r -&gt; m a
+</span><span class="hs-identifier hs-var hs-var">runReaderT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OnOp rep
+-&gt; Stms rep -&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Stms rep -&gt; UnstreamM rep (Stms rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseStms"><span class="hs-identifier hs-var">optimiseStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; OnOp rep
+</span><a href="#local-6989586621684437454"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437448"><span class="hs-identifier hs-var">stage</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437446"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684437447"><span class="hs-identifier hs-var">scope</span></a></span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="hs-keyword">type</span><span> </span><span id="UnstreamM"><span class="annot"><a href="Futhark.Optimise.Unstream.html#UnstreamM"><span class="hs-identifier hs-var">UnstreamM</span></a></span></span><span> </span><span id="local-6989586621684437441"><span class="annot"><a href="#local-6989586621684437441"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ReaderT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437441"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">State</span></span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-keyword">type</span><span> </span><span id="OnOp"><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-var">OnOp</span></a></span></span><span> </span><span id="local-6989586621684437440"><span class="annot"><a href="#local-6989586621684437440"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-64"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437440"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437440"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437440"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#UnstreamM"><span class="hs-identifier hs-type">UnstreamM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437440"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437440"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span id="local-6989586621684437707"><span class="annot"><a href="Futhark.Optimise.Unstream.html#optimiseStms"><span class="hs-identifier hs-type">optimiseStms</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-67"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437707"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-type">OnOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437707"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437707"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-70"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#UnstreamM"><span class="hs-identifier hs-type">UnstreamM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437707"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437707"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-71"></span><span id="optimiseStms"><span class="annot"><span class="annottext">optimiseStms :: forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Stms rep -&gt; UnstreamM rep (Stms rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseStms"><span class="hs-identifier hs-var hs-var">optimiseStms</span></a></span></span><span> </span><span id="local-6989586621684437429"><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437429"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span id="local-6989586621684437428"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437428"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-72"></span><span>  </span><span class="annot"><span class="annottext">Scope rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep -&gt; Scope rep
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437428"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope rep) (State VNameSource) (Stms rep)
+ -&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep))
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-73"></span><span>    </span><span class="annot"><span class="annottext">[Stm rep] -&gt; Stms rep
+forall rep. [Stm rep] -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#stmsFromList"><span class="hs-identifier hs-var">stmsFromList</span></a></span><span> </span><span class="annot"><span class="annottext">([Stm rep] -&gt; Stms rep)
+-&gt; ([[Stm rep]] -&gt; [Stm rep]) -&gt; [[Stm rep]] -&gt; Stms rep
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[[Stm rep]] -&gt; [Stm rep]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">([[Stm rep]] -&gt; Stms rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) [[Stm rep]]
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Stm rep -&gt; ReaderT (Scope rep) (State VNameSource) [Stm rep])
+-&gt; [Stm rep] -&gt; ReaderT (Scope rep) (State VNameSource) [[Stm rep]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OnOp rep
+-&gt; Stm rep -&gt; ReaderT (Scope rep) (State VNameSource) [Stm rep]
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Stm rep -&gt; UnstreamM rep [Stm rep]
+</span><a href="Futhark.Optimise.Unstream.html#optimiseStm"><span class="hs-identifier hs-var">optimiseStm</span></a></span><span> </span><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437429"><span class="hs-identifier hs-var">onOp</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep -&gt; [Stm rep]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437428"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span id="local-6989586621684437682"><span class="annot"><a href="Futhark.Optimise.Unstream.html#optimiseBody"><span class="hs-identifier hs-type">optimiseBody</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-76"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437682"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-77"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-type">OnOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437682"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-78"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437682"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-79"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#UnstreamM"><span class="hs-identifier hs-type">UnstreamM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437682"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437682"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-80"></span><span id="optimiseBody"><span class="annot"><span class="annottext">optimiseBody :: forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Body rep -&gt; UnstreamM rep (Body rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseBody"><span class="hs-identifier hs-var hs-var">optimiseBody</span></a></span></span><span> </span><span id="local-6989586621684437412"><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437412"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span id="local-6989586621684437410"><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684437410"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span id="local-6989586621684437409"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437409"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span id="local-6989586621684437408"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684437408"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-81"></span><span>  </span><span class="annot"><span class="annottext">BodyDec rep -&gt; Stms rep -&gt; Result -&gt; BodyT rep
+forall rep. BodyDec rep -&gt; Stms rep -&gt; Result -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-var">Body</span></a></span><span> </span><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684437410"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms rep -&gt; Result -&gt; BodyT rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (Result -&gt; BodyT rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">OnOp rep
+-&gt; Stms rep -&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Stms rep -&gt; UnstreamM rep (Stms rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseStms"><span class="hs-identifier hs-var">optimiseStms</span></a></span><span> </span><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437412"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437409"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">ReaderT (Scope rep) (State VNameSource) (Result -&gt; BodyT rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) Result
+-&gt; ReaderT (Scope rep) (State VNameSource) (BodyT rep)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">Result -&gt; ReaderT (Scope rep) (State VNameSource) Result
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684437408"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span id="local-6989586621684437671"><span class="annot"><a href="Futhark.Optimise.Unstream.html#optimiseKernelBody"><span class="hs-identifier hs-type">optimiseKernelBody</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-84"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437671"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-85"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-type">OnOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437671"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-86"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437671"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-87"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#UnstreamM"><span class="hs-identifier hs-type">UnstreamM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437671"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437671"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-88"></span><span id="optimiseKernelBody"><span class="annot"><span class="annottext">optimiseKernelBody :: forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; KernelBody rep -&gt; UnstreamM rep (KernelBody rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseKernelBody"><span class="hs-identifier hs-var hs-var">optimiseKernelBody</span></a></span></span><span> </span><span id="local-6989586621684437394"><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437394"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span id="local-6989586621684437392"><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684437392"><span class="hs-identifier hs-var">attr</span></a></span></span><span> </span><span id="local-6989586621684437391"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437391"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span id="local-6989586621684437390"><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684437390"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><span class="annottext">Scope rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (KernelBody rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (KernelBody rep)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep -&gt; Scope rep
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437391"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope rep) (State VNameSource) (KernelBody rep)
+ -&gt; ReaderT (Scope rep) (State VNameSource) (KernelBody rep))
+-&gt; ReaderT (Scope rep) (State VNameSource) (KernelBody rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (KernelBody rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-90"></span><span>    </span><span class="annot"><span class="annottext">BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+forall rep.
+BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+</span><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-var">KernelBody</span></a></span><span> </span><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684437392"><span class="hs-identifier hs-var">attr</span></a></span><span>
+</span><span id="line-91"></span><span>      </span><span class="annot"><span class="annottext">(Stms rep -&gt; [KernelResult] -&gt; KernelBody rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+-&gt; ReaderT
+     (Scope rep) (State VNameSource) ([KernelResult] -&gt; KernelBody rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Stm rep] -&gt; Stms rep
+forall rep. [Stm rep] -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#stmsFromList"><span class="hs-identifier hs-var">stmsFromList</span></a></span><span> </span><span class="annot"><span class="annottext">([Stm rep] -&gt; Stms rep)
+-&gt; ([[Stm rep]] -&gt; [Stm rep]) -&gt; [[Stm rep]] -&gt; Stms rep
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[[Stm rep]] -&gt; [Stm rep]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">([[Stm rep]] -&gt; Stms rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) [[Stm rep]]
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stms rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Stm rep -&gt; ReaderT (Scope rep) (State VNameSource) [Stm rep])
+-&gt; [Stm rep] -&gt; ReaderT (Scope rep) (State VNameSource) [[Stm rep]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OnOp rep
+-&gt; Stm rep -&gt; ReaderT (Scope rep) (State VNameSource) [Stm rep]
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Stm rep -&gt; UnstreamM rep [Stm rep]
+</span><a href="Futhark.Optimise.Unstream.html#optimiseStm"><span class="hs-identifier hs-var">optimiseStm</span></a></span><span> </span><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437394"><span class="hs-identifier hs-var">onOp</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep -&gt; [Stm rep]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684437391"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span>      </span><span class="annot"><span class="annottext">ReaderT
+  (Scope rep) (State VNameSource) ([KernelResult] -&gt; KernelBody rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) [KernelResult]
+-&gt; ReaderT (Scope rep) (State VNameSource) (KernelBody rep)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">[KernelResult]
+-&gt; ReaderT (Scope rep) (State VNameSource) [KernelResult]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684437390"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span id="local-6989586621684437666"><span class="annot"><a href="Futhark.Optimise.Unstream.html#optimiseLambda"><span class="hs-identifier hs-type">optimiseLambda</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-95"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437666"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-96"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-type">OnOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437666"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-97"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437666"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-98"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#UnstreamM"><span class="hs-identifier hs-type">UnstreamM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437666"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437666"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-99"></span><span id="optimiseLambda"><span class="annot"><span class="annottext">optimiseLambda :: forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Lambda rep -&gt; UnstreamM rep (Lambda rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseLambda"><span class="hs-identifier hs-var hs-var">optimiseLambda</span></a></span></span><span> </span><span id="local-6989586621684437379"><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437379"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span id="local-6989586621684437378"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684437378"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (Lambda rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (Lambda rep)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param (LParamInfo rep)] -&gt; Scope rep
+forall rep dec. (LParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-var">scopeOfLParams</span></a></span><span> </span><span class="annot"><span class="annottext">([Param (LParamInfo rep)] -&gt; Scope rep)
+-&gt; [Param (LParamInfo rep)] -&gt; Scope rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; [Param (LParamInfo rep)]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684437378"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope rep) (State VNameSource) (Lambda rep)
+ -&gt; ReaderT (Scope rep) (State VNameSource) (Lambda rep))
+-&gt; ReaderT (Scope rep) (State VNameSource) (Lambda rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (Lambda rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-100"></span><span>  </span><span id="local-6989586621684437375"><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684437375"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">OnOp rep -&gt; Body rep -&gt; UnstreamM rep (Body rep)
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Body rep -&gt; UnstreamM rep (Body rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseBody"><span class="hs-identifier hs-var">optimiseBody</span></a></span><span> </span><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437379"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">(Body rep -&gt; UnstreamM rep (Body rep))
+-&gt; Body rep -&gt; UnstreamM rep (Body rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; Body rep
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684437378"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-101"></span><span>  </span><span class="annot"><span class="annottext">Lambda rep -&gt; ReaderT (Scope rep) (State VNameSource) (Lambda rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684437378"><span class="hs-identifier hs-var">lam</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">lambdaBody :: Body rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var">lambdaBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684437375"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-102"></span><span>
+</span><span id="line-103"></span><span id="local-6989586621684437684"><span class="annot"><a href="Futhark.Optimise.Unstream.html#optimiseStm"><span class="hs-identifier hs-type">optimiseStm</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-104"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437684"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-105"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-type">OnOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437684"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-106"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437684"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-107"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#UnstreamM"><span class="hs-identifier hs-type">UnstreamM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437684"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437684"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-108"></span><span id="optimiseStm"><span class="annot"><span class="annottext">optimiseStm :: forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Stm rep -&gt; UnstreamM rep [Stm rep]
+</span><a href="Futhark.Optimise.Unstream.html#optimiseStm"><span class="hs-identifier hs-var hs-var">optimiseStm</span></a></span></span><span> </span><span id="local-6989586621684437363"><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437363"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684437361"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684437361"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684437360"><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684437360"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span id="local-6989586621684437358"><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684437358"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-109"></span><span>  </span><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437363"><span class="hs-identifier hs-var">onOp</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684437361"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684437360"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684437358"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-110"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#optimiseStm"><span class="hs-identifier hs-var">optimiseStm</span></a></span><span> </span><span id="local-6989586621684437357"><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437357"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684437356"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684437356"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684437355"><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684437355"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span id="local-6989586621684437354"><span class="annot"><span class="annottext">ExpT rep
+</span><a href="#local-6989586621684437354"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-111"></span><span>  </span><span class="annot"><span class="annottext">Stm rep -&gt; [Stm rep]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Stm rep -&gt; [Stm rep])
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stm rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) [Stm rep]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat rep -&gt; StmAux (ExpDec rep) -&gt; ExpT rep -&gt; Stm rep
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684437356"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684437355"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(ExpT rep -&gt; Stm rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (ExpT rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (Stm rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Mapper rep rep (ReaderT (Scope rep) (State VNameSource))
+-&gt; ExpT rep -&gt; ReaderT (Scope rep) (State VNameSource) (ExpT rep)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+Mapper frep trep m -&gt; Exp frep -&gt; m (Exp trep)
+</span><a href="Futhark.IR.Traversals.html#mapExpM"><span class="hs-identifier hs-var">mapExpM</span></a></span><span> </span><span class="annot"><span class="annottext">Mapper rep rep (ReaderT (Scope rep) (State VNameSource))
+</span><a href="#local-6989586621684437352"><span class="hs-identifier hs-var">optimise</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT rep
+</span><a href="#local-6989586621684437354"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-113"></span><span>    </span><span id="local-6989586621684437352"><span class="annot"><span class="annottext">optimise :: Mapper rep rep (ReaderT (Scope rep) (State VNameSource))
+</span><a href="#local-6989586621684437352"><span class="hs-identifier hs-var hs-var">optimise</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-114"></span><span>      </span><span class="annot"><span class="annottext">Mapper rep rep (ReaderT (Scope rep) (State VNameSource))
+forall (m :: * -&gt; *) rep. Monad m =&gt; Mapper rep rep m
+</span><a href="Futhark.IR.Traversals.html#identityMapper"><span class="hs-identifier hs-var">identityMapper</span></a></span><span>
+</span><span id="line-115"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnBody :: Scope rep
+-&gt; Body rep -&gt; ReaderT (Scope rep) (State VNameSource) (Body rep)
+</span><a href="Futhark.IR.Traversals.html#mapOnBody"><span class="hs-identifier hs-var">mapOnBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684437349"><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684437349"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-116"></span><span>            </span><span class="annot"><span class="annottext">Scope rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (Body rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (Body rep)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684437349"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope rep) (State VNameSource) (Body rep)
+ -&gt; ReaderT (Scope rep) (State VNameSource) (Body rep))
+-&gt; (Body rep -&gt; ReaderT (Scope rep) (State VNameSource) (Body rep))
+-&gt; Body rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (Body rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">OnOp rep
+-&gt; Body rep -&gt; ReaderT (Scope rep) (State VNameSource) (Body rep)
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Body rep -&gt; UnstreamM rep (Body rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseBody"><span class="hs-identifier hs-var">optimiseBody</span></a></span><span> </span><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437357"><span class="hs-identifier hs-var">onOp</span></a></span><span>
+</span><span id="line-117"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span id="local-6989586621684437640"><span id="local-6989586621684437641"><span class="annot"><a href="Futhark.Optimise.Unstream.html#optimiseSegOp"><span class="hs-identifier hs-type">optimiseSegOp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-120"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437641"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-121"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-type">OnOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437641"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-122"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437640"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437641"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-123"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#UnstreamM"><span class="hs-identifier hs-type">UnstreamM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437641"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437640"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437641"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-124"></span><span id="optimiseSegOp"><span class="annot"><span class="annottext">optimiseSegOp :: forall rep lvl.
+ASTRep rep =&gt;
+OnOp rep -&gt; SegOp lvl rep -&gt; UnstreamM rep (SegOp lvl rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseSegOp"><span class="hs-identifier hs-var hs-var">optimiseSegOp</span></a></span></span><span> </span><span id="local-6989586621684437339"><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437339"><span class="hs-identifier hs-var">onOp</span></a></span></span><span> </span><span id="local-6989586621684437338"><span class="annot"><span class="annottext">SegOp lvl rep
+</span><a href="#local-6989586621684437338"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-125"></span><span>  </span><span class="annot"><span class="annottext">Scope rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (SegOp lvl rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (SegOp lvl rep)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; Scope rep
+forall rep. SegSpace -&gt; Scope rep
+</span><a href="Futhark.IR.SegOp.html#scopeOfSegSpace"><span class="hs-identifier hs-var">scopeOfSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">(SegSpace -&gt; Scope rep) -&gt; SegSpace -&gt; Scope rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOp lvl rep -&gt; SegSpace
+forall lvl rep. SegOp lvl rep -&gt; SegSpace
+</span><a href="Futhark.IR.SegOp.html#segSpace"><span class="hs-identifier hs-var">segSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp lvl rep
+</span><a href="#local-6989586621684437338"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope rep) (State VNameSource) (SegOp lvl rep)
+ -&gt; ReaderT (Scope rep) (State VNameSource) (SegOp lvl rep))
+-&gt; ReaderT (Scope rep) (State VNameSource) (SegOp lvl rep)
+-&gt; ReaderT (Scope rep) (State VNameSource) (SegOp lvl rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOpMapper lvl rep rep (ReaderT (Scope rep) (State VNameSource))
+-&gt; SegOp lvl rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (SegOp lvl rep)
+forall (m :: * -&gt; *) lvl frep trep.
+(Applicative m, Monad m) =&gt;
+SegOpMapper lvl frep trep m -&gt; SegOp lvl frep -&gt; m (SegOp lvl trep)
+</span><a href="Futhark.IR.SegOp.html#mapSegOpM"><span class="hs-identifier hs-var">mapSegOpM</span></a></span><span> </span><span class="annot"><span class="annottext">SegOpMapper lvl rep rep (ReaderT (Scope rep) (State VNameSource))
+</span><a href="#local-6989586621684437334"><span class="hs-identifier hs-var">optimise</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp lvl rep
+</span><a href="#local-6989586621684437338"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-126"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-127"></span><span>    </span><span id="local-6989586621684437334"><span class="annot"><span class="annottext">optimise :: SegOpMapper lvl rep rep (ReaderT (Scope rep) (State VNameSource))
+</span><a href="#local-6989586621684437334"><span class="hs-identifier hs-var hs-var">optimise</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-128"></span><span>      </span><span class="annot"><span class="annottext">SegOpMapper lvl Any Any (ReaderT (Scope rep) (State VNameSource))
+forall (m :: * -&gt; *) lvl rep. Monad m =&gt; SegOpMapper lvl rep rep m
+</span><a href="Futhark.IR.SegOp.html#identitySegOpMapper"><span class="hs-identifier hs-var">identitySegOpMapper</span></a></span><span>
+</span><span id="line-129"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSegOpBody :: KernelBody rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (KernelBody rep)
+</span><a href="Futhark.IR.SegOp.html#mapOnSegOpBody"><span class="hs-identifier hs-var">mapOnSegOpBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OnOp rep
+-&gt; KernelBody rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (KernelBody rep)
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; KernelBody rep -&gt; UnstreamM rep (KernelBody rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseKernelBody"><span class="hs-identifier hs-var">optimiseKernelBody</span></a></span><span> </span><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437339"><span class="hs-identifier hs-var">onOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-130"></span><span>          </span><span class="annot"><span class="annottext">mapOnSegOpLambda :: Lambda rep -&gt; ReaderT (Scope rep) (State VNameSource) (Lambda rep)
+</span><a href="Futhark.IR.SegOp.html#mapOnSegOpLambda"><span class="hs-identifier hs-var">mapOnSegOpLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OnOp rep
+-&gt; Lambda rep
+-&gt; ReaderT (Scope rep) (State VNameSource) (Lambda rep)
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Lambda rep -&gt; UnstreamM rep (Lambda rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseLambda"><span class="hs-identifier hs-var">optimiseLambda</span></a></span><span> </span><span class="annot"><span class="annottext">OnOp rep
+</span><a href="#local-6989586621684437339"><span class="hs-identifier hs-var">onOp</span></a></span><span>
+</span><span id="line-131"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#onMCOp"><span class="hs-identifier hs-type">onMCOp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#Stage"><span class="hs-identifier hs-type">Stage</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-type">OnOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MC.html#MC"><span class="hs-identifier hs-type">MC</span></a></span><span>
+</span><span id="line-134"></span><span id="onMCOp"><span class="annot"><span class="annottext">onMCOp :: Stage -&gt; OnOp MC
+</span><a href="Futhark.Optimise.Unstream.html#onMCOp"><span class="hs-identifier hs-var hs-var">onMCOp</span></a></span></span><span> </span><span id="local-6989586621684437330"><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437330"><span class="hs-identifier hs-var">stage</span></a></span></span><span> </span><span id="local-6989586621684437329"><span class="annot"><span class="annottext">Pat MC
+</span><a href="#local-6989586621684437329"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684437328"><span class="annot"><span class="annottext">StmAux (ExpDec MC)
+</span><a href="#local-6989586621684437328"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684437326"><span class="annot"><span class="annottext">Maybe (SegOp () MC)
+</span><a href="#local-6989586621684437326"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684437325"><span class="annot"><span class="annottext">SegOp () MC
+</span><a href="#local-6989586621684437325"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-135"></span><span>  </span><span id="local-6989586621684437324"><span class="annot"><span class="annottext">Maybe (SegOp () MC)
+</span><a href="#local-6989586621684437324"><span class="hs-identifier hs-var">par_op'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(SegOp () MC
+ -&gt; ReaderT (Scope MC) (State VNameSource) (SegOp () MC))
+-&gt; Maybe (SegOp () MC)
+-&gt; ReaderT (Scope MC) (State VNameSource) (Maybe (SegOp () MC))
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f (t b)
+</span><span class="hs-identifier hs-var">traverse</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OnOp MC
+-&gt; SegOp () MC
+-&gt; ReaderT (Scope MC) (State VNameSource) (SegOp () MC)
+forall rep lvl.
+ASTRep rep =&gt;
+OnOp rep -&gt; SegOp lvl rep -&gt; UnstreamM rep (SegOp lvl rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseSegOp"><span class="hs-identifier hs-var">optimiseSegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; OnOp MC
+</span><a href="Futhark.Optimise.Unstream.html#onMCOp"><span class="hs-identifier hs-var">onMCOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437330"><span class="hs-identifier hs-var">stage</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () MC)
+</span><a href="#local-6989586621684437326"><span class="hs-identifier hs-var">par_op</span></a></span><span>
+</span><span id="line-136"></span><span>  </span><span id="local-6989586621684437322"><span class="annot"><span class="annottext">SegOp () MC
+</span><a href="#local-6989586621684437322"><span class="hs-identifier hs-var">op'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">OnOp MC
+-&gt; SegOp () MC
+-&gt; ReaderT (Scope MC) (State VNameSource) (SegOp () MC)
+forall rep lvl.
+ASTRep rep =&gt;
+OnOp rep -&gt; SegOp lvl rep -&gt; UnstreamM rep (SegOp lvl rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseSegOp"><span class="hs-identifier hs-var">optimiseSegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; OnOp MC
+</span><a href="Futhark.Optimise.Unstream.html#onMCOp"><span class="hs-identifier hs-var">onMCOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437330"><span class="hs-identifier hs-var">stage</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SegOp () MC
+</span><a href="#local-6989586621684437325"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-137"></span><span>  </span><span class="annot"><span class="annottext">[Stm MC] -&gt; UnstreamM MC [Stm MC]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Pat MC -&gt; StmAux (ExpDec MC) -&gt; Exp MC -&gt; Stm MC
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat MC
+</span><a href="#local-6989586621684437329"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec MC)
+</span><a href="#local-6989586621684437328"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp MC -&gt; Stm MC) -&gt; Exp MC -&gt; Stm MC
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Op MC -&gt; Exp MC
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op MC -&gt; Exp MC) -&gt; Op MC -&gt; Exp MC
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () MC) -&gt; SegOp () MC -&gt; MCOp MC (SOAC MC)
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () MC)
+</span><a href="#local-6989586621684437324"><span class="hs-identifier hs-var">par_op'</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () MC
+</span><a href="#local-6989586621684437322"><span class="hs-identifier hs-var">op'</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-138"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#onMCOp"><span class="hs-identifier hs-var">onMCOp</span></a></span><span> </span><span id="local-6989586621684437321"><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437321"><span class="hs-identifier hs-var">stage</span></a></span></span><span> </span><span id="local-6989586621684437320"><span class="annot"><span class="annottext">Pat MC
+</span><a href="#local-6989586621684437320"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684437319"><span class="annot"><span class="annottext">StmAux (ExpDec MC)
+</span><a href="#local-6989586621684437319"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">MC.OtherOp</span></a></span><span> </span><span id="local-6989586621684437317"><span class="annot"><span class="annottext">SOAC MC
+</span><a href="#local-6989586621684437317"><span class="hs-identifier hs-var">soac</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Stage -&gt; SOAC MC -&gt; Bool
+forall rep. Stage -&gt; SOAC rep -&gt; Bool
+</span><a href="Futhark.Optimise.Unstream.html#sequentialise"><span class="hs-identifier hs-var">sequentialise</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437321"><span class="hs-identifier hs-var">stage</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC MC
+</span><a href="#local-6989586621684437317"><span class="hs-identifier hs-var">soac</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-140"></span><span>    </span><span id="local-6989586621684437315"><span class="annot"><span class="annottext">Stms MC
+</span><a href="#local-6989586621684437315"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Builder MC () -&gt; ReaderT (Scope MC) (State VNameSource) (Stms MC)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var">runBuilder_</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder MC () -&gt; ReaderT (Scope MC) (State VNameSource) (Stms MC))
+-&gt; Builder MC ()
+-&gt; ReaderT (Scope MC) (State VNameSource) (Stms MC)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT MC (State VNameSource)))
+-&gt; SOAC (Rep (BuilderT MC (State VNameSource))) -&gt; Builder MC ()
+forall (m :: * -&gt; *).
+Transformer m =&gt;
+Pat (Rep m) -&gt; SOAC (Rep m) -&gt; m ()
+</span><a href="Futhark.Transform.FirstOrderTransform.html#transformSOAC"><span class="hs-identifier hs-var">FOT.transformSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT MC (State VNameSource)))
+Pat MC
+</span><a href="#local-6989586621684437320"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC (Rep (BuilderT MC (State VNameSource)))
+SOAC MC
+</span><a href="#local-6989586621684437317"><span class="hs-identifier hs-var">soac</span></a></span><span>
+</span><span id="line-141"></span><span>    </span><span class="annot"><span class="annottext">([[Stm MC]] -&gt; [Stm MC])
+-&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+-&gt; UnstreamM MC [Stm MC]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">[[Stm MC]] -&gt; [Stm MC]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+ -&gt; UnstreamM MC [Stm MC])
+-&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+-&gt; UnstreamM MC [Stm MC]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-142"></span><span>      </span><span class="annot"><span class="annottext">Scope MC
+-&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+-&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms MC -&gt; Scope MC
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms MC
+</span><a href="#local-6989586621684437315"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+ -&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]])
+-&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+-&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-143"></span><span>        </span><span class="annot"><span class="annottext">(Stm MC -&gt; UnstreamM MC [Stm MC])
+-&gt; [Stm MC] -&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OnOp MC -&gt; Stm MC -&gt; UnstreamM MC [Stm MC]
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Stm rep -&gt; UnstreamM rep [Stm rep]
+</span><a href="Futhark.Optimise.Unstream.html#optimiseStm"><span class="hs-identifier hs-var">optimiseStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; OnOp MC
+</span><a href="Futhark.Optimise.Unstream.html#onMCOp"><span class="hs-identifier hs-var">onMCOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437321"><span class="hs-identifier hs-var">stage</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Stm MC] -&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]])
+-&gt; [Stm MC] -&gt; ReaderT (Scope MC) (State VNameSource) [[Stm MC]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stms MC -&gt; [Stm MC]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">Stms MC
+</span><a href="#local-6989586621684437315"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-144"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-145"></span><span>    </span><span class="hs-comment">-- Still sequentialise whatever's inside.</span><span>
+</span><span id="line-146"></span><span>    </span><span class="annot"><span class="annottext">Stm MC -&gt; [Stm MC]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Stm MC -&gt; [Stm MC])
+-&gt; ReaderT (Scope MC) (State VNameSource) (Stm MC)
+-&gt; UnstreamM MC [Stm MC]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat MC -&gt; StmAux (ExpDec MC) -&gt; Exp MC -&gt; Stm MC
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat MC
+</span><a href="#local-6989586621684437320"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec MC)
+</span><a href="#local-6989586621684437319"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp MC -&gt; Stm MC) -&gt; (SOAC MC -&gt; Exp MC) -&gt; SOAC MC -&gt; Stm MC
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">MCOp MC (SOAC MC) -&gt; Exp MC
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(MCOp MC (SOAC MC) -&gt; Exp MC)
+-&gt; (SOAC MC -&gt; MCOp MC (SOAC MC)) -&gt; SOAC MC -&gt; Exp MC
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SOAC MC -&gt; MCOp MC (SOAC MC)
+forall rep op. op -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">MC.OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SOAC MC -&gt; Stm MC)
+-&gt; ReaderT (Scope MC) (State VNameSource) (SOAC MC)
+-&gt; ReaderT (Scope MC) (State VNameSource) (Stm MC)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SOACMapper MC MC (ReaderT (Scope MC) (State VNameSource))
+-&gt; SOAC MC -&gt; ReaderT (Scope MC) (State VNameSource) (SOAC MC)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+SOACMapper frep trep m -&gt; SOAC frep -&gt; m (SOAC trep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapSOACM"><span class="hs-identifier hs-var">mapSOACM</span></a></span><span> </span><span class="annot"><span class="annottext">SOACMapper MC MC (ReaderT (Scope MC) (State VNameSource))
+</span><a href="#local-6989586621684437311"><span class="hs-identifier hs-var">optimise</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC MC
+</span><a href="#local-6989586621684437317"><span class="hs-identifier hs-var">soac</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-148"></span><span>    </span><span id="local-6989586621684437311"><span class="annot"><span class="annottext">optimise :: SOACMapper MC MC (ReaderT (Scope MC) (State VNameSource))
+</span><a href="#local-6989586621684437311"><span class="hs-identifier hs-var hs-var">optimise</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-149"></span><span>      </span><span class="annot"><span class="annottext">SOACMapper Any Any (ReaderT (Scope MC) (State VNameSource))
+forall (m :: * -&gt; *) rep. Monad m =&gt; SOACMapper rep rep m
+</span><a href="Futhark.IR.SOACS.SOAC.html#identitySOACMapper"><span class="hs-identifier hs-var">identitySOACMapper</span></a></span><span>
+</span><span id="line-150"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSOACLambda :: Lambda MC -&gt; ReaderT (Scope MC) (State VNameSource) (Lambda MC)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapOnSOACLambda"><span class="hs-identifier hs-var">mapOnSOACLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OnOp MC
+-&gt; Lambda MC -&gt; ReaderT (Scope MC) (State VNameSource) (Lambda MC)
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Lambda rep -&gt; UnstreamM rep (Lambda rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseLambda"><span class="hs-identifier hs-var">optimiseLambda</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; OnOp MC
+</span><a href="Futhark.Optimise.Unstream.html#onMCOp"><span class="hs-identifier hs-var">onMCOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437321"><span class="hs-identifier hs-var">stage</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span id="local-6989586621684437618"><span class="annot"><a href="Futhark.Optimise.Unstream.html#sequentialise"><span class="hs-identifier hs-type">sequentialise</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#Stage"><span class="hs-identifier hs-type">Stage</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#SOAC"><span class="hs-identifier hs-type">SOAC</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684437618"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span></span><span>
+</span><span id="line-154"></span><span id="sequentialise"><span class="annot"><span class="annottext">sequentialise :: forall rep. Stage -&gt; SOAC rep -&gt; Bool
+</span><a href="Futhark.Optimise.Unstream.html#sequentialise"><span class="hs-identifier hs-var hs-var">sequentialise</span></a></span></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="Futhark.Optimise.Unstream.html#SeqStreams"><span class="hs-identifier hs-var">SeqStreams</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#Stream"><span class="hs-identifier hs-type">Stream</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-155"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#sequentialise"><span class="hs-identifier hs-var">sequentialise</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="Futhark.Optimise.Unstream.html#SeqStreams"><span class="hs-identifier hs-var">SeqStreams</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-156"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#sequentialise"><span class="hs-identifier hs-var">sequentialise</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="Futhark.Optimise.Unstream.html#SeqAll"><span class="hs-identifier hs-var">SeqAll</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-157"></span><span>
+</span><span id="line-158"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#onHostOp"><span class="hs-identifier hs-type">onHostOp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#Stage"><span class="hs-identifier hs-type">Stage</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Unstream.html#OnOp"><span class="hs-identifier hs-type">OnOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span>
+</span><span id="line-159"></span><span id="onHostOp"><span class="annot"><span class="annottext">onHostOp :: Stage -&gt; OnOp GPU
+</span><a href="Futhark.Optimise.Unstream.html#onHostOp"><span class="hs-identifier hs-var hs-var">onHostOp</span></a></span></span><span> </span><span id="local-6989586621684437307"><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437307"><span class="hs-identifier hs-var">stage</span></a></span></span><span> </span><span id="local-6989586621684437306"><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684437306"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684437305"><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684437305"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-type">GPU.OtherOp</span></a></span><span> </span><span id="local-6989586621684437303"><span class="annot"><span class="annottext">SOAC GPU
+</span><a href="#local-6989586621684437303"><span class="hs-identifier hs-var">soac</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Stage -&gt; SOAC GPU -&gt; Bool
+forall rep. Stage -&gt; SOAC rep -&gt; Bool
+</span><a href="Futhark.Optimise.Unstream.html#sequentialise"><span class="hs-identifier hs-var">sequentialise</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437307"><span class="hs-identifier hs-var">stage</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC GPU
+</span><a href="#local-6989586621684437303"><span class="hs-identifier hs-var">soac</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-161"></span><span>    </span><span id="local-6989586621684437302"><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684437302"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Builder GPU ()
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var">runBuilder_</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder GPU ()
+ -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU))
+-&gt; Builder GPU ()
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT GPU (State VNameSource)))
+-&gt; SOAC (Rep (BuilderT GPU (State VNameSource))) -&gt; Builder GPU ()
+forall (m :: * -&gt; *).
+Transformer m =&gt;
+Pat (Rep m) -&gt; SOAC (Rep m) -&gt; m ()
+</span><a href="Futhark.Transform.FirstOrderTransform.html#transformSOAC"><span class="hs-identifier hs-var">FOT.transformSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT GPU (State VNameSource)))
+Pat GPU
+</span><a href="#local-6989586621684437306"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC (Rep (BuilderT GPU (State VNameSource)))
+SOAC GPU
+</span><a href="#local-6989586621684437303"><span class="hs-identifier hs-var">soac</span></a></span><span>
+</span><span id="line-162"></span><span>    </span><span class="annot"><span class="annottext">([[Stm GPU]] -&gt; [Stm GPU])
+-&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+-&gt; UnstreamM GPU [Stm GPU]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">[[Stm GPU]] -&gt; [Stm GPU]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+ -&gt; UnstreamM GPU [Stm GPU])
+-&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+-&gt; UnstreamM GPU [Stm GPU]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-163"></span><span>      </span><span class="annot"><span class="annottext">Scope GPU
+-&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+-&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms GPU -&gt; Scope GPU
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684437302"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+ -&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]])
+-&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+-&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-164"></span><span>        </span><span class="annot"><span class="annottext">(Stm GPU -&gt; UnstreamM GPU [Stm GPU])
+-&gt; [Stm GPU] -&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OnOp GPU -&gt; Stm GPU -&gt; UnstreamM GPU [Stm GPU]
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Stm rep -&gt; UnstreamM rep [Stm rep]
+</span><a href="Futhark.Optimise.Unstream.html#optimiseStm"><span class="hs-identifier hs-var">optimiseStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; OnOp GPU
+</span><a href="Futhark.Optimise.Unstream.html#onHostOp"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437307"><span class="hs-identifier hs-var">stage</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Stm GPU] -&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]])
+-&gt; [Stm GPU] -&gt; ReaderT (Scope GPU) (State VNameSource) [[Stm GPU]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stms GPU -&gt; [Stm GPU]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684437302"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-165"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-166"></span><span>    </span><span class="hs-comment">-- Still sequentialise whatever's inside.</span><span>
+</span><span id="line-167"></span><span>    </span><span class="annot"><span class="annottext">Stm GPU -&gt; [Stm GPU]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Stm GPU -&gt; [Stm GPU])
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stm GPU)
+-&gt; UnstreamM GPU [Stm GPU]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat GPU -&gt; StmAux (ExpDec GPU) -&gt; Exp GPU -&gt; Stm GPU
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684437306"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684437305"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp GPU -&gt; Stm GPU)
+-&gt; (SOAC GPU -&gt; Exp GPU) -&gt; SOAC GPU -&gt; Stm GPU
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">HostOp GPU (SOAC GPU) -&gt; Exp GPU
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(HostOp GPU (SOAC GPU) -&gt; Exp GPU)
+-&gt; (SOAC GPU -&gt; HostOp GPU (SOAC GPU)) -&gt; SOAC GPU -&gt; Exp GPU
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SOAC GPU -&gt; HostOp GPU (SOAC GPU)
+forall rep op. op -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-var">GPU.OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SOAC GPU -&gt; Stm GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (SOAC GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stm GPU)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SOACMapper GPU GPU (ReaderT (Scope GPU) (State VNameSource))
+-&gt; SOAC GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (SOAC GPU)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+SOACMapper frep trep m -&gt; SOAC frep -&gt; m (SOAC trep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapSOACM"><span class="hs-identifier hs-var">mapSOACM</span></a></span><span> </span><span class="annot"><span class="annottext">SOACMapper GPU GPU (ReaderT (Scope GPU) (State VNameSource))
+</span><a href="#local-6989586621684437301"><span class="hs-identifier hs-var">optimise</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC GPU
+</span><a href="#local-6989586621684437303"><span class="hs-identifier hs-var">soac</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-168"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-169"></span><span>    </span><span id="local-6989586621684437301"><span class="annot"><span class="annottext">optimise :: SOACMapper GPU GPU (ReaderT (Scope GPU) (State VNameSource))
+</span><a href="#local-6989586621684437301"><span class="hs-identifier hs-var hs-var">optimise</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-170"></span><span>      </span><span class="annot"><span class="annottext">SOACMapper Any Any (ReaderT (Scope GPU) (State VNameSource))
+forall (m :: * -&gt; *) rep. Monad m =&gt; SOACMapper rep rep m
+</span><a href="Futhark.IR.SOACS.SOAC.html#identitySOACMapper"><span class="hs-identifier hs-var">identitySOACMapper</span></a></span><span>
+</span><span id="line-171"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSOACLambda :: Lambda GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Lambda GPU)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapOnSOACLambda"><span class="hs-identifier hs-var">mapOnSOACLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OnOp GPU
+-&gt; Lambda GPU
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Lambda GPU)
+forall rep.
+ASTRep rep =&gt;
+OnOp rep -&gt; Lambda rep -&gt; UnstreamM rep (Lambda rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseLambda"><span class="hs-identifier hs-var">optimiseLambda</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; OnOp GPU
+</span><a href="Futhark.Optimise.Unstream.html#onHostOp"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437307"><span class="hs-identifier hs-var">stage</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-173"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#onHostOp"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span id="local-6989586621684437300"><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437300"><span class="hs-identifier hs-var">stage</span></a></span></span><span> </span><span id="local-6989586621684437299"><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684437299"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684437298"><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684437298"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span id="local-6989586621684437296"><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684437296"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-174"></span><span>  </span><span class="annot"><span class="annottext">Stm GPU -&gt; [Stm GPU]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Stm GPU -&gt; [Stm GPU])
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stm GPU)
+-&gt; UnstreamM GPU [Stm GPU]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat GPU -&gt; StmAux (ExpDec GPU) -&gt; Exp GPU -&gt; Stm GPU
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684437299"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684437298"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp GPU -&gt; Stm GPU)
+-&gt; (SegOp SegLevel GPU -&gt; Exp GPU) -&gt; SegOp SegLevel GPU -&gt; Stm GPU
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">HostOp GPU (SOAC GPU) -&gt; Exp GPU
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(HostOp GPU (SOAC GPU) -&gt; Exp GPU)
+-&gt; (SegOp SegLevel GPU -&gt; HostOp GPU (SOAC GPU))
+-&gt; SegOp SegLevel GPU
+-&gt; Exp GPU
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU -&gt; HostOp GPU (SOAC GPU)
+forall rep op. SegOp SegLevel rep -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-var">SegOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPU -&gt; Stm GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (SegOp SegLevel GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stm GPU)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">OnOp GPU
+-&gt; SegOp SegLevel GPU
+-&gt; ReaderT (Scope GPU) (State VNameSource) (SegOp SegLevel GPU)
+forall rep lvl.
+ASTRep rep =&gt;
+OnOp rep -&gt; SegOp lvl rep -&gt; UnstreamM rep (SegOp lvl rep)
+</span><a href="Futhark.Optimise.Unstream.html#optimiseSegOp"><span class="hs-identifier hs-var">optimiseSegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stage -&gt; OnOp GPU
+</span><a href="Futhark.Optimise.Unstream.html#onHostOp"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><a href="#local-6989586621684437300"><span class="hs-identifier hs-var">stage</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU
+</span><a href="#local-6989586621684437296"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-175"></span><span class="annot"><a href="Futhark.Optimise.Unstream.html#onHostOp"><span class="hs-identifier hs-var">onHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">Stage
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684437295"><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684437295"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684437294"><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684437294"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span id="local-6989586621684437293"><span class="annot"><span class="annottext">Op GPU
+</span><a href="#local-6989586621684437293"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Stm GPU] -&gt; UnstreamM GPU [Stm GPU]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Pat GPU -&gt; StmAux (ExpDec GPU) -&gt; Exp GPU -&gt; Stm GPU
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684437295"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684437294"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp GPU -&gt; Stm GPU) -&gt; Exp GPU -&gt; Stm GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Op GPU -&gt; Exp GPU
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">Op GPU
+</span><a href="#local-6989586621684437293"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-176"></span></pre></body></html>

@@ -1,0 +1,892 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | This module exports functionality for generating a call graph of</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- an Futhark program.</span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Analysis.CallGraph</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier">CallGraph</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#buildCallGraph"><span class="hs-identifier">buildCallGraph</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#isFunInCallGraph"><span class="hs-identifier">isFunInCallGraph</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#calls"><span class="hs-identifier">calls</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#calledByConsts"><span class="hs-identifier">calledByConsts</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#allCalledBy"><span class="hs-identifier">allCalledBy</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#numOccurences"><span class="hs-identifier">numOccurences</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#findNoninlined"><span class="hs-identifier">findNoninlined</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-16"></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Writer.Strict</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">foldl'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">isJust</span></span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html"><span class="hs-identifier">Futhark.IR.SOACS</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Pretty.html"><span class="hs-identifier">Futhark.Util.Pretty</span></a></span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">type</span><span> </span><span id="FunctionTable"><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunctionTable"><span class="hs-identifier hs-var">FunctionTable</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#buildFunctionTable"><span class="hs-identifier hs-type">buildFunctionTable</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunctionTable"><span class="hs-identifier hs-type">FunctionTable</span></a></span><span>
+</span><span id="line-28"></span><span id="buildFunctionTable"><span class="annot"><span class="annottext">buildFunctionTable :: Prog SOACS -&gt; FunctionTable
+</span><a href="Futhark.Analysis.CallGraph.html#buildFunctionTable"><span class="hs-identifier hs-var hs-var">buildFunctionTable</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(FunctionTable -&gt; FunDef SOACS -&gt; FunctionTable)
+-&gt; FunctionTable -&gt; [FunDef SOACS] -&gt; FunctionTable
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl</span></span><span> </span><span class="annot"><span class="annottext">FunctionTable -&gt; FunDef SOACS -&gt; FunctionTable
+forall {rep}.
+Map Name (FunDef rep) -&gt; FunDef rep -&gt; Map Name (FunDef rep)
+</span><a href="#local-6989586621684384906"><span class="hs-identifier hs-var">expand</span></a></span><span> </span><span class="annot"><span class="annottext">FunctionTable
+forall k a. Map k a
+</span><span class="hs-identifier hs-var">M.empty</span></span><span> </span><span class="annot"><span class="annottext">([FunDef SOACS] -&gt; FunctionTable)
+-&gt; (Prog SOACS -&gt; [FunDef SOACS]) -&gt; Prog SOACS -&gt; FunctionTable
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Prog SOACS -&gt; [FunDef SOACS]
+forall rep. Prog rep -&gt; [FunDef rep]
+</span><a href="Futhark.IR.Syntax.html#progFuns"><span class="hs-identifier hs-var hs-var">progFuns</span></a></span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-30"></span><span>    </span><span id="local-6989586621684384906"><span class="annot"><span class="annottext">expand :: Map Name (FunDef rep) -&gt; FunDef rep -&gt; Map Name (FunDef rep)
+</span><a href="#local-6989586621684384906"><span class="hs-identifier hs-var hs-var">expand</span></a></span></span><span> </span><span id="local-6989586621684384901"><span class="annot"><span class="annottext">Map Name (FunDef rep)
+</span><a href="#local-6989586621684384901"><span class="hs-identifier hs-var">ftab</span></a></span></span><span> </span><span id="local-6989586621684384900"><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684384900"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Name
+-&gt; FunDef rep -&gt; Map Name (FunDef rep) -&gt; Map Name (FunDef rep)
+forall k a. Ord k =&gt; k -&gt; a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.insert</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FunDef rep -&gt; Name
+forall rep. FunDef rep -&gt; Name
+</span><a href="Futhark.IR.Syntax.html#funDefName"><span class="hs-identifier hs-var hs-var">funDefName</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684384900"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684384900"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Map Name (FunDef rep)
+</span><a href="#local-6989586621684384901"><span class="hs-identifier hs-var">ftab</span></a></span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- | A unique (at least within a function) name identifying a function</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- call.  In practice the first element of the corresponding pattern.</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">type</span><span> </span><span id="CallId"><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallId"><span class="hs-identifier hs-var">CallId</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">data</span><span> </span><span id="FunCalls"><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-var">FunCalls</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="FunCalls"><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-var">FunCalls</span></a></span></span><span>
+</span><span id="line-37"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="fcMap"><span class="annot"><span class="annottext">FunCalls -&gt; Map CallId (Attrs, Name)
+</span><a href="Futhark.Analysis.CallGraph.html#fcMap"><span class="hs-identifier hs-var hs-var">fcMap</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallId"><span class="hs-identifier hs-type">CallId</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Attrs"><span class="hs-identifier hs-type">Attrs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-38"></span><span>    </span><span id="fcAllCalled"><span class="annot"><span class="annottext">FunCalls -&gt; Set Name
+</span><a href="Futhark.Analysis.CallGraph.html#fcAllCalled"><span class="hs-identifier hs-var hs-var">fcAllCalled</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.Set</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-40"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684384883"><span id="local-6989586621684384892"><span class="annot"><span class="annottext">FunCalls -&gt; FunCalls -&gt; Bool
+(FunCalls -&gt; FunCalls -&gt; Bool)
+-&gt; (FunCalls -&gt; FunCalls -&gt; Bool) -&gt; Eq FunCalls
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+/= :: FunCalls -&gt; FunCalls -&gt; Bool
+$c/= :: FunCalls -&gt; FunCalls -&gt; Bool
+== :: FunCalls -&gt; FunCalls -&gt; Bool
+$c== :: FunCalls -&gt; FunCalls -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684384850"><span id="local-6989586621684384852"><span id="local-6989586621684384855"><span id="local-6989586621684384858"><span id="local-6989586621684384861"><span id="local-6989586621684384866"><span id="local-6989586621684384873"><span class="annot"><span class="annottext">Eq FunCalls
+Eq FunCalls
+-&gt; (FunCalls -&gt; FunCalls -&gt; Ordering)
+-&gt; (FunCalls -&gt; FunCalls -&gt; Bool)
+-&gt; (FunCalls -&gt; FunCalls -&gt; Bool)
+-&gt; (FunCalls -&gt; FunCalls -&gt; Bool)
+-&gt; (FunCalls -&gt; FunCalls -&gt; Bool)
+-&gt; (FunCalls -&gt; FunCalls -&gt; FunCalls)
+-&gt; (FunCalls -&gt; FunCalls -&gt; FunCalls)
+-&gt; Ord FunCalls
+FunCalls -&gt; FunCalls -&gt; Bool
+FunCalls -&gt; FunCalls -&gt; Ordering
+FunCalls -&gt; FunCalls -&gt; FunCalls
+forall a.
+Eq a
+-&gt; (a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+min :: FunCalls -&gt; FunCalls -&gt; FunCalls
+$cmin :: FunCalls -&gt; FunCalls -&gt; FunCalls
+max :: FunCalls -&gt; FunCalls -&gt; FunCalls
+$cmax :: FunCalls -&gt; FunCalls -&gt; FunCalls
+&gt;= :: FunCalls -&gt; FunCalls -&gt; Bool
+$c&gt;= :: FunCalls -&gt; FunCalls -&gt; Bool
+&gt; :: FunCalls -&gt; FunCalls -&gt; Bool
+$c&gt; :: FunCalls -&gt; FunCalls -&gt; Bool
+&lt;= :: FunCalls -&gt; FunCalls -&gt; Bool
+$c&lt;= :: FunCalls -&gt; FunCalls -&gt; Bool
+&lt; :: FunCalls -&gt; FunCalls -&gt; Bool
+$c&lt; :: FunCalls -&gt; FunCalls -&gt; Bool
+compare :: FunCalls -&gt; FunCalls -&gt; Ordering
+$ccompare :: FunCalls -&gt; FunCalls -&gt; Ordering
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684384830"><span id="local-6989586621684384832"><span id="local-6989586621684384843"><span class="annot"><span class="annottext">Int -&gt; FunCalls -&gt; ShowS
+[FunCalls] -&gt; ShowS
+FunCalls -&gt; String
+(Int -&gt; FunCalls -&gt; ShowS)
+-&gt; (FunCalls -&gt; String) -&gt; ([FunCalls] -&gt; ShowS) -&gt; Show FunCalls
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [FunCalls] -&gt; ShowS
+$cshowList :: [FunCalls] -&gt; ShowS
+show :: FunCalls -&gt; String
+$cshow :: FunCalls -&gt; String
+showsPrec :: Int -&gt; FunCalls -&gt; ShowS
+$cshowsPrec :: Int -&gt; FunCalls -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684384817"><span id="local-6989586621684384819"><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-43"></span><span>  </span><span id="local-6989586621684384813"><span class="annot"><span class="annottext">mempty :: FunCalls
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mempty</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map CallId (Attrs, Name) -&gt; Set Name -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-var">FunCalls</span></a></span><span> </span><span class="annot"><span class="annottext">Map CallId (Attrs, Name)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">Set Name
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684384808"><span id="local-6989586621684384810"><span class="annot"><span class="hs-identifier hs-type">Semigroup</span></span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-46"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span><span> </span><span id="local-6989586621684384804"><span class="annot"><span class="annottext">Map CallId (Attrs, Name)
+</span><a href="#local-6989586621684384804"><span class="hs-identifier hs-var">x1</span></a></span></span><span> </span><span id="local-6989586621684384803"><span class="annot"><span class="annottext">Set Name
+</span><a href="#local-6989586621684384803"><span class="hs-identifier hs-var">y1</span></a></span></span><span> </span><span id="local-6989586621684384802"><span class="annot"><span class="annottext">&lt;&gt; :: FunCalls -&gt; FunCalls -&gt; FunCalls
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;&gt;</span></span></span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span><span> </span><span id="local-6989586621684384801"><span class="annot"><span class="annottext">Map CallId (Attrs, Name)
+</span><a href="#local-6989586621684384801"><span class="hs-identifier hs-var">x2</span></a></span></span><span> </span><span id="local-6989586621684384800"><span class="annot"><span class="annottext">Set Name
+</span><a href="#local-6989586621684384800"><span class="hs-identifier hs-var">y2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map CallId (Attrs, Name) -&gt; Set Name -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-var">FunCalls</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map CallId (Attrs, Name)
+</span><a href="#local-6989586621684384804"><span class="hs-identifier hs-var">x1</span></a></span><span> </span><span class="annot"><span class="annottext">Map CallId (Attrs, Name)
+-&gt; Map CallId (Attrs, Name) -&gt; Map CallId (Attrs, Name)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Map CallId (Attrs, Name)
+</span><a href="#local-6989586621684384801"><span class="hs-identifier hs-var">x2</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set Name
+</span><a href="#local-6989586621684384803"><span class="hs-identifier hs-var">y1</span></a></span><span> </span><span class="annot"><span class="annottext">Set Name -&gt; Set Name -&gt; Set Name
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Set Name
+</span><a href="#local-6989586621684384800"><span class="hs-identifier hs-var">y2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#fcCalled"><span class="hs-identifier hs-type">fcCalled</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-49"></span><span id="fcCalled"><span class="annot"><span class="annottext">fcCalled :: Name -&gt; FunCalls -&gt; Bool
+</span><a href="Futhark.Analysis.CallGraph.html#fcCalled"><span class="hs-identifier hs-var hs-var">fcCalled</span></a></span></span><span> </span><span id="local-6989586621684384798"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384798"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684384797"><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384797"><span class="hs-identifier hs-var">fcs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384798"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Name -&gt; Set Name -&gt; Bool
+forall a. Ord a =&gt; a -&gt; Set a -&gt; Bool
+</span><span class="hs-operator hs-var">`S.member`</span></span><span> </span><span class="annot"><span class="annottext">FunCalls -&gt; Set Name
+</span><a href="Futhark.Analysis.CallGraph.html#fcAllCalled"><span class="hs-identifier hs-var hs-var">fcAllCalled</span></a></span><span> </span><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384797"><span class="hs-identifier hs-var">fcs</span></a></span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="hs-keyword">type</span><span> </span><span id="FunGraph"><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunGraph"><span class="hs-identifier hs-var">FunGraph</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span><span>
+</span><span id="line-52"></span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- | The call graph is a mapping from a function name, i.e., the</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- caller, to a record of the names of functions called *directly* (not</span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- transitively!) by the function.</span><span>
+</span><span id="line-56"></span><span class="hs-comment">--</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- We keep track separately of the functions called by constants.</span><span>
+</span><span id="line-58"></span><span class="hs-keyword">data</span><span> </span><span id="CallGraph"><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-var">CallGraph</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="CallGraph"><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-var">CallGraph</span></a></span></span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="cgCalledByFuns"><span class="annot"><span class="annottext">CallGraph -&gt; FunGraph
+</span><a href="Futhark.Analysis.CallGraph.html#cgCalledByFuns"><span class="hs-identifier hs-var hs-var">cgCalledByFuns</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunGraph"><span class="hs-identifier hs-type">FunGraph</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-60"></span><span>    </span><span id="cgCalledByConsts"><span class="annot"><span class="annottext">CallGraph -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#cgCalledByConsts"><span class="hs-identifier hs-var hs-var">cgCalledByConsts</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span><span>
+</span><span id="line-61"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684384785"><span id="local-6989586621684384791"><span class="annot"><span class="annottext">CallGraph -&gt; CallGraph -&gt; Bool
+(CallGraph -&gt; CallGraph -&gt; Bool)
+-&gt; (CallGraph -&gt; CallGraph -&gt; Bool) -&gt; Eq CallGraph
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+/= :: CallGraph -&gt; CallGraph -&gt; Bool
+$c/= :: CallGraph -&gt; CallGraph -&gt; Bool
+== :: CallGraph -&gt; CallGraph -&gt; Bool
+$c== :: CallGraph -&gt; CallGraph -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684384760"><span id="local-6989586621684384762"><span id="local-6989586621684384765"><span id="local-6989586621684384768"><span id="local-6989586621684384771"><span id="local-6989586621684384776"><span id="local-6989586621684384781"><span class="annot"><span class="annottext">Eq CallGraph
+Eq CallGraph
+-&gt; (CallGraph -&gt; CallGraph -&gt; Ordering)
+-&gt; (CallGraph -&gt; CallGraph -&gt; Bool)
+-&gt; (CallGraph -&gt; CallGraph -&gt; Bool)
+-&gt; (CallGraph -&gt; CallGraph -&gt; Bool)
+-&gt; (CallGraph -&gt; CallGraph -&gt; Bool)
+-&gt; (CallGraph -&gt; CallGraph -&gt; CallGraph)
+-&gt; (CallGraph -&gt; CallGraph -&gt; CallGraph)
+-&gt; Ord CallGraph
+CallGraph -&gt; CallGraph -&gt; Bool
+CallGraph -&gt; CallGraph -&gt; Ordering
+CallGraph -&gt; CallGraph -&gt; CallGraph
+forall a.
+Eq a
+-&gt; (a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+min :: CallGraph -&gt; CallGraph -&gt; CallGraph
+$cmin :: CallGraph -&gt; CallGraph -&gt; CallGraph
+max :: CallGraph -&gt; CallGraph -&gt; CallGraph
+$cmax :: CallGraph -&gt; CallGraph -&gt; CallGraph
+&gt;= :: CallGraph -&gt; CallGraph -&gt; Bool
+$c&gt;= :: CallGraph -&gt; CallGraph -&gt; Bool
+&gt; :: CallGraph -&gt; CallGraph -&gt; Bool
+$c&gt; :: CallGraph -&gt; CallGraph -&gt; Bool
+&lt;= :: CallGraph -&gt; CallGraph -&gt; Bool
+$c&lt;= :: CallGraph -&gt; CallGraph -&gt; Bool
+&lt; :: CallGraph -&gt; CallGraph -&gt; Bool
+$c&lt; :: CallGraph -&gt; CallGraph -&gt; Bool
+compare :: CallGraph -&gt; CallGraph -&gt; Ordering
+$ccompare :: CallGraph -&gt; CallGraph -&gt; Ordering
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684384749"><span id="local-6989586621684384751"><span id="local-6989586621684384758"><span class="annot"><span class="annottext">Int -&gt; CallGraph -&gt; ShowS
+[CallGraph] -&gt; ShowS
+CallGraph -&gt; String
+(Int -&gt; CallGraph -&gt; ShowS)
+-&gt; (CallGraph -&gt; String)
+-&gt; ([CallGraph] -&gt; ShowS)
+-&gt; Show CallGraph
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [CallGraph] -&gt; ShowS
+$cshowList :: [CallGraph] -&gt; ShowS
+show :: CallGraph -&gt; String
+$cshow :: CallGraph -&gt; String
+showsPrec :: Int -&gt; CallGraph -&gt; ShowS
+$cshowsPrec :: Int -&gt; CallGraph -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- | Is the given function known to the call graph?</span><span>
+</span><span id="line-65"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#isFunInCallGraph"><span class="hs-identifier hs-type">isFunInCallGraph</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-type">CallGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-66"></span><span id="isFunInCallGraph"><span class="annot"><span class="annottext">isFunInCallGraph :: Name -&gt; CallGraph -&gt; Bool
+</span><a href="Futhark.Analysis.CallGraph.html#isFunInCallGraph"><span class="hs-identifier hs-var hs-var">isFunInCallGraph</span></a></span></span><span> </span><span id="local-6989586621684384748"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384748"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Name -&gt; FunGraph -&gt; Bool
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Bool
+</span><span class="hs-identifier hs-var">M.member</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384748"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(FunGraph -&gt; Bool) -&gt; (CallGraph -&gt; FunGraph) -&gt; CallGraph -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">CallGraph -&gt; FunGraph
+</span><a href="Futhark.Analysis.CallGraph.html#cgCalledByFuns"><span class="hs-identifier hs-var hs-var">cgCalledByFuns</span></a></span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- | Does the first function call the second?</span><span>
+</span><span id="line-69"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#calls"><span class="hs-identifier hs-type">calls</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-type">CallGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-70"></span><span id="calls"><span class="annot"><span class="annottext">calls :: Name -&gt; Name -&gt; CallGraph -&gt; Bool
+</span><a href="Futhark.Analysis.CallGraph.html#calls"><span class="hs-identifier hs-var hs-var">calls</span></a></span></span><span> </span><span id="local-6989586621684384746"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384746"><span class="hs-identifier hs-var">caller</span></a></span></span><span> </span><span id="local-6989586621684384745"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384745"><span class="hs-identifier hs-var">callee</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-71"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; (FunCalls -&gt; Bool) -&gt; Maybe FunCalls -&gt; Bool
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; FunCalls -&gt; Bool
+</span><a href="Futhark.Analysis.CallGraph.html#fcCalled"><span class="hs-identifier hs-var">fcCalled</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384745"><span class="hs-identifier hs-var">callee</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Maybe FunCalls -&gt; Bool)
+-&gt; (CallGraph -&gt; Maybe FunCalls) -&gt; CallGraph -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; FunGraph -&gt; Maybe FunCalls
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384746"><span class="hs-identifier hs-var">caller</span></a></span><span> </span><span class="annot"><span class="annottext">(FunGraph -&gt; Maybe FunCalls)
+-&gt; (CallGraph -&gt; FunGraph) -&gt; CallGraph -&gt; Maybe FunCalls
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">CallGraph -&gt; FunGraph
+</span><a href="Futhark.Analysis.CallGraph.html#cgCalledByFuns"><span class="hs-identifier hs-var hs-var">cgCalledByFuns</span></a></span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- | Is the function called in any of the constants?</span><span>
+</span><span id="line-74"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#calledByConsts"><span class="hs-identifier hs-type">calledByConsts</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-type">CallGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-75"></span><span id="calledByConsts"><span class="annot"><span class="annottext">calledByConsts :: Name -&gt; CallGraph -&gt; Bool
+</span><a href="Futhark.Analysis.CallGraph.html#calledByConsts"><span class="hs-identifier hs-var hs-var">calledByConsts</span></a></span></span><span> </span><span id="local-6989586621684384742"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384742"><span class="hs-identifier hs-var">callee</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Name -&gt; FunCalls -&gt; Bool
+</span><a href="Futhark.Analysis.CallGraph.html#fcCalled"><span class="hs-identifier hs-var">fcCalled</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384742"><span class="hs-identifier hs-var">callee</span></a></span><span> </span><span class="annot"><span class="annottext">(FunCalls -&gt; Bool) -&gt; (CallGraph -&gt; FunCalls) -&gt; CallGraph -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">CallGraph -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#cgCalledByConsts"><span class="hs-identifier hs-var hs-var">cgCalledByConsts</span></a></span><span>
+</span><span id="line-76"></span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- | All functions called by this function.</span><span>
+</span><span id="line-78"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#allCalledBy"><span class="hs-identifier hs-type">allCalledBy</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-type">CallGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.Set</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span>
+</span><span id="line-79"></span><span id="allCalledBy"><span class="annot"><span class="annottext">allCalledBy :: Name -&gt; CallGraph -&gt; Set Name
+</span><a href="Futhark.Analysis.CallGraph.html#allCalledBy"><span class="hs-identifier hs-var hs-var">allCalledBy</span></a></span></span><span> </span><span id="local-6989586621684384741"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384741"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Set Name -&gt; (FunCalls -&gt; Set Name) -&gt; Maybe FunCalls -&gt; Set Name
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="annot"><span class="annottext">Set Name
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">FunCalls -&gt; Set Name
+</span><a href="Futhark.Analysis.CallGraph.html#fcAllCalled"><span class="hs-identifier hs-var hs-var">fcAllCalled</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe FunCalls -&gt; Set Name)
+-&gt; (CallGraph -&gt; Maybe FunCalls) -&gt; CallGraph -&gt; Set Name
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; FunGraph -&gt; Maybe FunCalls
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384741"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(FunGraph -&gt; Maybe FunCalls)
+-&gt; (CallGraph -&gt; FunGraph) -&gt; CallGraph -&gt; Maybe FunCalls
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">CallGraph -&gt; FunGraph
+</span><a href="Futhark.Analysis.CallGraph.html#cgCalledByFuns"><span class="hs-identifier hs-var hs-var">cgCalledByFuns</span></a></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span class="hs-comment">-- | @buildCallGraph prog@ build the program's call graph.</span><span>
+</span><span id="line-82"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#buildCallGraph"><span class="hs-identifier hs-type">buildCallGraph</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-type">CallGraph</span></a></span><span>
+</span><span id="line-83"></span><span id="buildCallGraph"><span class="annot"><span class="annottext">buildCallGraph :: Prog SOACS -&gt; CallGraph
+</span><a href="Futhark.Analysis.CallGraph.html#buildCallGraph"><span class="hs-identifier hs-var hs-var">buildCallGraph</span></a></span></span><span> </span><span id="local-6989586621684384740"><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684384740"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-84"></span><span>  </span><span class="annot"><span class="annottext">FunGraph -&gt; FunCalls -&gt; CallGraph
+</span><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-var">CallGraph</span></a></span><span> </span><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384739"><span class="hs-identifier hs-var">fg</span></a></span><span> </span><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384738"><span class="hs-identifier hs-var">cg</span></a></span><span>
+</span><span id="line-85"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-86"></span><span>    </span><span id="local-6989586621684384739"><span class="annot"><span class="annottext">fg :: FunGraph
+</span><a href="#local-6989586621684384739"><span class="hs-identifier hs-var hs-var">fg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(FunGraph -&gt; Name -&gt; FunGraph) -&gt; FunGraph -&gt; Set Name -&gt; FunGraph
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl'</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FunctionTable -&gt; FunGraph -&gt; Name -&gt; FunGraph
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGfun"><span class="hs-identifier hs-var">buildFGfun</span></a></span><span> </span><span class="annot"><span class="annottext">FunctionTable
+</span><a href="#local-6989586621684384735"><span class="hs-identifier hs-var">ftable</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">FunGraph
+forall k a. Map k a
+</span><span class="hs-identifier hs-var">M.empty</span></span><span> </span><span class="annot"><span class="annottext">Set Name
+</span><a href="#local-6989586621684384734"><span class="hs-identifier hs-var">entry_points</span></a></span><span>
+</span><span id="line-87"></span><span>    </span><span id="local-6989586621684384738"><span class="annot"><span class="annottext">cg :: FunCalls
+</span><a href="#local-6989586621684384738"><span class="hs-identifier hs-var hs-var">cg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stms SOACS -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGStms"><span class="hs-identifier hs-var">buildFGStms</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms SOACS -&gt; FunCalls) -&gt; Stms SOACS -&gt; FunCalls
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Prog SOACS -&gt; Stms SOACS
+forall rep. Prog rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#progConsts"><span class="hs-identifier hs-var hs-var">progConsts</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684384740"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span>    </span><span id="local-6989586621684384734"><span class="annot"><span class="annottext">entry_points :: Set Name
+</span><a href="#local-6989586621684384734"><span class="hs-identifier hs-var hs-var">entry_points</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-90"></span><span>      </span><span class="annot"><span class="annottext">[Name] -&gt; Set Name
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">S.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(FunDef SOACS -&gt; Name) -&gt; [FunDef SOACS] -&gt; [Name]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS -&gt; Name
+forall rep. FunDef rep -&gt; Name
+</span><a href="Futhark.IR.Syntax.html#funDefName"><span class="hs-identifier hs-var hs-var">funDefName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(FunDef SOACS -&gt; Bool) -&gt; [FunDef SOACS] -&gt; [FunDef SOACS]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe EntryPoint -&gt; Bool
+forall a. Maybe a -&gt; Bool
+</span><span class="hs-identifier hs-var">isJust</span></span><span> </span><span class="annot"><span class="annottext">(Maybe EntryPoint -&gt; Bool)
+-&gt; (FunDef SOACS -&gt; Maybe EntryPoint) -&gt; FunDef SOACS -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS -&gt; Maybe EntryPoint
+forall rep. FunDef rep -&gt; Maybe EntryPoint
+</span><a href="Futhark.IR.Syntax.html#funDefEntryPoint"><span class="hs-identifier hs-var hs-var">funDefEntryPoint</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([FunDef SOACS] -&gt; [FunDef SOACS])
+-&gt; [FunDef SOACS] -&gt; [FunDef SOACS]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Prog SOACS -&gt; [FunDef SOACS]
+forall rep. Prog rep -&gt; [FunDef rep]
+</span><a href="Futhark.IR.Syntax.html#progFuns"><span class="hs-identifier hs-var hs-var">progFuns</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684384740"><span class="hs-identifier hs-var">prog</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span>        </span><span class="annot"><span class="annottext">Set Name -&gt; Set Name -&gt; Set Name
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">FunCalls -&gt; Set Name
+</span><a href="Futhark.Analysis.CallGraph.html#fcAllCalled"><span class="hs-identifier hs-var hs-var">fcAllCalled</span></a></span><span> </span><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384738"><span class="hs-identifier hs-var">cg</span></a></span><span>
+</span><span id="line-92"></span><span>    </span><span id="local-6989586621684384735"><span class="annot"><span class="annottext">ftable :: FunctionTable
+</span><a href="#local-6989586621684384735"><span class="hs-identifier hs-var hs-var">ftable</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Prog SOACS -&gt; FunctionTable
+</span><a href="Futhark.Analysis.CallGraph.html#buildFunctionTable"><span class="hs-identifier hs-var">buildFunctionTable</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684384740"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span id="local-6989586621684385076"><span class="annot"><a href="Futhark.Analysis.CallGraph.html#count"><span class="hs-identifier hs-type">count</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621684385076"><span class="hs-identifier hs-type">k</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684385076"><span class="hs-identifier hs-type">k</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="#local-6989586621684385076"><span class="hs-identifier hs-type">k</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span></span><span>
+</span><span id="line-95"></span><span id="count"><span class="annot"><span class="annottext">count :: forall k. Ord k =&gt; [k] -&gt; Map k Int
+</span><a href="Futhark.Analysis.CallGraph.html#count"><span class="hs-identifier hs-var hs-var">count</span></a></span></span><span> </span><span id="local-6989586621684384720"><span class="annot"><span class="annottext">[k]
+</span><a href="#local-6989586621684384720"><span class="hs-identifier hs-var">ks</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Int -&gt; Int) -&gt; [(k, Int)] -&gt; Map k Int
+forall k a. Ord k =&gt; (a -&gt; a -&gt; a) -&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromListWith</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(+)</span></span><span> </span><span class="annot"><span class="annottext">([(k, Int)] -&gt; Map k Int) -&gt; [(k, Int)] -&gt; Map k Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[k] -&gt; [Int] -&gt; [(k, Int)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[k]
+</span><a href="#local-6989586621684384720"><span class="hs-identifier hs-var">ks</span></a></span><span> </span><span class="annot"><span class="annottext">([Int] -&gt; [(k, Int)]) -&gt; [Int] -&gt; [(k, Int)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; [Int]
+forall a. a -&gt; [a]
+</span><span class="hs-identifier hs-var">repeat</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span class="hs-comment">-- | Produce a mapping of the number of occurences in the call graph</span><span>
+</span><span id="line-98"></span><span class="hs-comment">-- of each function.  Only counts functions that are called at least</span><span>
+</span><span id="line-99"></span><span class="hs-comment">-- once.</span><span>
+</span><span id="line-100"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#numOccurences"><span class="hs-identifier hs-type">numOccurences</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-type">CallGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-101"></span><span id="numOccurences"><span class="annot"><span class="annottext">numOccurences :: CallGraph -&gt; Map Name Int
+</span><a href="Futhark.Analysis.CallGraph.html#numOccurences"><span class="hs-identifier hs-var hs-var">numOccurences</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-type">CallGraph</span></a></span><span> </span><span id="local-6989586621684384716"><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384716"><span class="hs-identifier hs-var">funs</span></a></span></span><span> </span><span id="local-6989586621684384715"><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384715"><span class="hs-identifier hs-var">consts</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-102"></span><span>  </span><span class="annot"><span class="annottext">[Name] -&gt; Map Name Int
+forall k. Ord k =&gt; [k] -&gt; Map k Int
+</span><a href="Futhark.Analysis.CallGraph.html#count"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">([Name] -&gt; Map Name Int) -&gt; [Name] -&gt; Map Name Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">((Attrs, Name) -&gt; Name) -&gt; [(Attrs, Name)] -&gt; [Name]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(Attrs, Name) -&gt; Name
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">([(Attrs, Name)] -&gt; [Name]) -&gt; [(Attrs, Name)] -&gt; [Name]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map CallId (Attrs, Name) -&gt; [(Attrs, Name)]
+forall k a. Map k a -&gt; [a]
+</span><span class="hs-identifier hs-var">M.elems</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FunCalls -&gt; Map CallId (Attrs, Name)
+</span><a href="Futhark.Analysis.CallGraph.html#fcMap"><span class="hs-identifier hs-var hs-var">fcMap</span></a></span><span> </span><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384715"><span class="hs-identifier hs-var">consts</span></a></span><span> </span><span class="annot"><span class="annottext">Map CallId (Attrs, Name)
+-&gt; Map CallId (Attrs, Name) -&gt; Map CallId (Attrs, Name)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(FunCalls -&gt; Map CallId (Attrs, Name))
+-&gt; [FunCalls] -&gt; Map CallId (Attrs, Name)
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">FunCalls -&gt; Map CallId (Attrs, Name)
+</span><a href="Futhark.Analysis.CallGraph.html#fcMap"><span class="hs-identifier hs-var hs-var">fcMap</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FunGraph -&gt; [FunCalls]
+forall k a. Map k a -&gt; [a]
+</span><span class="hs-identifier hs-var">M.elems</span></span><span> </span><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384716"><span class="hs-identifier hs-var">funs</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-103"></span><span>
+</span><span id="line-104"></span><span class="hs-comment">-- | @buildCallGraph ftable fg fname@ updates @fg@ with the</span><span>
+</span><span id="line-105"></span><span class="hs-comment">-- contributions of function @fname@.</span><span>
+</span><span id="line-106"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#buildFGfun"><span class="hs-identifier hs-type">buildFGfun</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunctionTable"><span class="hs-identifier hs-type">FunctionTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunGraph"><span class="hs-identifier hs-type">FunGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunGraph"><span class="hs-identifier hs-type">FunGraph</span></a></span><span>
+</span><span id="line-107"></span><span id="buildFGfun"><span class="annot"><span class="annottext">buildFGfun :: FunctionTable -&gt; FunGraph -&gt; Name -&gt; FunGraph
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGfun"><span class="hs-identifier hs-var hs-var">buildFGfun</span></a></span></span><span> </span><span id="local-6989586621684384712"><span class="annot"><span class="annottext">FunctionTable
+</span><a href="#local-6989586621684384712"><span class="hs-identifier hs-var">ftable</span></a></span></span><span> </span><span id="local-6989586621684384711"><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384711"><span class="hs-identifier hs-var">fg</span></a></span></span><span> </span><span id="local-6989586621684384710"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384710"><span class="hs-identifier hs-var">fname</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-108"></span><span>  </span><span class="hs-comment">-- Check if function is a non-builtin that we have not already</span><span>
+</span><span id="line-109"></span><span>  </span><span class="hs-comment">-- processed.</span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Name -&gt; FunctionTable -&gt; Maybe (FunDef SOACS)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384710"><span class="hs-identifier hs-var">fname</span></a></span><span> </span><span class="annot"><span class="annottext">FunctionTable
+</span><a href="#local-6989586621684384712"><span class="hs-identifier hs-var">ftable</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-111"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684384709"><span class="annot"><span class="annottext">FunDef SOACS
+</span><a href="#local-6989586621684384709"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Maybe FunCalls
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Name -&gt; FunGraph -&gt; Maybe FunCalls
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384710"><span class="hs-identifier hs-var">fname</span></a></span><span> </span><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384711"><span class="hs-identifier hs-var">fg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-112"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684384708"><span class="annot"><span class="annottext">callees :: FunCalls
+</span><a href="#local-6989586621684384708"><span class="hs-identifier hs-var hs-var">callees</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGBody"><span class="hs-identifier hs-var">buildFGBody</span></a></span><span> </span><span class="annot"><span class="annottext">(Body -&gt; FunCalls) -&gt; Body -&gt; FunCalls
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS -&gt; Body
+forall rep. FunDef rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var hs-var">funDefBody</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS
+</span><a href="#local-6989586621684384709"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-113"></span><span>          </span><span id="local-6989586621684384704"><span class="annot"><span class="annottext">fg' :: FunGraph
+</span><a href="#local-6989586621684384704"><span class="hs-identifier hs-var hs-var">fg'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Name -&gt; FunCalls -&gt; FunGraph -&gt; FunGraph
+forall k a. Ord k =&gt; k -&gt; a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.insert</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384710"><span class="hs-identifier hs-var">fname</span></a></span><span> </span><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384708"><span class="hs-identifier hs-var">callees</span></a></span><span> </span><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384711"><span class="hs-identifier hs-var">fg</span></a></span><span>
+</span><span id="line-114"></span><span>      </span><span class="hs-comment">-- recursively build the callees</span><span>
+</span><span id="line-115"></span><span>      </span><span class="annot"><span class="annottext">(FunGraph -&gt; Name -&gt; FunGraph) -&gt; FunGraph -&gt; Set Name -&gt; FunGraph
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl'</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FunctionTable -&gt; FunGraph -&gt; Name -&gt; FunGraph
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGfun"><span class="hs-identifier hs-var">buildFGfun</span></a></span><span> </span><span class="annot"><span class="annottext">FunctionTable
+</span><a href="#local-6989586621684384712"><span class="hs-identifier hs-var">ftable</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384704"><span class="hs-identifier hs-var">fg'</span></a></span><span> </span><span class="annot"><span class="annottext">(Set Name -&gt; FunGraph) -&gt; Set Name -&gt; FunGraph
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FunCalls -&gt; Set Name
+</span><a href="Futhark.Analysis.CallGraph.html#fcAllCalled"><span class="hs-identifier hs-var hs-var">fcAllCalled</span></a></span><span> </span><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384708"><span class="hs-identifier hs-var">callees</span></a></span><span>
+</span><span id="line-116"></span><span>    </span><span class="annot"><span class="annottext">Maybe (FunDef SOACS)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384711"><span class="hs-identifier hs-var">fg</span></a></span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#buildFGStms"><span class="hs-identifier hs-type">buildFGStms</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span><span>
+</span><span id="line-119"></span><span id="buildFGStms"><span class="annot"><span class="annottext">buildFGStms :: Stms SOACS -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGStms"><span class="hs-identifier hs-var hs-var">buildFGStms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[FunCalls] -&gt; FunCalls
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([FunCalls] -&gt; FunCalls)
+-&gt; (Stms SOACS -&gt; [FunCalls]) -&gt; Stms SOACS -&gt; FunCalls
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Stm -&gt; FunCalls) -&gt; [Stm] -&gt; [FunCalls]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Stm -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGstm"><span class="hs-identifier hs-var">buildFGstm</span></a></span><span> </span><span class="annot"><span class="annottext">([Stm] -&gt; [FunCalls])
+-&gt; (Stms SOACS -&gt; [Stm]) -&gt; Stms SOACS -&gt; [FunCalls]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Stms SOACS -&gt; [Stm]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#buildFGBody"><span class="hs-identifier hs-type">buildFGBody</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span><span>
+</span><span id="line-122"></span><span id="buildFGBody"><span class="annot"><span class="annottext">buildFGBody :: Body -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGBody"><span class="hs-identifier hs-var hs-var">buildFGBody</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stms SOACS -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGStms"><span class="hs-identifier hs-var">buildFGStms</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms SOACS -&gt; FunCalls)
+-&gt; (Body -&gt; Stms SOACS) -&gt; Body -&gt; FunCalls
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Body -&gt; Stms SOACS
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span>
+</span><span id="line-123"></span><span>
+</span><span id="line-124"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#buildFGstm"><span class="hs-identifier hs-type">buildFGstm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span><span>
+</span><span id="line-125"></span><span id="buildFGstm"><span class="annot"><span class="annottext">buildFGstm :: Stm -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGstm"><span class="hs-identifier hs-var hs-var">buildFGstm</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684384698"><span class="annot"><span class="annottext">PatElemT (LetDec SOACS)
+</span><a href="#local-6989586621684384698"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[PatElemT (LetDec SOACS)]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span id="local-6989586621684384697"><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684384697"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Apply"><span class="hs-identifier hs-type">Apply</span></a></span><span> </span><span id="local-6989586621684384695"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384695"><span class="hs-identifier hs-var">fname</span></a></span></span><span> </span><span class="annot"><span class="annottext">[(SubExp, Diet)]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[RetType SOACS]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">(Safety, SrcLoc, [SrcLoc])
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-126"></span><span>  </span><span class="annot"><span class="annottext">Map CallId (Attrs, Name) -&gt; Set Name -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-var">FunCalls</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CallId -&gt; (Attrs, Name) -&gt; Map CallId (Attrs, Name)
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatElemT Type -&gt; CallId
+forall dec. PatElemT dec -&gt; CallId
+</span><a href="Futhark.IR.Syntax.Core.html#patElemName"><span class="hs-identifier hs-var hs-var">patElemName</span></a></span><span> </span><span class="annot"><span class="annottext">PatElemT Type
+PatElemT (LetDec SOACS)
+</span><a href="#local-6989586621684384698"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StmAux () -&gt; Attrs
+forall dec. StmAux dec -&gt; Attrs
+</span><a href="Futhark.IR.Syntax.html#stmAuxAttrs"><span class="hs-identifier hs-var hs-var">stmAuxAttrs</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684384697"><span class="hs-identifier hs-var">aux</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384695"><span class="hs-identifier hs-var">fname</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; Set Name
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">S.singleton</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384695"><span class="hs-identifier hs-var">fname</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#buildFGstm"><span class="hs-identifier hs-var">buildFGstm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec SOACS)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span id="local-6989586621684384689"><span class="annot"><span class="annottext">Op SOACS
+</span><a href="#local-6989586621684384689"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Writer FunCalls (SOAC SOACS) -&gt; FunCalls
+forall w a. Writer w a -&gt; w
+</span><span class="hs-identifier hs-var">execWriter</span></span><span> </span><span class="annot"><span class="annottext">(Writer FunCalls (SOAC SOACS) -&gt; FunCalls)
+-&gt; Writer FunCalls (SOAC SOACS) -&gt; FunCalls
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SOACMapper SOACS SOACS (WriterT FunCalls Identity)
+-&gt; SOAC SOACS -&gt; Writer FunCalls (SOAC SOACS)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+SOACMapper frep trep m -&gt; SOAC frep -&gt; m (SOAC trep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapSOACM"><span class="hs-identifier hs-var">mapSOACM</span></a></span><span> </span><span class="annot"><span class="annottext">SOACMapper SOACS SOACS (WriterT FunCalls Identity)
+</span><a href="#local-6989586621684384686"><span class="hs-identifier hs-var">folder</span></a></span><span> </span><span class="annot"><span class="annottext">Op SOACS
+SOAC SOACS
+</span><a href="#local-6989586621684384689"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-128"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-129"></span><span>    </span><span id="local-6989586621684384686"><span class="annot"><span class="annottext">folder :: SOACMapper SOACS SOACS (WriterT FunCalls Identity)
+</span><a href="#local-6989586621684384686"><span class="hs-identifier hs-var hs-var">folder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-130"></span><span>      </span><span class="annot"><span class="annottext">SOACMapper Any Any (WriterT FunCalls Identity)
+forall (m :: * -&gt; *) rep. Monad m =&gt; SOACMapper rep rep m
+</span><a href="Futhark.IR.SOACS.SOAC.html#identitySOACMapper"><span class="hs-identifier hs-var">identitySOACMapper</span></a></span><span>
+</span><span id="line-131"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSOACLambda :: Lambda SOACS -&gt; WriterT FunCalls Identity (Lambda SOACS)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapOnSOACLambda"><span class="hs-identifier hs-var">mapOnSOACLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684384678"><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684384678"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-132"></span><span>            </span><span class="annot"><span class="annottext">FunCalls -&gt; WriterT FunCalls Identity ()
+forall w (m :: * -&gt; *). MonadWriter w m =&gt; w -&gt; m ()
+</span><span class="hs-identifier hs-var">tell</span></span><span> </span><span class="annot"><span class="annottext">(FunCalls -&gt; WriterT FunCalls Identity ())
+-&gt; FunCalls -&gt; WriterT FunCalls Identity ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Body -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGBody"><span class="hs-identifier hs-var">buildFGBody</span></a></span><span> </span><span class="annot"><span class="annottext">(Body -&gt; FunCalls) -&gt; Body -&gt; FunCalls
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda SOACS -&gt; Body
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684384678"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-133"></span><span>            </span><span class="annot"><span class="annottext">Lambda SOACS -&gt; WriterT FunCalls Identity (Lambda SOACS)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684384678"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-134"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-135"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#buildFGstm"><span class="hs-identifier hs-var">buildFGstm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec SOACS)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684384675"><span class="annot"><span class="annottext">ExpT SOACS
+</span><a href="#local-6989586621684384675"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Writer FunCalls (ExpT SOACS) -&gt; FunCalls
+forall w a. Writer w a -&gt; w
+</span><span class="hs-identifier hs-var">execWriter</span></span><span> </span><span class="annot"><span class="annottext">(Writer FunCalls (ExpT SOACS) -&gt; FunCalls)
+-&gt; Writer FunCalls (ExpT SOACS) -&gt; FunCalls
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Mapper SOACS SOACS (WriterT FunCalls Identity)
+-&gt; ExpT SOACS -&gt; Writer FunCalls (ExpT SOACS)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+Mapper frep trep m -&gt; Exp frep -&gt; m (Exp trep)
+</span><a href="Futhark.IR.Traversals.html#mapExpM"><span class="hs-identifier hs-var">mapExpM</span></a></span><span> </span><span class="annot"><span class="annottext">Mapper SOACS SOACS (WriterT FunCalls Identity)
+</span><a href="#local-6989586621684384673"><span class="hs-identifier hs-var">folder</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT SOACS
+</span><a href="#local-6989586621684384675"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-136"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-137"></span><span>    </span><span id="local-6989586621684384673"><span class="annot"><span class="annottext">folder :: Mapper SOACS SOACS (WriterT FunCalls Identity)
+</span><a href="#local-6989586621684384673"><span class="hs-identifier hs-var hs-var">folder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-138"></span><span>      </span><span class="annot"><span class="annottext">Mapper SOACS SOACS (WriterT FunCalls Identity)
+forall (m :: * -&gt; *) rep. Monad m =&gt; Mapper rep rep m
+</span><a href="Futhark.IR.Traversals.html#identityMapper"><span class="hs-identifier hs-var">identityMapper</span></a></span><span>
+</span><span id="line-139"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnBody :: Scope SOACS -&gt; Body -&gt; WriterT FunCalls Identity Body
+</span><a href="Futhark.IR.Traversals.html#mapOnBody"><span class="hs-identifier hs-var">mapOnBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">Scope SOACS
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684384666"><span class="annot"><span class="annottext">Body
+</span><a href="#local-6989586621684384666"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-140"></span><span>            </span><span class="annot"><span class="annottext">FunCalls -&gt; WriterT FunCalls Identity ()
+forall w (m :: * -&gt; *). MonadWriter w m =&gt; w -&gt; m ()
+</span><span class="hs-identifier hs-var">tell</span></span><span> </span><span class="annot"><span class="annottext">(FunCalls -&gt; WriterT FunCalls Identity ())
+-&gt; FunCalls -&gt; WriterT FunCalls Identity ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Body -&gt; FunCalls
+</span><a href="Futhark.Analysis.CallGraph.html#buildFGBody"><span class="hs-identifier hs-var">buildFGBody</span></a></span><span> </span><span class="annot"><span class="annottext">Body
+</span><a href="#local-6989586621684384666"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-141"></span><span>            </span><span class="annot"><span class="annottext">Body -&gt; WriterT FunCalls Identity Body
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Body
+</span><a href="#local-6989586621684384666"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-142"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-143"></span><span>
+</span><span id="line-144"></span><span class="hs-comment">-- | The set of all functions that are called noinline somewhere, or</span><span>
+</span><span id="line-145"></span><span class="hs-comment">-- have a noinline attribute on their definition.</span><span>
+</span><span id="line-146"></span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#findNoninlined"><span class="hs-identifier hs-type">findNoninlined</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.Set</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span>
+</span><span id="line-147"></span><span id="findNoninlined"><span class="annot"><span class="annottext">findNoninlined :: Prog SOACS -&gt; Set Name
+</span><a href="Futhark.Analysis.CallGraph.html#findNoninlined"><span class="hs-identifier hs-var hs-var">findNoninlined</span></a></span></span><span> </span><span id="local-6989586621684384665"><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684384665"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-148"></span><span>  </span><span class="annot"><span class="annottext">(FunDef SOACS -&gt; Set Name) -&gt; [FunDef SOACS] -&gt; Set Name
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS -&gt; Set Name
+forall {rep}. FunDef rep -&gt; Set Name
+</span><a href="#local-6989586621684384664"><span class="hs-identifier hs-var">noinlineDef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Prog SOACS -&gt; [FunDef SOACS]
+forall rep. Prog rep -&gt; [FunDef rep]
+</span><a href="Futhark.IR.Syntax.html#progFuns"><span class="hs-identifier hs-var hs-var">progFuns</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684384665"><span class="hs-identifier hs-var">prog</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span>    </span><span class="annot"><span class="annottext">Set Name -&gt; Set Name -&gt; Set Name
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Stm -&gt; Set Name) -&gt; Stms SOACS -&gt; Set Name
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm -&gt; Set Name
+</span><a href="#local-6989586621684384663"><span class="hs-identifier hs-var">onStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(FunDef SOACS -&gt; Stms SOACS) -&gt; [FunDef SOACS] -&gt; Stms SOACS
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Body -&gt; Stms SOACS
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">(Body -&gt; Stms SOACS)
+-&gt; (FunDef SOACS -&gt; Body) -&gt; FunDef SOACS -&gt; Stms SOACS
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">FunDef SOACS -&gt; Body
+forall rep. FunDef rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var hs-var">funDefBody</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Prog SOACS -&gt; [FunDef SOACS]
+forall rep. Prog rep -&gt; [FunDef rep]
+</span><a href="Futhark.IR.Syntax.html#progFuns"><span class="hs-identifier hs-var hs-var">progFuns</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684384665"><span class="hs-identifier hs-var">prog</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms SOACS -&gt; Stms SOACS -&gt; Stms SOACS
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Prog SOACS -&gt; Stms SOACS
+forall rep. Prog rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#progConsts"><span class="hs-identifier hs-var hs-var">progConsts</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684384665"><span class="hs-identifier hs-var">prog</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-150"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-151"></span><span>    </span><span class="annot"><a href="#local-6989586621684384663"><span class="hs-identifier hs-type">onStm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.Set</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span>
+</span><span id="line-152"></span><span>    </span><span id="local-6989586621684384663"><span class="annot"><span class="annottext">onStm :: Stm -&gt; Set Name
+</span><a href="#local-6989586621684384663"><span class="hs-identifier hs-var hs-var">onStm</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec SOACS)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684384662"><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684384662"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Apply"><span class="hs-identifier hs-type">Apply</span></a></span><span> </span><span id="local-6989586621684384661"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384661"><span class="hs-identifier hs-var">fname</span></a></span></span><span> </span><span class="annot"><span class="annottext">[(SubExp, Diet)]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[RetType SOACS]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">(Safety, SrcLoc, [SrcLoc])
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-153"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Attr
+</span><span class="hs-string">&quot;noinline&quot;</span></span><span> </span><span class="annot"><span class="annottext">Attr -&gt; Attrs -&gt; Bool
+</span><a href="Futhark.IR.Syntax.Core.html#inAttrs"><span class="hs-operator hs-var">`inAttrs`</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux () -&gt; Attrs
+forall dec. StmAux dec -&gt; Attrs
+</span><a href="Futhark.IR.Syntax.html#stmAuxAttrs"><span class="hs-identifier hs-var hs-var">stmAuxAttrs</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684384662"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-154"></span><span>        </span><span class="annot"><span class="annottext">Name -&gt; Set Name
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">S.singleton</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384661"><span class="hs-identifier hs-var">fname</span></a></span><span>
+</span><span id="line-155"></span><span>    </span><span class="annot"><a href="#local-6989586621684384663"><span class="hs-identifier hs-var">onStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec SOACS)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec SOACS)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684384659"><span class="annot"><span class="annottext">ExpT SOACS
+</span><a href="#local-6989586621684384659"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Writer (Set Name) (ExpT SOACS) -&gt; Set Name
+forall w a. Writer w a -&gt; w
+</span><span class="hs-identifier hs-var">execWriter</span></span><span> </span><span class="annot"><span class="annottext">(Writer (Set Name) (ExpT SOACS) -&gt; Set Name)
+-&gt; Writer (Set Name) (ExpT SOACS) -&gt; Set Name
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Mapper SOACS SOACS (WriterT (Set Name) Identity)
+-&gt; ExpT SOACS -&gt; Writer (Set Name) (ExpT SOACS)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+Mapper frep trep m -&gt; Exp frep -&gt; m (Exp trep)
+</span><a href="Futhark.IR.Traversals.html#mapExpM"><span class="hs-identifier hs-var">mapExpM</span></a></span><span> </span><span class="annot"><span class="annottext">Mapper SOACS SOACS (WriterT (Set Name) Identity)
+</span><a href="#local-6989586621684384658"><span class="hs-identifier hs-var">folder</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT SOACS
+</span><a href="#local-6989586621684384659"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-156"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-157"></span><span>        </span><span id="local-6989586621684384658"><span class="annot"><span class="annottext">folder :: Mapper SOACS SOACS (WriterT (Set Name) Identity)
+</span><a href="#local-6989586621684384658"><span class="hs-identifier hs-var hs-var">folder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-158"></span><span>          </span><span class="annot"><span class="annottext">Mapper SOACS SOACS (WriterT (Set Name) Identity)
+forall (m :: * -&gt; *) rep. Monad m =&gt; Mapper rep rep m
+</span><a href="Futhark.IR.Traversals.html#identityMapper"><span class="hs-identifier hs-var">identityMapper</span></a></span><span>
+</span><span id="line-159"></span><span>            </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnBody :: Scope SOACS -&gt; Body -&gt; WriterT (Set Name) Identity Body
+</span><a href="Futhark.IR.Traversals.html#mapOnBody"><span class="hs-identifier hs-var">mapOnBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">Scope SOACS
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684384642"><span class="annot"><span class="annottext">Body
+</span><a href="#local-6989586621684384642"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-160"></span><span>                </span><span class="annot"><span class="annottext">Set Name -&gt; WriterT (Set Name) Identity ()
+forall w (m :: * -&gt; *). MonadWriter w m =&gt; w -&gt; m ()
+</span><span class="hs-identifier hs-var">tell</span></span><span> </span><span class="annot"><span class="annottext">(Set Name -&gt; WriterT (Set Name) Identity ())
+-&gt; Set Name -&gt; WriterT (Set Name) Identity ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Stm -&gt; Set Name) -&gt; Stms SOACS -&gt; Set Name
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm -&gt; Set Name
+</span><a href="#local-6989586621684384663"><span class="hs-identifier hs-var">onStm</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms SOACS -&gt; Set Name) -&gt; Stms SOACS -&gt; Set Name
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Body -&gt; Stms SOACS
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">Body
+</span><a href="#local-6989586621684384642"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-161"></span><span>                </span><span class="annot"><span class="annottext">Body -&gt; WriterT (Set Name) Identity Body
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Body
+</span><a href="#local-6989586621684384642"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-162"></span><span>              </span><span class="annot"><span class="annottext">mapOnOp :: Op SOACS -&gt; WriterT (Set Name) Identity (Op SOACS)
+</span><a href="Futhark.IR.Traversals.html#mapOnOp"><span class="hs-identifier hs-var">mapOnOp</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-163"></span><span>                </span><span class="annot"><span class="annottext">SOACMapper SOACS SOACS (WriterT (Set Name) Identity)
+-&gt; SOAC SOACS -&gt; WriterT (Set Name) Identity (SOAC SOACS)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+SOACMapper frep trep m -&gt; SOAC frep -&gt; m (SOAC trep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapSOACM"><span class="hs-identifier hs-var">mapSOACM</span></a></span><span>
+</span><span id="line-164"></span><span>                  </span><span class="annot"><span class="annottext">SOACMapper Any Any (WriterT (Set Name) Identity)
+forall (m :: * -&gt; *) rep. Monad m =&gt; SOACMapper rep rep m
+</span><a href="Futhark.IR.SOACS.SOAC.html#identitySOACMapper"><span class="hs-identifier hs-var">identitySOACMapper</span></a></span><span>
+</span><span id="line-165"></span><span>                    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSOACLambda :: Lambda SOACS -&gt; WriterT (Set Name) Identity (Lambda SOACS)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapOnSOACLambda"><span class="hs-identifier hs-var">mapOnSOACLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684384640"><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684384640"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-166"></span><span>                        </span><span class="annot"><span class="annottext">Set Name -&gt; WriterT (Set Name) Identity ()
+forall w (m :: * -&gt; *). MonadWriter w m =&gt; w -&gt; m ()
+</span><span class="hs-identifier hs-var">tell</span></span><span> </span><span class="annot"><span class="annottext">(Set Name -&gt; WriterT (Set Name) Identity ())
+-&gt; Set Name -&gt; WriterT (Set Name) Identity ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Stm -&gt; Set Name) -&gt; Stms SOACS -&gt; Set Name
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm -&gt; Set Name
+</span><a href="#local-6989586621684384663"><span class="hs-identifier hs-var">onStm</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms SOACS -&gt; Set Name) -&gt; Stms SOACS -&gt; Set Name
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Body -&gt; Stms SOACS
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">(Body -&gt; Stms SOACS) -&gt; Body -&gt; Stms SOACS
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda SOACS -&gt; Body
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684384640"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-167"></span><span>                        </span><span class="annot"><span class="annottext">Lambda SOACS -&gt; WriterT (Set Name) Identity (Lambda SOACS)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684384640"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-168"></span><span>                    </span><span class="hs-special">}</span><span>
+</span><span id="line-169"></span><span>            </span><span class="hs-special">}</span><span>
+</span><span id="line-170"></span><span>
+</span><span id="line-171"></span><span>    </span><span id="local-6989586621684384664"><span class="annot"><span class="annottext">noinlineDef :: FunDef rep -&gt; Set Name
+</span><a href="#local-6989586621684384664"><span class="hs-identifier hs-var hs-var">noinlineDef</span></a></span></span><span> </span><span id="local-6989586621684384636"><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684384636"><span class="hs-identifier hs-var">fd</span></a></span></span><span>
+</span><span id="line-172"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Attr
+</span><span class="hs-string">&quot;noinline&quot;</span></span><span> </span><span class="annot"><span class="annottext">Attr -&gt; Attrs -&gt; Bool
+</span><a href="Futhark.IR.Syntax.Core.html#inAttrs"><span class="hs-operator hs-var">`inAttrs`</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep -&gt; Attrs
+forall rep. FunDef rep -&gt; Attrs
+</span><a href="Futhark.IR.Syntax.html#funDefAttrs"><span class="hs-identifier hs-var hs-var">funDefAttrs</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684384636"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-173"></span><span>        </span><span class="annot"><span class="annottext">Name -&gt; Set Name
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">S.singleton</span></span><span> </span><span class="annot"><span class="annottext">(Name -&gt; Set Name) -&gt; Name -&gt; Set Name
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FunDef rep -&gt; Name
+forall rep. FunDef rep -&gt; Name
+</span><a href="Futhark.IR.Syntax.html#funDefName"><span class="hs-identifier hs-var hs-var">funDefName</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684384636"><span class="hs-identifier hs-var">fd</span></a></span><span>
+</span><span id="line-174"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-175"></span><span>        </span><span class="annot"><span class="annottext">Set Name
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-176"></span><span>
+</span><span id="line-177"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684384630"><span id="local-6989586621684384632"><span class="annot"><span class="hs-identifier hs-type">Pretty</span></span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#FunCalls"><span class="hs-identifier hs-type">FunCalls</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-178"></span><span>  </span><span id="local-6989586621684384622"><span class="annot"><span class="annottext">ppr :: FunCalls -&gt; Doc
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">ppr</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Doc] -&gt; Doc
+</span><span class="hs-identifier hs-var">stack</span></span><span> </span><span class="annot"><span class="annottext">([Doc] -&gt; Doc) -&gt; (FunCalls -&gt; [Doc]) -&gt; FunCalls -&gt; Doc
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">((CallId, (Attrs, Name)) -&gt; Doc)
+-&gt; [(CallId, (Attrs, Name))] -&gt; [Doc]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(CallId, (Attrs, Name)) -&gt; Doc
+forall {a} {a} {a}.
+(Pretty a, Pretty a, Pretty a) =&gt;
+(a, (a, a)) -&gt; Doc
+</span><a href="#local-6989586621684384619"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">([(CallId, (Attrs, Name))] -&gt; [Doc])
+-&gt; (FunCalls -&gt; [(CallId, (Attrs, Name))]) -&gt; FunCalls -&gt; [Doc]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Map CallId (Attrs, Name) -&gt; [(CallId, (Attrs, Name))]
+forall k a. Map k a -&gt; [(k, a)]
+</span><span class="hs-identifier hs-var">M.toList</span></span><span> </span><span class="annot"><span class="annottext">(Map CallId (Attrs, Name) -&gt; [(CallId, (Attrs, Name))])
+-&gt; (FunCalls -&gt; Map CallId (Attrs, Name))
+-&gt; FunCalls
+-&gt; [(CallId, (Attrs, Name))]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">FunCalls -&gt; Map CallId (Attrs, Name)
+</span><a href="Futhark.Analysis.CallGraph.html#fcMap"><span class="hs-identifier hs-var hs-var">fcMap</span></a></span><span>
+</span><span id="line-179"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-180"></span><span>      </span><span id="local-6989586621684384619"><span class="annot"><span class="annottext">f :: (a, (a, a)) -&gt; Doc
+</span><a href="#local-6989586621684384619"><span class="hs-identifier hs-var hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684384608"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684384608"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684384607"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684384607"><span class="hs-identifier hs-var">attrs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684384606"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684384606"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot;=&gt;&quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;+&gt;</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684384606"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;+&gt;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc
+</span><span class="hs-identifier hs-var">parens</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot;at&quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;+&gt;</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684384608"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;+&gt;</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684384607"><span class="hs-identifier hs-var">attrs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-181"></span><span>
+</span><span id="line-182"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684384599"><span id="local-6989586621684384601"><span class="annot"><span class="hs-identifier hs-type">Pretty</span></span><span> </span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-type">CallGraph</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-183"></span><span>  </span><span id="local-6989586621684384594"><span class="annot"><span class="annottext">ppr :: CallGraph -&gt; Doc
+</span><a href="#local-6989586621684384594"><span class="hs-identifier hs-var hs-var hs-var hs-var">ppr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.CallGraph.html#CallGraph"><span class="hs-identifier hs-type">CallGraph</span></a></span><span> </span><span id="local-6989586621684384593"><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384593"><span class="hs-identifier hs-var">fg</span></a></span></span><span> </span><span id="local-6989586621684384592"><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384592"><span class="hs-identifier hs-var">cg</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-184"></span><span>    </span><span class="annot"><span class="annottext">[Doc] -&gt; Doc
+</span><span class="hs-identifier hs-var">stack</span></span><span> </span><span class="annot"><span class="annottext">([Doc] -&gt; Doc) -&gt; [Doc] -&gt; Doc
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-185"></span><span>      </span><span class="annot"><span class="annottext">Doc -&gt; [Doc] -&gt; [Doc]
+</span><span class="hs-identifier hs-var">punctuate</span></span><span> </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-identifier hs-var">line</span></span><span> </span><span class="annot"><span class="annottext">([Doc] -&gt; [Doc]) -&gt; [Doc] -&gt; [Doc]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-186"></span><span>        </span><span class="annot"><span class="annottext">(Name, FunCalls) -&gt; Doc
+forall {a}. Pretty a =&gt; (Name, a) -&gt; Doc
+</span><a href="#local-6989586621684384589"><span class="hs-identifier hs-var">ppFunCalls</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name
+</span><span class="hs-string">&quot;called at top level&quot;</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">FunCalls
+</span><a href="#local-6989586621684384592"><span class="hs-identifier hs-var">cg</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Doc -&gt; [Doc] -&gt; [Doc]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">((Name, FunCalls) -&gt; Doc) -&gt; [(Name, FunCalls)] -&gt; [Doc]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(Name, FunCalls) -&gt; Doc
+forall {a}. Pretty a =&gt; (Name, a) -&gt; Doc
+</span><a href="#local-6989586621684384589"><span class="hs-identifier hs-var">ppFunCalls</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FunGraph -&gt; [(Name, FunCalls)]
+forall k a. Map k a -&gt; [(k, a)]
+</span><span class="hs-identifier hs-var">M.toList</span></span><span> </span><span class="annot"><span class="annottext">FunGraph
+</span><a href="#local-6989586621684384593"><span class="hs-identifier hs-var">fg</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-187"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-188"></span><span>      </span><span id="local-6989586621684384589"><span class="annot"><span class="annottext">ppFunCalls :: (Name, a) -&gt; Doc
+</span><a href="#local-6989586621684384589"><span class="hs-identifier hs-var hs-var">ppFunCalls</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684384585"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384585"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684384584"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684384584"><span class="hs-identifier hs-var">fcalls</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-189"></span><span>        </span><span class="annot"><span class="annottext">Name -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384585"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;/&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; Doc
+</span><span class="hs-identifier hs-var">text</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Char -&gt; Char) -&gt; ShowS
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Char
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'='</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; String
+</span><a href="Language.Futhark.Core.html#nameToString"><span class="hs-identifier hs-var">nameToString</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684384585"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-190"></span><span>          </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;/&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Doc -&gt; Doc
+</span><span class="hs-identifier hs-var">indent</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684384584"><span class="hs-identifier hs-var">fcalls</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-191"></span></pre></body></html>

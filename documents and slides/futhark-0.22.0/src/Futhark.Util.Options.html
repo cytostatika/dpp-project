@@ -1,0 +1,446 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | Common code for parsing command line options based on getopt.</span><span>
+</span><span id="line-2"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Util.Options</span><span>
+</span><span id="line-3"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Util.Options.html#FunOptDescr"><span class="hs-identifier">FunOptDescr</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-4"></span><span>    </span><span class="annot"><a href="Futhark.Util.Options.html#mainWithOptions"><span class="hs-identifier">mainWithOptions</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-5"></span><span>    </span><span class="annot"><a href="Futhark.Util.Options.html#commonOptions"><span class="hs-identifier">commonOptions</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Futhark.Util.Options.html#optionsError"><span class="hs-identifier">optionsError</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><span class="hs-identifier">System.Console.GetOpt</span></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.IO.Class</span></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">sortBy</span></span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Version.html"><span class="hs-identifier">Futhark.Version</span></a></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Console.GetOpt</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Environment</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">getProgName</span></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Exit</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO</span></span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- | A command line option that either purely updates a configuration,</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- or performs an IO action (and stops).</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">type</span><span> </span><span id="FunOptDescr"><span class="annot"><a href="Futhark.Util.Options.html#FunOptDescr"><span class="hs-identifier hs-var">FunOptDescr</span></a></span></span><span> </span><span id="local-6989586621684567652"><span class="annot"><a href="#local-6989586621684567652"><span class="hs-identifier hs-type">cfg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">OptDescr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684567652"><span class="hs-identifier hs-type">cfg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684567652"><span class="hs-identifier hs-type">cfg</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- | Generate a main action that parses the given command line options</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- (while always adding 'commonOptions').</span><span>
+</span><span id="line-25"></span><span id="local-6989586621684567735"><span class="annot"><a href="Futhark.Util.Options.html#mainWithOptions"><span class="hs-identifier hs-type">mainWithOptions</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-26"></span><span>  </span><span class="annot"><a href="#local-6989586621684567735"><span class="hs-identifier hs-type">cfg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-27"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Util.Options.html#FunOptDescr"><span class="hs-identifier hs-type">FunOptDescr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567735"><span class="hs-identifier hs-type">cfg</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-28"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684567735"><span class="hs-identifier hs-type">cfg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-30"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-31"></span><span>  </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-32"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-33"></span><span id="mainWithOptions"><span class="annot"><span class="annottext">mainWithOptions :: forall cfg.
+cfg
+-&gt; [FunOptDescr cfg]
+-&gt; String
+-&gt; ([String] -&gt; cfg -&gt; Maybe (IO ()))
+-&gt; String
+-&gt; [String]
+-&gt; IO ()
+</span><a href="Futhark.Util.Options.html#mainWithOptions"><span class="hs-identifier hs-var hs-var">mainWithOptions</span></a></span></span><span> </span><span id="local-6989586621684567649"><span class="annot"><span class="annottext">cfg
+</span><a href="#local-6989586621684567649"><span class="hs-identifier hs-var">emptyConfig</span></a></span></span><span> </span><span id="local-6989586621684567648"><span class="annot"><span class="annottext">[FunOptDescr cfg]
+</span><a href="#local-6989586621684567648"><span class="hs-identifier hs-var">commandLineOptions</span></a></span></span><span> </span><span id="local-6989586621684567647"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567647"><span class="hs-identifier hs-var">usage</span></a></span></span><span> </span><span id="local-6989586621684567646"><span class="annot"><span class="annottext">[String] -&gt; cfg -&gt; Maybe (IO ())
+</span><a href="#local-6989586621684567646"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684567645"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567645"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span id="local-6989586621684567644"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567644"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-34"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ArgOrder (Either (IO ()) (cfg -&gt; cfg))
+-&gt; [FunOptDescr cfg]
+-&gt; [String]
+-&gt; ([Either (IO ()) (cfg -&gt; cfg)], [String], [String], [String])
+forall a.
+ArgOrder a
+-&gt; [OptDescr a] -&gt; [String] -&gt; ([a], [String], [String], [String])
+</span><span class="hs-identifier hs-var">getOpt'</span></span><span> </span><span class="annot"><span class="annottext">ArgOrder (Either (IO ()) (cfg -&gt; cfg))
+forall a. ArgOrder a
+</span><span class="hs-identifier hs-var">Permute</span></span><span> </span><span class="annot"><span class="annottext">[FunOptDescr cfg]
+</span><a href="#local-6989586621684567641"><span class="hs-identifier hs-var">commandLineOptions'</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567644"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-35"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684567640"><span class="annot"><span class="annottext">[Either (IO ()) (cfg -&gt; cfg)]
+</span><a href="#local-6989586621684567640"><span class="hs-identifier hs-var">opts</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684567639"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567639"><span class="hs-identifier hs-var">nonopts</span></a></span></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-36"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[Either (IO ()) (cfg -&gt; cfg)] -&gt; Either (IO ()) cfg
+forall {m :: * -&gt; *}. Monad m =&gt; [m (cfg -&gt; cfg)] -&gt; m cfg
+</span><a href="#local-6989586621684567638"><span class="hs-identifier hs-var">applyOpts</span></a></span><span> </span><span class="annot"><span class="annottext">[Either (IO ()) (cfg -&gt; cfg)]
+</span><a href="#local-6989586621684567640"><span class="hs-identifier hs-var">opts</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-37"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621684567637"><span class="annot"><span class="annottext">cfg
+</span><a href="#local-6989586621684567637"><span class="hs-identifier hs-var">config</span></a></span></span><span>
+</span><span id="line-38"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684567636"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621684567636"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[String] -&gt; cfg -&gt; Maybe (IO ())
+</span><a href="#local-6989586621684567646"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567639"><span class="hs-identifier hs-var">nonopts</span></a></span><span> </span><span class="annot"><span class="annottext">cfg
+</span><a href="#local-6989586621684567637"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621684567636"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-39"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[String] -&gt; [String] -&gt; [String] -&gt; IO ()
+</span><a href="#local-6989586621684567635"><span class="hs-identifier hs-var">invalid</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567639"><span class="hs-identifier hs-var">nonopts</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-40"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684567634"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621684567634"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621684567634"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-41"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Either (IO ()) (cfg -&gt; cfg)]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684567633"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567633"><span class="hs-identifier hs-var">nonopts</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684567632"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567632"><span class="hs-identifier hs-var">unrecs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684567631"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567631"><span class="hs-identifier hs-var">errs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[String] -&gt; [String] -&gt; [String] -&gt; IO ()
+</span><a href="#local-6989586621684567635"><span class="hs-identifier hs-var">invalid</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567633"><span class="hs-identifier hs-var">nonopts</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567632"><span class="hs-identifier hs-var">unrecs</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567631"><span class="hs-identifier hs-var">errs</span></a></span><span>
+</span><span id="line-42"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-43"></span><span>    </span><span id="local-6989586621684567638"><span class="annot"><span class="annottext">applyOpts :: [m (cfg -&gt; cfg)] -&gt; m cfg
+</span><a href="#local-6989586621684567638"><span class="hs-identifier hs-var hs-var">applyOpts</span></a></span></span><span> </span><span id="local-6989586621684567623"><span class="annot"><span class="annottext">[m (cfg -&gt; cfg)]
+</span><a href="#local-6989586621684567623"><span class="hs-identifier hs-var">opts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-44"></span><span>      </span><span id="local-6989586621684567622"><span class="annot"><span class="annottext">[cfg -&gt; cfg]
+</span><a href="#local-6989586621684567622"><span class="hs-identifier hs-var">fs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[m (cfg -&gt; cfg)] -&gt; m [cfg -&gt; cfg]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a.
+(Traversable t, Monad m) =&gt;
+t (m a) -&gt; m (t a)
+</span><span class="hs-identifier hs-var">sequence</span></span><span> </span><span class="annot"><span class="annottext">[m (cfg -&gt; cfg)]
+</span><a href="#local-6989586621684567623"><span class="hs-identifier hs-var">opts</span></a></span><span>
+</span><span id="line-45"></span><span>      </span><span class="annot"><span class="annottext">cfg -&gt; m cfg
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(cfg -&gt; m cfg) -&gt; cfg -&gt; m cfg
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">((cfg -&gt; cfg) -&gt; (cfg -&gt; cfg) -&gt; cfg -&gt; cfg)
+-&gt; (cfg -&gt; cfg) -&gt; [cfg -&gt; cfg] -&gt; cfg -&gt; cfg
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl</span></span><span> </span><span class="annot"><span class="annottext">(cfg -&gt; cfg) -&gt; (cfg -&gt; cfg) -&gt; cfg -&gt; cfg
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">(.)</span></span><span> </span><span class="annot"><span class="annottext">cfg -&gt; cfg
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[cfg -&gt; cfg] -&gt; [cfg -&gt; cfg]
+forall a. [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">reverse</span></span><span> </span><span class="annot"><span class="annottext">[cfg -&gt; cfg]
+</span><a href="#local-6989586621684567622"><span class="hs-identifier hs-var">fs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">cfg
+</span><a href="#local-6989586621684567649"><span class="hs-identifier hs-var">emptyConfig</span></a></span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span>    </span><span id="local-6989586621684567635"><span class="annot"><span class="annottext">invalid :: [String] -&gt; [String] -&gt; [String] -&gt; IO ()
+</span><a href="#local-6989586621684567635"><span class="hs-identifier hs-var hs-var">invalid</span></a></span></span><span> </span><span id="local-6989586621684567615"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567615"><span class="hs-identifier hs-var">nonopts</span></a></span></span><span> </span><span id="local-6989586621684567614"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567614"><span class="hs-identifier hs-var">unrecs</span></a></span></span><span> </span><span id="local-6989586621684567613"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567613"><span class="hs-identifier hs-var">errs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-48"></span><span>      </span><span id="local-6989586621684567612"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567612"><span class="hs-identifier hs-var">help</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; [FunOptDescr cfg] -&gt; IO String
+forall a. String -&gt; String -&gt; [OptDescr a] -&gt; IO String
+</span><a href="Futhark.Util.Options.html#helpStr"><span class="hs-identifier hs-var">helpStr</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567645"><span class="hs-identifier hs-var">prog</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567647"><span class="hs-identifier hs-var">usage</span></a></span><span> </span><span class="annot"><span class="annottext">[FunOptDescr cfg]
+</span><a href="#local-6989586621684567641"><span class="hs-identifier hs-var">commandLineOptions'</span></a></span><span>
+</span><span id="line-49"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; [String] -&gt; [String] -&gt; [String] -&gt; IO ()
+</span><a href="Futhark.Util.Options.html#badOptions"><span class="hs-identifier hs-var">badOptions</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567612"><span class="hs-identifier hs-var">help</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567615"><span class="hs-identifier hs-var">nonopts</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567613"><span class="hs-identifier hs-var">errs</span></a></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567614"><span class="hs-identifier hs-var">unrecs</span></a></span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span>    </span><span id="local-6989586621684567641"><span class="annot"><span class="annottext">commandLineOptions' :: [FunOptDescr cfg]
+</span><a href="#local-6989586621684567641"><span class="hs-identifier hs-var hs-var">commandLineOptions'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-52"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; String -&gt; [FunOptDescr cfg] -&gt; [FunOptDescr cfg]
+forall cfg.
+String -&gt; String -&gt; [FunOptDescr cfg] -&gt; [FunOptDescr cfg]
+</span><a href="Futhark.Util.Options.html#commonOptions"><span class="hs-identifier hs-var">commonOptions</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567645"><span class="hs-identifier hs-var">prog</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567647"><span class="hs-identifier hs-var">usage</span></a></span><span> </span><span class="annot"><span class="annottext">[FunOptDescr cfg]
+</span><a href="#local-6989586621684567648"><span class="hs-identifier hs-var">commandLineOptions</span></a></span><span> </span><span class="annot"><span class="annottext">[FunOptDescr cfg] -&gt; [FunOptDescr cfg] -&gt; [FunOptDescr cfg]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[FunOptDescr cfg]
+</span><a href="#local-6989586621684567648"><span class="hs-identifier hs-var">commandLineOptions</span></a></span><span>
+</span><span id="line-53"></span><span>
+</span><span id="line-54"></span><span id="local-6989586621684567709"><span class="annot"><a href="Futhark.Util.Options.html#helpStr"><span class="hs-identifier hs-type">helpStr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">OptDescr</span></span><span> </span><span class="annot"><a href="#local-6989586621684567709"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span></span><span>
+</span><span id="line-55"></span><span id="helpStr"><span class="annot"><span class="annottext">helpStr :: forall a. String -&gt; String -&gt; [OptDescr a] -&gt; IO String
+</span><a href="Futhark.Util.Options.html#helpStr"><span class="hs-identifier hs-var hs-var">helpStr</span></a></span></span><span> </span><span id="local-6989586621684567608"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567608"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span id="local-6989586621684567607"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567607"><span class="hs-identifier hs-var">usage</span></a></span></span><span> </span><span id="local-6989586621684567606"><span class="annot"><span class="annottext">[OptDescr a]
+</span><a href="#local-6989586621684567606"><span class="hs-identifier hs-var">opts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684567605"><span class="annot"><span class="annottext">header :: String
+</span><a href="#local-6989586621684567605"><span class="hs-identifier hs-var hs-var">header</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[String] -&gt; String
+</span><span class="hs-identifier hs-var">unlines</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Usage: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567608"><span class="hs-identifier hs-var">prog</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot; &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567607"><span class="hs-identifier hs-var">usage</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Options:&quot;</span></span><span class="hs-special">]</span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; IO String
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO String) -&gt; String -&gt; IO String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; [OptDescr a] -&gt; String
+forall a. String -&gt; [OptDescr a] -&gt; String
+</span><span class="hs-identifier hs-var">usageInfo</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567605"><span class="hs-identifier hs-var">header</span></a></span><span> </span><span class="annot"><span class="annottext">([OptDescr a] -&gt; String) -&gt; [OptDescr a] -&gt; String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(OptDescr a -&gt; OptDescr a -&gt; Ordering)
+-&gt; [OptDescr a] -&gt; [OptDescr a]
+forall a. (a -&gt; a -&gt; Ordering) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">sortBy</span></span><span> </span><span class="annot"><span class="annottext">OptDescr a -&gt; OptDescr a -&gt; Ordering
+forall {a} {a}. OptDescr a -&gt; OptDescr a -&gt; Ordering
+</span><a href="#local-6989586621684567602"><span class="hs-identifier hs-var">cmp</span></a></span><span> </span><span class="annot"><span class="annottext">[OptDescr a]
+</span><a href="#local-6989586621684567606"><span class="hs-identifier hs-var">opts</span></a></span><span>
+</span><span id="line-58"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-comment">-- Sort first by long option, then by short name, then by description.  Hopefully</span><span>
+</span><span id="line-60"></span><span>    </span><span class="hs-comment">-- everything has a long option.</span><span>
+</span><span id="line-61"></span><span>    </span><span id="local-6989586621684567602"><span class="annot"><span class="annottext">cmp :: OptDescr a -&gt; OptDescr a -&gt; Ordering
+</span><a href="#local-6989586621684567602"><span class="hs-identifier hs-var hs-var">cmp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Option</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684567594"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567594"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ArgDescr a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Option</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684567593"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567593"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ArgDescr a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; Ordering
+forall a. Ord a =&gt; a -&gt; a -&gt; Ordering
+</span><span class="hs-identifier hs-var">compare</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567594"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567593"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><a href="#local-6989586621684567602"><span class="hs-identifier hs-var">cmp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Option</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684567591"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621684567591"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[String]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">ArgDescr a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Option</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684567590"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621684567590"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[String]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">ArgDescr a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Char -&gt; Ordering
+forall a. Ord a =&gt; a -&gt; a -&gt; Ordering
+</span><span class="hs-identifier hs-var">compare</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621684567591"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621684567590"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-63"></span><span>    </span><span class="annot"><a href="#local-6989586621684567602"><span class="hs-identifier hs-var">cmp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Option</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">ArgDescr a
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684567589"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567589"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Option</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">ArgDescr a
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684567588"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567588"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; Ordering
+forall a. Ord a =&gt; a -&gt; a -&gt; Ordering
+</span><span class="hs-identifier hs-var">compare</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567589"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567588"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span class="annot"><a href="Futhark.Util.Options.html#badOptions"><span class="hs-identifier hs-type">badOptions</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span id="badOptions"><span class="annot"><span class="annottext">badOptions :: String -&gt; [String] -&gt; [String] -&gt; [String] -&gt; IO ()
+</span><a href="Futhark.Util.Options.html#badOptions"><span class="hs-identifier hs-var hs-var">badOptions</span></a></span></span><span> </span><span id="local-6989586621684567587"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567587"><span class="hs-identifier hs-var">usage</span></a></span></span><span> </span><span id="local-6989586621684567586"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567586"><span class="hs-identifier hs-var">nonopts</span></a></span></span><span> </span><span id="local-6989586621684567585"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567585"><span class="hs-identifier hs-var">errs</span></a></span></span><span> </span><span id="local-6989586621684567584"><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567584"><span class="hs-identifier hs-var">unrecs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-67"></span><span>  </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; [String] -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; IO ()
+forall (m :: * -&gt; *). MonadIO m =&gt; String -&gt; m ()
+</span><a href="Futhark.Util.Options.html#errput"><span class="hs-identifier hs-var">errput</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; (String -&gt; String) -&gt; String -&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Junk argument: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567586"><span class="hs-identifier hs-var">nonopts</span></a></span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; [String] -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; IO ()
+forall (m :: * -&gt; *). MonadIO m =&gt; String -&gt; m ()
+</span><a href="Futhark.Util.Options.html#errput"><span class="hs-identifier hs-var">errput</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; (String -&gt; String) -&gt; String -&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Unrecognised argument: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567584"><span class="hs-identifier hs-var">unrecs</span></a></span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><span class="annottext">Handle -&gt; String -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStr</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; String -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[String] -&gt; String
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">[String]
+</span><a href="#local-6989586621684567585"><span class="hs-identifier hs-var">errs</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567587"><span class="hs-identifier hs-var">usage</span></a></span><span>
+</span><span id="line-70"></span><span>  </span><span class="annot"><span class="annottext">ExitCode -&gt; IO ()
+forall a. ExitCode -&gt; IO a
+</span><span class="hs-identifier hs-var">exitWith</span></span><span> </span><span class="annot"><span class="annottext">(ExitCode -&gt; IO ()) -&gt; ExitCode -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ExitCode
+</span><span class="hs-identifier hs-var">ExitFailure</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-71"></span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- | Short-hand for 'liftIO . hPutStrLn stderr'</span><span>
+</span><span id="line-73"></span><span id="local-6989586621684567694"><span class="annot"><a href="Futhark.Util.Options.html#errput"><span class="hs-identifier hs-type">errput</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621684567694"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684567694"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-74"></span><span id="errput"><span class="annot"><span class="annottext">errput :: forall (m :: * -&gt; *). MonadIO m =&gt; String -&gt; m ()
+</span><a href="Futhark.Util.Options.html#errput"><span class="hs-identifier hs-var hs-var">errput</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; m ()
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; m ()) -&gt; (String -&gt; IO ()) -&gt; String -&gt; m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; String -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- | Common definitions for @-v@ and @-h@, given the list of all other</span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- options.</span><span>
+</span><span id="line-78"></span><span id="local-6989586621684567708"><span class="annot"><a href="Futhark.Util.Options.html#commonOptions"><span class="hs-identifier hs-type">commonOptions</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Util.Options.html#FunOptDescr"><span class="hs-identifier hs-type">FunOptDescr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567708"><span class="hs-identifier hs-type">cfg</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Util.Options.html#FunOptDescr"><span class="hs-identifier hs-type">FunOptDescr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567708"><span class="hs-identifier hs-type">cfg</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-79"></span><span id="commonOptions"><span class="annot"><span class="annottext">commonOptions :: forall cfg.
+String -&gt; String -&gt; [FunOptDescr cfg] -&gt; [FunOptDescr cfg]
+</span><a href="Futhark.Util.Options.html#commonOptions"><span class="hs-identifier hs-var hs-var">commonOptions</span></a></span></span><span> </span><span id="local-6989586621684567567"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567567"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span id="local-6989586621684567566"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567566"><span class="hs-identifier hs-var">usage</span></a></span></span><span> </span><span id="local-6989586621684567565"><span class="annot"><span class="annottext">[FunOptDescr cfg]
+</span><a href="#local-6989586621684567565"><span class="hs-identifier hs-var">options</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">String
+-&gt; [String]
+-&gt; ArgDescr (Either (IO ()) (cfg -&gt; cfg))
+-&gt; String
+-&gt; FunOptDescr cfg
+forall a. String -&gt; [String] -&gt; ArgDescr a -&gt; String -&gt; OptDescr a
+</span><span class="hs-identifier hs-var">Option</span></span><span>
+</span><span id="line-81"></span><span>      </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;V&quot;</span></span><span>
+</span><span id="line-82"></span><span>      </span><span class="hs-special">[</span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;version&quot;</span></span><span class="hs-special">]</span><span>
+</span><span id="line-83"></span><span>      </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Either (IO ()) (cfg -&gt; cfg)
+-&gt; ArgDescr (Either (IO ()) (cfg -&gt; cfg))
+forall a. a -&gt; ArgDescr a
+</span><span class="hs-identifier hs-var">NoArg</span></span><span> </span><span class="annot"><span class="annottext">(Either (IO ()) (cfg -&gt; cfg)
+ -&gt; ArgDescr (Either (IO ()) (cfg -&gt; cfg)))
+-&gt; Either (IO ()) (cfg -&gt; cfg)
+-&gt; ArgDescr (Either (IO ()) (cfg -&gt; cfg))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-84"></span><span>          </span><span class="annot"><span class="annottext">IO () -&gt; Either (IO ()) (cfg -&gt; cfg)
+forall a b. a -&gt; Either a b
+</span><span class="hs-identifier hs-var">Left</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; Either (IO ()) (cfg -&gt; cfg))
+-&gt; IO () -&gt; Either (IO ()) (cfg -&gt; cfg)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-85"></span><span>            </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621684567563"><span class="hs-identifier hs-var">header</span></a></span><span>
+</span><span id="line-86"></span><span>            </span><span class="annot"><span class="annottext">IO ()
+forall a. IO a
+</span><span class="hs-identifier hs-var">exitSuccess</span></span><span>
+</span><span id="line-87"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>      </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Print version information and exit.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-89"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; [String]
+-&gt; ArgDescr (Either (IO ()) (cfg -&gt; cfg))
+-&gt; String
+-&gt; FunOptDescr cfg
+forall a. String -&gt; [String] -&gt; ArgDescr a -&gt; String -&gt; OptDescr a
+</span><span class="hs-identifier hs-var">Option</span></span><span>
+</span><span id="line-90"></span><span>      </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;h&quot;</span></span><span>
+</span><span id="line-91"></span><span>      </span><span class="hs-special">[</span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;help&quot;</span></span><span class="hs-special">]</span><span>
+</span><span id="line-92"></span><span>      </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Either (IO ()) (cfg -&gt; cfg)
+-&gt; ArgDescr (Either (IO ()) (cfg -&gt; cfg))
+forall a. a -&gt; ArgDescr a
+</span><span class="hs-identifier hs-var">NoArg</span></span><span> </span><span class="annot"><span class="annottext">(Either (IO ()) (cfg -&gt; cfg)
+ -&gt; ArgDescr (Either (IO ()) (cfg -&gt; cfg)))
+-&gt; Either (IO ()) (cfg -&gt; cfg)
+-&gt; ArgDescr (Either (IO ()) (cfg -&gt; cfg))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-93"></span><span>          </span><span class="annot"><span class="annottext">IO () -&gt; Either (IO ()) (cfg -&gt; cfg)
+forall a b. a -&gt; Either a b
+</span><span class="hs-identifier hs-var">Left</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; Either (IO ()) (cfg -&gt; cfg))
+-&gt; IO () -&gt; Either (IO ()) (cfg -&gt; cfg)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-94"></span><span>            </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621684567563"><span class="hs-identifier hs-var">header</span></a></span><span>
+</span><span id="line-95"></span><span>            </span><span class="annot"><span class="annottext">String -&gt; IO ()
+</span><span class="hs-identifier hs-var">putStrLn</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span>
+</span><span id="line-96"></span><span>            </span><span class="annot"><span class="annottext">String -&gt; IO ()
+</span><span class="hs-identifier hs-var">putStrLn</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; IO String -&gt; IO ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; [FunOptDescr cfg] -&gt; IO String
+forall a. String -&gt; String -&gt; [OptDescr a] -&gt; IO String
+</span><a href="Futhark.Util.Options.html#helpStr"><span class="hs-identifier hs-var">helpStr</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567567"><span class="hs-identifier hs-var">prog</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567566"><span class="hs-identifier hs-var">usage</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; String -&gt; [FunOptDescr cfg] -&gt; [FunOptDescr cfg]
+forall cfg.
+String -&gt; String -&gt; [FunOptDescr cfg] -&gt; [FunOptDescr cfg]
+</span><a href="Futhark.Util.Options.html#commonOptions"><span class="hs-identifier hs-var">commonOptions</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567567"><span class="hs-identifier hs-var">prog</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567566"><span class="hs-identifier hs-var">usage</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[FunOptDescr cfg] -&gt; [FunOptDescr cfg] -&gt; [FunOptDescr cfg]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[FunOptDescr cfg]
+</span><a href="#local-6989586621684567565"><span class="hs-identifier hs-var">options</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>            </span><span class="annot"><span class="annottext">IO ()
+forall a. IO a
+</span><span class="hs-identifier hs-var">exitSuccess</span></span><span>
+</span><span id="line-98"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>      </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Print help and exit.&quot;</span></span><span>
+</span><span id="line-100"></span><span>  </span><span class="hs-special">]</span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-102"></span><span>    </span><span id="local-6989586621684567563"><span class="annot"><span class="annottext">header :: IO ()
+</span><a href="#local-6989586621684567563"><span class="hs-identifier hs-var hs-var">header</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-103"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; IO ()
+</span><span class="hs-identifier hs-var">putStrLn</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; String -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Futhark &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="Futhark.Version.html#versionString"><span class="hs-identifier hs-var">versionString</span></a></span><span>
+</span><span id="line-104"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; IO ()
+</span><span class="hs-identifier hs-var">putStrLn</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Copyright (C) DIKU, University of Copenhagen, released under the ISC license.&quot;</span></span><span>
+</span><span id="line-105"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; IO ()
+</span><span class="hs-identifier hs-var">putStrLn</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;This is free software: you are free to change and redistribute it.&quot;</span></span><span>
+</span><span id="line-106"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; IO ()
+</span><span class="hs-identifier hs-var">putStrLn</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;There is NO WARRANTY, to the extent permitted by law.&quot;</span></span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="hs-comment">-- | Terminate the program with this error message (but don't report</span><span>
+</span><span id="line-109"></span><span class="hs-comment">-- it as an ICE, as happens with 'error').</span><span>
+</span><span id="line-110"></span><span class="annot"><a href="Futhark.Util.Options.html#optionsError"><span class="hs-identifier hs-type">optionsError</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-111"></span><span id="optionsError"><span class="annot"><span class="annottext">optionsError :: String -&gt; IO ()
+</span><a href="Futhark.Util.Options.html#optionsError"><span class="hs-identifier hs-var hs-var">optionsError</span></a></span></span><span> </span><span id="local-6989586621684567555"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567555"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-112"></span><span>  </span><span id="local-6989586621684567554"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567554"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO String
+</span><span class="hs-identifier hs-var">getProgName</span></span><span>
+</span><span id="line-113"></span><span>  </span><span class="annot"><span class="annottext">Handle -&gt; String -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IO ()) -&gt; String -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567554"><span class="hs-identifier hs-var">prog</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684567555"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-114"></span><span>  </span><span class="annot"><span class="annottext">ExitCode -&gt; IO ()
+forall a. ExitCode -&gt; IO a
+</span><span class="hs-identifier hs-var">exitWith</span></span><span> </span><span class="annot"><span class="annottext">(ExitCode -&gt; IO ()) -&gt; ExitCode -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ExitCode
+</span><span class="hs-identifier hs-var">ExitFailure</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-115"></span></pre></body></html>

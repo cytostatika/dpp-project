@@ -1,0 +1,1049 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE QuasiQuotes #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE TemplateHaskell #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | Various boilerplate definitions for the CUDA backend.</span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CodeGen.Backends.CCUDA.Boilerplate</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateBoilerplate"><span class="hs-identifier">generateBoilerplate</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#profilingEnclosure"><span class="hs-identifier">profilingEnclosure</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html"><span class="hs-identifier">Futhark.CodeGen.Backends.COpenCL.Boilerplate</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-10"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html"><span class="hs-identifier">Futhark.CodeGen.Backends.COpenCL.Boilerplate</span></a></span><span>
+</span><span id="line-16"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyDevToDev"><span class="hs-identifier">copyDevToDev</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyDevToHost"><span class="hs-identifier">copyDevToHost</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyHostToDev"><span class="hs-identifier">copyHostToDev</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyScalarFromDev"><span class="hs-identifier">copyScalarFromDev</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyScalarToDev"><span class="hs-identifier">copyScalarToDev</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#costCentreReport"><span class="hs-identifier">costCentreReport</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#failureSwitch"><span class="hs-identifier">failureSwitch</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#kernelRuns"><span class="hs-identifier">kernelRuns</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-24"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#kernelRuntime"><span class="hs-identifier">kernelRuntime</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html"><span class="hs-identifier">Futhark.CodeGen.Backends.GenericC</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">GC</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html"><span class="hs-identifier">Futhark.CodeGen.ImpCode.OpenCL</span></a></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.RTS.C.html"><span class="hs-identifier">Futhark.CodeGen.RTS.C</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.RTS.C.html#cudaH"><span class="hs-identifier">cudaH</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.CodeGen.RTS.C.html#freeListH"><span class="hs-identifier">freeListH</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.html"><span class="hs-identifier">Futhark.Util</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.html#chunk"><span class="hs-identifier">chunk</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Util.html#zEncodeString"><span class="hs-identifier">zEncodeString</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Language.C.Quote.OpenCL</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">C</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Language.C.Syntax</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">C</span></span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span id="local-6989586621684483880"><span class="annot"><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#errorMsgNumArgs"><span class="hs-identifier hs-type">errorMsgNumArgs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ErrorMsg"><span class="hs-identifier hs-type">ErrorMsg</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684483880"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span></span><span>
+</span><span id="line-34"></span><span id="errorMsgNumArgs"><span class="annot"><span class="annottext">errorMsgNumArgs :: forall a. ErrorMsg a -&gt; Int
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#errorMsgNumArgs"><span class="hs-identifier hs-var hs-var">errorMsgNumArgs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[PrimType] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">([PrimType] -&gt; Int)
+-&gt; (ErrorMsg a -&gt; [PrimType]) -&gt; ErrorMsg a -&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ErrorMsg a -&gt; [PrimType]
+forall a. ErrorMsg a -&gt; [PrimType]
+</span><a href="Futhark.IR.Syntax.Core.html#errorMsgArgTypes"><span class="hs-identifier hs-var">errorMsgArgTypes</span></a></span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- | Block items to put before and after a thing to be profiled.</span><span>
+</span><span id="line-37"></span><span class="annot"><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#profilingEnclosure"><span class="hs-identifier hs-type">profilingEnclosure</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.BlockItem</span></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.BlockItem</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span id="profilingEnclosure"><span class="annot"><span class="annottext">profilingEnclosure :: Name -&gt; ([BlockItem], [BlockItem])
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#profilingEnclosure"><span class="hs-identifier hs-var hs-var">profilingEnclosure</span></a></span></span><span> </span><span id="local-6989586621684483599"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684483599"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.citems|
+      typename cudaEvent_t *pevents = NULL;
+      if (ctx-&gt;profiling &amp;&amp; !ctx-&gt;profiling_paused) {
+        pevents = cuda_get_events(&amp;ctx-&gt;cuda,
+                                  &amp;ctx-&gt;$id:(kernelRuns name),
+                                  &amp;ctx-&gt;$id:(kernelRuntime name));
+        CUDA_SUCCEED_FATAL(cudaEventRecord(pevents[0], 0));
+      }
+      |]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-48"></span><span>    </span><span class="annot"><span class="">[C.citems|
+      if (pevents != NULL) {
+        CUDA_SUCCEED_FATAL(cudaEventRecord(pevents[1], 0));
+      }
+      |]</span></span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- | Called after most code has been generated to generate the bulk of</span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- the boilerplate.</span><span>
+</span><span id="line-57"></span><span class="annot"><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateBoilerplate"><span class="hs-identifier hs-type">generateBoilerplate</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-58"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-61"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#KernelName"><span class="hs-identifier hs-type">KernelName</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#KernelSafety"><span class="hs-identifier hs-type">KernelSafety</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-62"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeClass"><span class="hs-identifier hs-type">SizeClass</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#FailureMsg"><span class="hs-identifier hs-type">FailureMsg</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-64"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CompilerM"><span class="hs-identifier hs-type">GC.CompilerM</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span id="generateBoilerplate"><span class="annot"><span class="annottext">generateBoilerplate :: Text
+-&gt; Text
+-&gt; [Name]
+-&gt; Map Name KernelSafety
+-&gt; Map Name SizeClass
+-&gt; [FailureMsg]
+-&gt; CompilerM OpenCL () ()
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateBoilerplate"><span class="hs-identifier hs-var hs-var">generateBoilerplate</span></a></span></span><span> </span><span id="local-6989586621684483565"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684483565"><span class="hs-identifier hs-var">cuda_program</span></a></span></span><span> </span><span id="local-6989586621684483564"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684483564"><span class="hs-identifier hs-var">cuda_prelude</span></a></span></span><span> </span><span id="local-6989586621684483563"><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684483563"><span class="hs-identifier hs-var">cost_centres</span></a></span></span><span> </span><span id="local-6989586621684483562"><span class="annot"><span class="annottext">Map Name KernelSafety
+</span><a href="#local-6989586621684483562"><span class="hs-identifier hs-var">kernels</span></a></span></span><span> </span><span id="local-6989586621684483561"><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483561"><span class="hs-identifier hs-var">sizes</span></a></span></span><span> </span><span id="local-6989586621684483560"><span class="annot"><span class="annottext">[FailureMsg]
+</span><a href="#local-6989586621684483560"><span class="hs-identifier hs-var">failures</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-66"></span><span>  </span><span class="annot"><span class="annottext">(Definition -&gt; CompilerM OpenCL () ())
+-&gt; [Definition] -&gt; CompilerM OpenCL () ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span>
+</span><span id="line-67"></span><span>    </span><span class="annot"><span class="annottext">Definition -&gt; CompilerM OpenCL () ()
+forall op s. Definition -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#earlyDecl"><span class="hs-identifier hs-var">GC.earlyDecl</span></a></span><span>
+</span><span id="line-68"></span><span>    </span><span class="annot"><span class="">[C.cunit|
+      $esc:(&quot;#include &lt;cuda.h&gt;&quot;)
+      $esc:(&quot;#include &lt;nvrtc.h&gt;&quot;)
+      $esc:(&quot;typedef CUdeviceptr fl_mem_t;&quot;)
+      $esc:(T.unpack freeListH)
+      $esc:(T.unpack cudaH)
+      const char *cuda_program[] = {$inits:fragments, NULL};
+      |]</span></span><span>
+</span><span id="line-76"></span><span>
+</span><span id="line-77"></span><span>  </span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; CompilerM OpenCL () ()
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateSizeFuns"><span class="hs-identifier hs-var">generateSizeFuns</span></a></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483561"><span class="hs-identifier hs-var">sizes</span></a></span><span>
+</span><span id="line-78"></span><span>  </span><span id="local-6989586621684483546"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483546"><span class="hs-identifier hs-var">cfg</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; CompilerM OpenCL () String
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateConfigFuns"><span class="hs-identifier hs-var">generateConfigFuns</span></a></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483561"><span class="hs-identifier hs-var">sizes</span></a></span><span>
+</span><span id="line-79"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; [Name]
+-&gt; Map Name KernelSafety
+-&gt; Map Name SizeClass
+-&gt; [FailureMsg]
+-&gt; CompilerM OpenCL () ()
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateContextFuns"><span class="hs-identifier hs-var">generateContextFuns</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483546"><span class="hs-identifier hs-var">cfg</span></a></span><span> </span><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684483563"><span class="hs-identifier hs-var">cost_centres</span></a></span><span> </span><span class="annot"><span class="annottext">Map Name KernelSafety
+</span><a href="#local-6989586621684483562"><span class="hs-identifier hs-var">kernels</span></a></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483561"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="annot"><span class="annottext">[FailureMsg]
+</span><a href="#local-6989586621684483560"><span class="hs-identifier hs-var">failures</span></a></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span>  </span><span class="annot"><span class="annottext">BlockItem -&gt; CompilerM OpenCL () ()
+forall op s. BlockItem -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#profileReport"><span class="hs-identifier hs-var">GC.profileReport</span></a></span><span> </span><span class="annot"><span class="">[C.citem|CUDA_SUCCEED_FATAL(cuda_tally_profiling_records(&amp;ctx-&gt;cuda));|]</span></span><span>
+</span><span id="line-82"></span><span>  </span><span class="annot"><span class="annottext">(BlockItem -&gt; CompilerM OpenCL () ())
+-&gt; [BlockItem] -&gt; CompilerM OpenCL () ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="annot"><span class="annottext">BlockItem -&gt; CompilerM OpenCL () ()
+forall op s. BlockItem -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#profileReport"><span class="hs-identifier hs-var">GC.profileReport</span></a></span><span> </span><span class="annot"><span class="annottext">([BlockItem] -&gt; CompilerM OpenCL () ())
+-&gt; [BlockItem] -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Name] -&gt; [BlockItem]
+</span><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#costCentreReport"><span class="hs-identifier hs-var">costCentreReport</span></a></span><span> </span><span class="annot"><span class="annottext">([Name] -&gt; [BlockItem]) -&gt; [Name] -&gt; [BlockItem]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684483563"><span class="hs-identifier hs-var">cost_centres</span></a></span><span> </span><span class="annot"><span class="annottext">[Name] -&gt; [Name] -&gt; [Name]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Map Name KernelSafety -&gt; [Name]
+forall k a. Map k a -&gt; [k]
+</span><span class="hs-identifier hs-var">M.keys</span></span><span> </span><span class="annot"><span class="annottext">Map Name KernelSafety
+</span><a href="#local-6989586621684483562"><span class="hs-identifier hs-var">kernels</span></a></span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-84"></span><span>    </span><span id="local-6989586621684483557"><span class="annot"><span class="annottext">fragments :: [Initializer]
+</span><a href="#local-6989586621684483557"><span class="hs-identifier hs-var hs-var">fragments</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-85"></span><span>      </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="">[C.cinit|$string:s|]</span></span><span>
+</span><span id="line-86"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span id="local-6989586621684483535"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483535"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; String -&gt; [String]
+forall a. Int -&gt; [a] -&gt; [[a]]
+</span><a href="Futhark.Util.html#chunk"><span class="hs-identifier hs-var">chunk</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2000</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; [String]) -&gt; String -&gt; [String]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text -&gt; String
+</span><span class="hs-identifier hs-var">T.unpack</span></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; String) -&gt; Text -&gt; String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684483564"><span class="hs-identifier hs-var">cuda_prelude</span></a></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684483565"><span class="hs-identifier hs-var">cuda_program</span></a></span><span>
+</span><span id="line-87"></span><span>      </span><span class="hs-special">]</span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span class="annot"><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateSizeFuns"><span class="hs-identifier hs-type">generateSizeFuns</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeClass"><span class="hs-identifier hs-type">SizeClass</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CompilerM"><span class="hs-identifier hs-type">GC.CompilerM</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-90"></span><span id="generateSizeFuns"><span class="annot"><span class="annottext">generateSizeFuns :: Map Name SizeClass -&gt; CompilerM OpenCL () ()
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateSizeFuns"><span class="hs-identifier hs-var hs-var">generateSizeFuns</span></a></span></span><span> </span><span id="local-6989586621684483532"><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483532"><span class="hs-identifier hs-var">sizes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-91"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684483526"><span class="annot"><span class="annottext">size_name_inits :: [Initializer]
+</span><a href="#local-6989586621684483526"><span class="hs-identifier hs-var hs-var">size_name_inits</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Name -&gt; Initializer) -&gt; [Name] -&gt; [Initializer]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621684483525"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684483525"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="">[C.cinit|$string:(pretty k)|]</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Name] -&gt; [Initializer]) -&gt; [Name] -&gt; [Initializer]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; [Name]
+forall k a. Map k a -&gt; [k]
+</span><span class="hs-identifier hs-var">M.keys</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483532"><span class="hs-identifier hs-var">sizes</span></a></span><span>
+</span><span id="line-92"></span><span>      </span><span id="local-6989586621684483519"><span class="annot"><span class="annottext">size_var_inits :: [Initializer]
+</span><a href="#local-6989586621684483519"><span class="hs-identifier hs-var hs-var">size_var_inits</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Name -&gt; Initializer) -&gt; [Name] -&gt; [Initializer]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621684483518"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684483518"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="">[C.cinit|$string:(zEncodeString (pretty k))|]</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Name] -&gt; [Initializer]) -&gt; [Name] -&gt; [Initializer]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; [Name]
+forall k a. Map k a -&gt; [k]
+</span><span class="hs-identifier hs-var">M.keys</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483532"><span class="hs-identifier hs-var">sizes</span></a></span><span>
+</span><span id="line-93"></span><span>      </span><span id="local-6989586621684483512"><span class="annot"><span class="annottext">size_class_inits :: [Initializer]
+</span><a href="#local-6989586621684483512"><span class="hs-identifier hs-var hs-var">size_class_inits</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SizeClass -&gt; Initializer) -&gt; [SizeClass] -&gt; [Initializer]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621684483511"><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684483511"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="">[C.cinit|$string:(pretty c)|]</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([SizeClass] -&gt; [Initializer]) -&gt; [SizeClass] -&gt; [Initializer]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; [SizeClass]
+forall k a. Map k a -&gt; [a]
+</span><span class="hs-identifier hs-var">M.elems</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483532"><span class="hs-identifier hs-var">sizes</span></a></span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span>  </span><span class="annot"><span class="annottext">Definition -&gt; CompilerM OpenCL () ()
+forall op s. Definition -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#earlyDecl"><span class="hs-identifier hs-var">GC.earlyDecl</span></a></span><span> </span><span class="annot"><span class="">[C.cedecl|static const char *tuning_param_names[] = { $inits:size_name_inits };|]</span></span><span>
+</span><span id="line-96"></span><span>  </span><span class="annot"><span class="annottext">Definition -&gt; CompilerM OpenCL () ()
+forall op s. Definition -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#earlyDecl"><span class="hs-identifier hs-var">GC.earlyDecl</span></a></span><span> </span><span class="annot"><span class="">[C.cedecl|static const char *tuning_param_vars[] = { $inits:size_var_inits };|]</span></span><span>
+</span><span id="line-97"></span><span>  </span><span class="annot"><span class="annottext">Definition -&gt; CompilerM OpenCL () ()
+forall op s. Definition -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#earlyDecl"><span class="hs-identifier hs-var">GC.earlyDecl</span></a></span><span> </span><span class="annot"><span class="">[C.cedecl|static const char *tuning_param_classes[] = { $inits:size_class_inits };|]</span></span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span class="annot"><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateConfigFuns"><span class="hs-identifier hs-type">generateConfigFuns</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeClass"><span class="hs-identifier hs-type">SizeClass</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CompilerM"><span class="hs-identifier hs-type">GC.CompilerM</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span>
+</span><span id="line-100"></span><span id="generateConfigFuns"><span class="annot"><span class="annottext">generateConfigFuns :: Map Name SizeClass -&gt; CompilerM OpenCL () String
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateConfigFuns"><span class="hs-identifier hs-var hs-var">generateConfigFuns</span></a></span></span><span> </span><span id="local-6989586621684483505"><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483505"><span class="hs-identifier hs-var">sizes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684483503"><span class="annot"><span class="annottext">size_decls :: [FieldGroup]
+</span><a href="#local-6989586621684483503"><span class="hs-identifier hs-var hs-var">size_decls</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Name -&gt; FieldGroup) -&gt; [Name] -&gt; [FieldGroup]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621684483502"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684483502"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="">[C.csdecl|typename int64_t *$id:k;|]</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Name] -&gt; [FieldGroup]) -&gt; [Name] -&gt; [FieldGroup]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; [Name]
+forall k a. Map k a -&gt; [k]
+</span><span class="hs-identifier hs-var">M.keys</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483505"><span class="hs-identifier hs-var">sizes</span></a></span><span>
+</span><span id="line-102"></span><span>      </span><span id="local-6989586621684483499"><span class="annot"><span class="annottext">num_sizes :: Int
+</span><a href="#local-6989586621684483499"><span class="hs-identifier hs-var hs-var">num_sizes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; Int
+forall k a. Map k a -&gt; Int
+</span><span class="hs-identifier hs-var">M.size</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483505"><span class="hs-identifier hs-var">sizes</span></a></span><span>
+</span><span id="line-103"></span><span>  </span><span class="annot"><span class="annottext">Definition -&gt; CompilerM OpenCL () ()
+forall op s. Definition -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#earlyDecl"><span class="hs-identifier hs-var">GC.earlyDecl</span></a></span><span> </span><span class="annot"><span class="">[C.cedecl|struct tuning_params { $sdecls:size_decls };|]</span></span><span>
+</span><span id="line-104"></span><span>  </span><span id="local-6989586621684483496"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483496"><span class="hs-identifier hs-var">cfg</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () String
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s String
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef"><span class="hs-identifier hs-var">GC.publicDef</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition))
+ -&gt; CompilerM OpenCL () String)
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483493"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483493"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-105"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|struct $id:s;|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-106"></span><span>      </span><span class="annot"><span class="">[C.cedecl|struct $id:s {int in_use;
+                              struct cuda_config cu_cfg;
+                              int profiling;
+                              typename int64_t tuning_params[$int:num_sizes];
+                              int num_nvrtc_opts;
+                              const char **nvrtc_opts;
+                            };|]</span></span><span>
+</span><span id="line-113"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>
+</span><span id="line-115"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684483482"><span class="annot"><span class="annottext">size_value_inits :: [Stm]
+</span><a href="#local-6989586621684483482"><span class="hs-identifier hs-var hs-var">size_value_inits</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; SizeClass -&gt; Stm) -&gt; [Int] -&gt; [SizeClass] -&gt; [Stm]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; SizeClass -&gt; Stm
+forall {a}. (Show a, Integral a) =&gt; a -&gt; SizeClass -&gt; Stm
+</span><a href="#local-6989586621684483480"><span class="hs-identifier hs-var">sizeInit</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; Int
+forall k a. Map k a -&gt; Int
+</span><span class="hs-identifier hs-var">M.size</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483505"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; [SizeClass]
+forall k a. Map k a -&gt; [a]
+</span><span class="hs-identifier hs-var">M.elems</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483505"><span class="hs-identifier hs-var">sizes</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>      </span><span id="local-6989586621684483480"><span class="annot"><span class="annottext">sizeInit :: a -&gt; SizeClass -&gt; Stm
+</span><a href="#local-6989586621684483480"><span class="hs-identifier hs-var hs-var">sizeInit</span></a></span></span><span> </span><span id="local-6989586621684483469"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684483469"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684483468"><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684483468"><span class="hs-identifier hs-var">size</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cstm|cfg-&gt;tuning_params[$int:i] = $int:val;|]</span></span><span>
+</span><span id="line-117"></span><span>        </span><span class="hs-keyword">where</span><span>
+</span><span id="line-118"></span><span>          </span><span id="local-6989586621684483467"><span class="annot"><span class="annottext">val :: Int64
+</span><a href="#local-6989586621684483467"><span class="hs-identifier hs-var hs-var">val</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Maybe Int64 -&gt; Int64
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">(Maybe Int64 -&gt; Int64) -&gt; Maybe Int64 -&gt; Int64
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SizeClass -&gt; Maybe Int64
+</span><a href="Futhark.IR.GPU.Sizes.html#sizeDefault"><span class="hs-identifier hs-var">sizeDefault</span></a></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684483468"><span class="hs-identifier hs-var">size</span></a></span><span>
+</span><span id="line-119"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_new&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483461"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483461"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-120"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|struct $id:cfg* $id:s(void);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-121"></span><span>      </span><span class="annot"><span class="">[C.cedecl|struct $id:cfg* $id:s(void) {
+                         struct $id:cfg *cfg = (struct $id:cfg*) malloc(sizeof(struct $id:cfg));
+                         if (cfg == NULL) {
+                           return NULL;
+                         }
+                         cfg-&gt;in_use = 0;
+
+                         cfg-&gt;profiling = 0;
+                         cfg-&gt;num_nvrtc_opts = 0;
+                         cfg-&gt;nvrtc_opts = (const char**) malloc(sizeof(const char*));
+                         cfg-&gt;nvrtc_opts[0] = NULL;
+                         $stms:size_value_inits
+                         cuda_config_init(&amp;cfg-&gt;cu_cfg, $int:num_sizes,
+                                          tuning_param_names, tuning_param_vars,
+                                          cfg-&gt;tuning_params, tuning_param_classes);
+                         return cfg;
+                       }|]</span></span><span>
+</span><span id="line-138"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>
+</span><span id="line-140"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_free&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483449"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483449"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-141"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-142"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg) {
+                         assert(!cfg-&gt;in_use);
+                         free(cfg-&gt;nvrtc_opts);
+                         free(cfg);
+                       }|]</span></span><span>
+</span><span id="line-147"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_add_nvrtc_option&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483448"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483448"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-150"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *opt);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-151"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *opt) {
+                         cfg-&gt;nvrtc_opts[cfg-&gt;num_nvrtc_opts] = opt;
+                         cfg-&gt;num_nvrtc_opts++;
+                         cfg-&gt;nvrtc_opts = (const char**) realloc(cfg-&gt;nvrtc_opts, (cfg-&gt;num_nvrtc_opts+1) * sizeof(const char*));
+                         cfg-&gt;nvrtc_opts[cfg-&gt;num_nvrtc_opts] = NULL;
+                       }|]</span></span><span>
+</span><span id="line-157"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-158"></span><span>
+</span><span id="line-159"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_debugging&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483444"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483444"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-160"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int flag);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-161"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int flag) {
+                         cfg-&gt;cu_cfg.logging = cfg-&gt;cu_cfg.debugging = flag;
+                       }|]</span></span><span>
+</span><span id="line-164"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-165"></span><span>
+</span><span id="line-166"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_profiling&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483442"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483442"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-167"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int flag);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-168"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int flag) {
+                         cfg-&gt;profiling = flag;
+                       }|]</span></span><span>
+</span><span id="line-171"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_logging&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483441"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483441"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-174"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int flag);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-175"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int flag) {
+                         cfg-&gt;cu_cfg.logging = flag;
+                       }|]</span></span><span>
+</span><span id="line-178"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-179"></span><span>
+</span><span id="line-180"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_device&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483440"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483440"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-181"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *s);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-182"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *s) {
+                         set_preferred_device(&amp;cfg-&gt;cu_cfg, s);
+                       }|]</span></span><span>
+</span><span id="line-185"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-186"></span><span>
+</span><span id="line-187"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_dump_program_to&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483439"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483439"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-188"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *path);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-189"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *path) {
+                         cfg-&gt;cu_cfg.dump_program_to = path;
+                       }|]</span></span><span>
+</span><span id="line-192"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-193"></span><span>
+</span><span id="line-194"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_load_program_from&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483438"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483438"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-195"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *path);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-196"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *path) {
+                         cfg-&gt;cu_cfg.load_program_from = path;
+                       }|]</span></span><span>
+</span><span id="line-199"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-200"></span><span>
+</span><span id="line-201"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_dump_ptx_to&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483437"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483437"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-202"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *path);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-203"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *path) {
+                          cfg-&gt;cu_cfg.dump_ptx_to = path;
+                      }|]</span></span><span>
+</span><span id="line-206"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-207"></span><span>
+</span><span id="line-208"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_load_ptx_from&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483436"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483436"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-209"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *path);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-210"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, const char *path) {
+                          cfg-&gt;cu_cfg.load_ptx_from = path;
+                      }|]</span></span><span>
+</span><span id="line-213"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-214"></span><span>
+</span><span id="line-215"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_default_group_size&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483435"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483435"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-216"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int size);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-217"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int size) {
+                         cfg-&gt;cu_cfg.default_block_size = size;
+                         cfg-&gt;cu_cfg.default_block_size_changed = 1;
+                       }|]</span></span><span>
+</span><span id="line-221"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-222"></span><span>
+</span><span id="line-223"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_default_num_groups&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483434"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483434"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-224"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int num);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-225"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int num) {
+                         cfg-&gt;cu_cfg.default_grid_size = num;
+                         cfg-&gt;cu_cfg.default_grid_size_changed = 1;
+                       }|]</span></span><span>
+</span><span id="line-229"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-230"></span><span>
+</span><span id="line-231"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_default_tile_size&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483433"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483433"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-232"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int num);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-233"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int size) {
+                         cfg-&gt;cu_cfg.default_tile_size = size;
+                         cfg-&gt;cu_cfg.default_tile_size_changed = 1;
+                       }|]</span></span><span>
+</span><span id="line-237"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-238"></span><span>
+</span><span id="line-239"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_default_reg_tile_size&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483432"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483432"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-240"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int num);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-241"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int size) {
+                         cfg-&gt;cu_cfg.default_reg_tile_size = size;
+                       }|]</span></span><span>
+</span><span id="line-244"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-245"></span><span>
+</span><span id="line-246"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_default_threshold&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483431"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483431"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-247"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int num);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-248"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:cfg* cfg, int size) {
+                         cfg-&gt;cu_cfg.default_threshold = size;
+                       }|]</span></span><span>
+</span><span id="line-251"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-252"></span><span>
+</span><span id="line-253"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_config_set_tuning_param&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483430"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483430"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-254"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|int $id:s(struct $id:cfg* cfg, const char *param_name, size_t new_value);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-255"></span><span>      </span><span class="annot"><span class="">[C.cedecl|int $id:s(struct $id:cfg* cfg, const char *param_name, size_t new_value) {
+
+                         for (int i = 0; i &lt; $int:num_sizes; i++) {
+                           if (strcmp(param_name, tuning_param_names[i]) == 0) {
+                             cfg-&gt;tuning_params[i] = new_value;
+                             return 0;
+                           }
+                         }
+
+                         if (strcmp(param_name, &quot;default_group_size&quot;) == 0) {
+                           cfg-&gt;cu_cfg.default_block_size = new_value;
+                           return 0;
+                         }
+
+                         if (strcmp(param_name, &quot;default_num_groups&quot;) == 0) {
+                           cfg-&gt;cu_cfg.default_grid_size = new_value;
+                           return 0;
+                         }
+
+                         if (strcmp(param_name, &quot;default_threshold&quot;) == 0) {
+                           cfg-&gt;cu_cfg.default_threshold = new_value;
+                           return 0;
+                         }
+
+                         if (strcmp(param_name, &quot;default_tile_size&quot;) == 0) {
+                           cfg-&gt;cu_cfg.default_tile_size = new_value;
+                           return 0;
+                         }
+
+                         if (strcmp(param_name, &quot;default_reg_tile_size&quot;) == 0) {
+                           cfg-&gt;cu_cfg.default_reg_tile_size = new_value;
+                           return 0;
+                         }
+
+                         return 1;
+                       }|]</span></span><span>
+</span><span id="line-291"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-292"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; CompilerM OpenCL () String
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483496"><span class="hs-identifier hs-var">cfg</span></a></span><span>
+</span><span id="line-293"></span><span>
+</span><span id="line-294"></span><span class="annot"><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateContextFuns"><span class="hs-identifier hs-type">generateContextFuns</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-295"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-296"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-297"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#KernelName"><span class="hs-identifier hs-type">KernelName</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#KernelSafety"><span class="hs-identifier hs-type">KernelSafety</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-298"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeClass"><span class="hs-identifier hs-type">SizeClass</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-299"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#FailureMsg"><span class="hs-identifier hs-type">FailureMsg</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-300"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CompilerM"><span class="hs-identifier hs-type">GC.CompilerM</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-301"></span><span id="generateContextFuns"><span class="annot"><span class="annottext">generateContextFuns :: String
+-&gt; [Name]
+-&gt; Map Name KernelSafety
+-&gt; Map Name SizeClass
+-&gt; [FailureMsg]
+-&gt; CompilerM OpenCL () ()
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#generateContextFuns"><span class="hs-identifier hs-var hs-var">generateContextFuns</span></a></span></span><span> </span><span id="local-6989586621684483427"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483427"><span class="hs-identifier hs-var">cfg</span></a></span></span><span> </span><span id="local-6989586621684483426"><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684483426"><span class="hs-identifier hs-var">cost_centres</span></a></span></span><span> </span><span id="local-6989586621684483425"><span class="annot"><span class="annottext">Map Name KernelSafety
+</span><a href="#local-6989586621684483425"><span class="hs-identifier hs-var">kernels</span></a></span></span><span> </span><span id="local-6989586621684483424"><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483424"><span class="hs-identifier hs-var">sizes</span></a></span></span><span> </span><span id="local-6989586621684483423"><span class="annot"><span class="annottext">[FailureMsg]
+</span><a href="#local-6989586621684483423"><span class="hs-identifier hs-var">failures</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-302"></span><span>  </span><span id="local-6989586621684483422"><span class="annot"><span class="annottext">[Stm]
+</span><a href="#local-6989586621684483422"><span class="hs-identifier hs-var">final_inits</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CompilerM OpenCL () [Stm]
+forall op s. CompilerM op s [Stm]
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#contextFinalInits"><span class="hs-identifier hs-var">GC.contextFinalInits</span></a></span><span>
+</span><span id="line-303"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684483420"><span class="annot"><span class="annottext">[FieldGroup]
+</span><a href="#local-6989586621684483420"><span class="hs-identifier hs-var">fields</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684483419"><span class="annot"><span class="annottext">[Stm]
+</span><a href="#local-6989586621684483419"><span class="hs-identifier hs-var">init_fields</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684483418"><span class="annot"><span class="annottext">[Stm]
+</span><a href="#local-6989586621684483418"><span class="hs-identifier hs-var">free_fields</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CompilerM OpenCL () ([FieldGroup], [Stm], [Stm])
+forall op s. CompilerM op s ([FieldGroup], [Stm], [Stm])
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#contextContents"><span class="hs-identifier hs-var">GC.contextContents</span></a></span><span>
+</span><span id="line-304"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684483412"><span class="annot"><span class="annottext">forCostCentre :: Name -&gt; [(FieldGroup, Stm)]
+</span><a href="#local-6989586621684483412"><span class="hs-identifier hs-var hs-var">forCostCentre</span></a></span></span><span> </span><span id="local-6989586621684483411"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684483411"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-305"></span><span>        </span><span class="hs-special">[</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.csdecl|typename int64_t $id:(kernelRuntime name);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-306"></span><span>            </span><span class="annot"><span class="">[C.cstm|ctx-&gt;$id:(kernelRuntime name) = 0;|]</span></span><span>
+</span><span id="line-307"></span><span>          </span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-308"></span><span>          </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.csdecl|int $id:(kernelRuns name);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-309"></span><span>            </span><span class="annot"><span class="">[C.cstm|ctx-&gt;$id:(kernelRuns name) = 0;|]</span></span><span>
+</span><span id="line-310"></span><span>          </span><span class="hs-special">)</span><span>
+</span><span id="line-311"></span><span>        </span><span class="hs-special">]</span><span>
+</span><span id="line-312"></span><span>
+</span><span id="line-313"></span><span>      </span><span id="local-6989586621684483398"><span class="annot"><span class="annottext">forKernel :: Name -&gt; [(FieldGroup, Stm)]
+</span><a href="#local-6989586621684483398"><span class="hs-identifier hs-var hs-var">forKernel</span></a></span></span><span> </span><span id="local-6989586621684483397"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684483397"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-314"></span><span>        </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.csdecl|typename CUfunction $id:name;|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-315"></span><span>          </span><span class="annot"><span class="">[C.cstm|CUDA_SUCCEED_FATAL(cuModuleGetFunction(
+                                     &amp;ctx-&gt;$id:name,
+                                     ctx-&gt;cuda.module,
+                                     $string:(pretty (C.toIdent name mempty))));|]</span></span><span>
+</span><span id="line-319"></span><span>        </span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(FieldGroup, Stm) -&gt; [(FieldGroup, Stm)] -&gt; [(FieldGroup, Stm)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span>
+</span><span id="line-320"></span><span>        </span><span class="annot"><span class="annottext">Name -&gt; [(FieldGroup, Stm)]
+</span><a href="#local-6989586621684483412"><span class="hs-identifier hs-var">forCostCentre</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684483397"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-321"></span><span>
+</span><span id="line-322"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684483394"><span class="annot"><span class="annottext">[FieldGroup]
+</span><a href="#local-6989586621684483394"><span class="hs-identifier hs-var">kernel_fields</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684483393"><span class="annot"><span class="annottext">[Stm]
+</span><a href="#local-6989586621684483393"><span class="hs-identifier hs-var">init_kernel_fields</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-323"></span><span>        </span><span class="annot"><span class="annottext">[(FieldGroup, Stm)] -&gt; ([FieldGroup], [Stm])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">([(FieldGroup, Stm)] -&gt; ([FieldGroup], [Stm]))
+-&gt; [(FieldGroup, Stm)] -&gt; ([FieldGroup], [Stm])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-324"></span><span>          </span><span class="annot"><span class="annottext">(Name -&gt; [(FieldGroup, Stm)]) -&gt; [Name] -&gt; [(FieldGroup, Stm)]
+forall (t :: * -&gt; *) a b. Foldable t =&gt; (a -&gt; [b]) -&gt; t a -&gt; [b]
+</span><span class="hs-identifier hs-var">concatMap</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; [(FieldGroup, Stm)]
+</span><a href="#local-6989586621684483398"><span class="hs-identifier hs-var">forKernel</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map Name KernelSafety -&gt; [Name]
+forall k a. Map k a -&gt; [k]
+</span><span class="hs-identifier hs-var">M.keys</span></span><span> </span><span class="annot"><span class="annottext">Map Name KernelSafety
+</span><a href="#local-6989586621684483425"><span class="hs-identifier hs-var">kernels</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-325"></span><span>            </span><span class="annot"><span class="annottext">[(FieldGroup, Stm)] -&gt; [(FieldGroup, Stm)] -&gt; [(FieldGroup, Stm)]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(Name -&gt; [(FieldGroup, Stm)]) -&gt; [Name] -&gt; [(FieldGroup, Stm)]
+forall (t :: * -&gt; *) a b. Foldable t =&gt; (a -&gt; [b]) -&gt; t a -&gt; [b]
+</span><span class="hs-identifier hs-var">concatMap</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; [(FieldGroup, Stm)]
+</span><a href="#local-6989586621684483412"><span class="hs-identifier hs-var">forCostCentre</span></a></span><span> </span><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684483426"><span class="hs-identifier hs-var">cost_centres</span></a></span><span>
+</span><span id="line-326"></span><span>
+</span><span id="line-327"></span><span>  </span><span id="local-6989586621684483390"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483390"><span class="hs-identifier hs-var">ctx</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () String
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s String
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef"><span class="hs-identifier hs-var">GC.publicDef</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition))
+ -&gt; CompilerM OpenCL () String)
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483389"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483389"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-328"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|struct $id:s;|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-329"></span><span>      </span><span class="annot"><span class="">[C.cedecl|struct $id:s {
+                         struct $id:cfg* cfg;
+                         int detail_memory;
+                         int debugging;
+                         int profiling;
+                         int profiling_paused;
+                         int logging;
+                         typename lock_t lock;
+                         char *error;
+                         typename FILE *log;
+                         $sdecls:fields
+                         $sdecls:kernel_fields
+                         typename CUdeviceptr global_failure;
+                         typename CUdeviceptr global_failure_args;
+                         struct cuda_context cuda;
+                         struct tuning_params tuning_params;
+                         // True if a potentially failing kernel has been enqueued.
+                         typename int32_t failure_is_an_option;
+
+                         int total_runs;
+                         long int total_runtime;
+                       };|]</span></span><span>
+</span><span id="line-351"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-352"></span><span>
+</span><span id="line-353"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684483382"><span class="annot"><span class="annottext">set_tuning_params :: [Stm]
+</span><a href="#local-6989586621684483382"><span class="hs-identifier hs-var hs-var">set_tuning_params</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-354"></span><span>        </span><span class="annot"><span class="annottext">(Int -&gt; Name -&gt; Stm) -&gt; [Int] -&gt; [Name] -&gt; [Stm]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span>
+</span><span id="line-355"></span><span>          </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621684483381"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684483381"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684483380"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684483380"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="">[C.cstm|ctx-&gt;tuning_params.$id:k = &amp;cfg-&gt;tuning_params[$int:i];|]</span></span><span class="hs-special">)</span><span>
+</span><span id="line-356"></span><span>          </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">..</span><span class="hs-special">]</span><span>
+</span><span id="line-357"></span><span>          </span><span class="annot"><span class="annottext">([Name] -&gt; [Stm]) -&gt; [Name] -&gt; [Stm]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass -&gt; [Name]
+forall k a. Map k a -&gt; [k]
+</span><span class="hs-identifier hs-var">M.keys</span></span><span> </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684483424"><span class="hs-identifier hs-var">sizes</span></a></span><span>
+</span><span id="line-358"></span><span>      </span><span id="local-6989586621684483375"><span class="annot"><span class="annottext">max_failure_args :: Int
+</span><a href="#local-6989586621684483375"><span class="hs-identifier hs-var hs-var">max_failure_args</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-359"></span><span>        </span><span class="annot"><span class="annottext">(Int -&gt; Int -&gt; Int) -&gt; Int -&gt; [Int] -&gt; Int
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Ord a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">max</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">([Int] -&gt; Int) -&gt; [Int] -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(FailureMsg -&gt; Int) -&gt; [FailureMsg] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ErrorMsg Exp -&gt; Int
+forall a. ErrorMsg a -&gt; Int
+</span><a href="Futhark.CodeGen.Backends.CCUDA.Boilerplate.html#errorMsgNumArgs"><span class="hs-identifier hs-var">errorMsgNumArgs</span></a></span><span> </span><span class="annot"><span class="annottext">(ErrorMsg Exp -&gt; Int)
+-&gt; (FailureMsg -&gt; ErrorMsg Exp) -&gt; FailureMsg -&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">FailureMsg -&gt; ErrorMsg Exp
+</span><a href="Futhark.CodeGen.ImpCode.OpenCL.html#failureError"><span class="hs-identifier hs-var hs-var">failureError</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[FailureMsg]
+</span><a href="#local-6989586621684483423"><span class="hs-identifier hs-var">failures</span></a></span><span>
+</span><span id="line-360"></span><span>
+</span><span id="line-361"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_new&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483371"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483371"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-362"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|struct $id:ctx* $id:s(struct $id:cfg* cfg);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-363"></span><span>      </span><span class="annot"><span class="">[C.cedecl|struct $id:ctx* $id:s(struct $id:cfg* cfg) {
+                 assert(!cfg-&gt;in_use);
+                 struct $id:ctx* ctx = (struct $id:ctx*) malloc(sizeof(struct $id:ctx));
+                 if (ctx == NULL) {
+                   return NULL;
+                 }
+                 ctx-&gt;cfg = cfg;
+                 ctx-&gt;cfg-&gt;in_use = 1;
+                 ctx-&gt;debugging = ctx-&gt;detail_memory = cfg-&gt;cu_cfg.debugging;
+                 ctx-&gt;profiling = cfg-&gt;profiling;
+                 ctx-&gt;profiling_paused = 0;
+                 ctx-&gt;logging = cfg-&gt;cu_cfg.logging;
+                 ctx-&gt;error = NULL;
+                 ctx-&gt;log = stderr;
+                 ctx-&gt;cuda.profiling_records_capacity = 200;
+                 ctx-&gt;cuda.profiling_records_used = 0;
+                 ctx-&gt;cuda.profiling_records =
+                   malloc(ctx-&gt;cuda.profiling_records_capacity *
+                          sizeof(struct profiling_record));
+
+                 ctx-&gt;cuda.cfg = cfg-&gt;cu_cfg;
+                 create_lock(&amp;ctx-&gt;lock);
+
+                 ctx-&gt;failure_is_an_option = 0;
+                 ctx-&gt;total_runs = 0;
+                 ctx-&gt;total_runtime = 0;
+                 $stms:init_fields
+
+                 ctx-&gt;error = cuda_setup(&amp;ctx-&gt;cuda, cuda_program, cfg-&gt;nvrtc_opts);
+
+                 if (ctx-&gt;error != NULL) {
+                   return NULL;
+                 }
+
+                 typename int32_t no_error = -1;
+                 CUDA_SUCCEED_FATAL(cuMemAlloc(&amp;ctx-&gt;global_failure, sizeof(no_error)));
+                 CUDA_SUCCEED_FATAL(cuMemcpyHtoD(ctx-&gt;global_failure, &amp;no_error, sizeof(no_error)));
+                 // The +1 is to avoid zero-byte allocations.
+                 CUDA_SUCCEED_FATAL(cuMemAlloc(&amp;ctx-&gt;global_failure_args, sizeof(int64_t)*($int:max_failure_args+1)));
+
+                 $stms:init_kernel_fields
+
+                 $stms:final_inits
+                 $stms:set_tuning_params
+
+                 init_constants(ctx);
+                 // Clear the free list of any deallocations that occurred while initialising constants.
+                 CUDA_SUCCEED_FATAL(cuda_free_all(&amp;ctx-&gt;cuda));
+
+                 futhark_context_sync(ctx);
+
+                 return ctx;
+               }|]</span></span><span>
+</span><span id="line-416"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-417"></span><span>
+</span><span id="line-418"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_free&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#InitDecl"><span class="hs-identifier hs-var">GC.InitDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483367"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483367"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-419"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:ctx* ctx);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-420"></span><span>      </span><span class="annot"><span class="">[C.cedecl|void $id:s(struct $id:ctx* ctx) {
+                                 $stms:free_fields
+                                 free_constants(ctx);
+                                 cuda_cleanup(&amp;ctx-&gt;cuda);
+                                 free_lock(&amp;ctx-&gt;lock);
+                                 ctx-&gt;cfg-&gt;in_use = 0;
+                                 free(ctx);
+                               }|]</span></span><span>
+</span><span id="line-428"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-429"></span><span>
+</span><span id="line-430"></span><span>  </span><span class="annot"><span class="annottext">String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM OpenCL () ()
+forall op s.
+String
+-&gt; HeaderSection
+-&gt; (String -&gt; (Definition, Definition))
+-&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#publicDef_"><span class="hs-identifier hs-var">GC.publicDef_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;context_sync&quot;</span></span><span> </span><span class="annot"><span class="annottext">HeaderSection
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#MiscDecl"><span class="hs-identifier hs-var">GC.MiscDecl</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ())
+-&gt; (String -&gt; (Definition, Definition)) -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684483365"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684483365"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-431"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="">[C.cedecl|int $id:s(struct $id:ctx* ctx);|]</span></span><span class="hs-special">,</span><span>
+</span><span id="line-432"></span><span>      </span><span class="annot"><span class="">[C.cedecl|int $id:s(struct $id:ctx* ctx) {
+                 CUDA_SUCCEED_OR_RETURN(cuCtxPushCurrent(ctx-&gt;cuda.cu_ctx));
+                 CUDA_SUCCEED_OR_RETURN(cuCtxSynchronize());
+                 if (ctx-&gt;failure_is_an_option) {
+                   // Check for any delayed error.
+                   typename int32_t failure_idx;
+                   CUDA_SUCCEED_OR_RETURN(
+                     cuMemcpyDtoH(&amp;failure_idx,
+                                  ctx-&gt;global_failure,
+                                  sizeof(int32_t)));
+                   ctx-&gt;failure_is_an_option = 0;
+
+                   if (failure_idx &gt;= 0) {
+                     // We have to clear global_failure so that the next entry point
+                     // is not considered a failure from the start.
+                     typename int32_t no_failure = -1;
+                     CUDA_SUCCEED_OR_RETURN(
+                       cuMemcpyHtoD(ctx-&gt;global_failure,
+                                    &amp;no_failure,
+                                    sizeof(int32_t)));
+
+                     typename int64_t args[$int:max_failure_args+1];
+                     CUDA_SUCCEED_OR_RETURN(
+                       cuMemcpyDtoH(&amp;args,
+                                    ctx-&gt;global_failure_args,
+                                    sizeof(args)));
+
+                     $stm:(failureSwitch failures)
+
+                     return 1;
+                   }
+                 }
+                 CUDA_SUCCEED_OR_RETURN(cuCtxPopCurrent(&amp;ctx-&gt;cuda.cu_ctx));
+                 return 0;
+               }|]</span></span><span>
+</span><span id="line-467"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-468"></span><span>
+</span><span id="line-469"></span><span>  </span><span class="annot"><span class="annottext">BlockItem -&gt; CompilerM OpenCL () ()
+forall op s. BlockItem -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#onClear"><span class="hs-identifier hs-var">GC.onClear</span></a></span><span>
+</span><span id="line-470"></span><span>    </span><span class="annot"><span class="">[C.citem|if (ctx-&gt;error == NULL) {
+               CUDA_SUCCEED_NONFATAL(cuda_free_all(&amp;ctx-&gt;cuda));
+             }|]</span></span><span>
+</span><span id="line-473"></span></pre></body></html>

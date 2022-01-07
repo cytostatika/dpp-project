@@ -1,0 +1,95 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | C code generator.  This module can convert a correct ImpCode</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- program to an equivalent C program. The C code is strictly</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- sequential, but can handle the full Futhark language.</span><span>
+</span><span id="line-6"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CodeGen.Backends.SequentialC</span><span>
+</span><span id="line-7"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.SequentialC.html#compileProg"><span class="hs-identifier">compileProg</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CParts"><span class="hs-identifier">GC.CParts</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#asLibrary"><span class="hs-identifier">GC.asLibrary</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#asExecutable"><span class="hs-identifier">GC.asExecutable</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#asServer"><span class="hs-identifier">GC.asServer</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-14"></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html"><span class="hs-identifier">Futhark.CodeGen.Backends.GenericC</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">GC</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.SequentialC.Boilerplate.html"><span class="hs-identifier">Futhark.CodeGen.Backends.SequentialC.Boilerplate</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.Sequential.html"><span class="hs-identifier">Futhark.CodeGen.ImpCode.Sequential</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Imp</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Sequential.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen.Sequential</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">ImpGen</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SeqMem.html"><span class="hs-identifier">Futhark.IR.SeqMem</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- | Compile the program to sequential C.</span><span>
+</span><span id="line-25"></span><span id="local-6989586621684531087"><span class="annot"><a href="Futhark.CodeGen.Backends.SequentialC.html#compileProg"><span class="hs-identifier hs-type">compileProg</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684531087"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SeqMem.html#SeqMem"><span class="hs-identifier hs-type">SeqMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684531087"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Warnings.html#Warnings"><span class="hs-identifier hs-type">ImpGen.Warnings</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CParts"><span class="hs-identifier hs-type">GC.CParts</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-26"></span><span id="compileProg"><span class="annot"><span class="annottext">compileProg :: forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Text -&gt; Prog SeqMem -&gt; m (Warnings, CParts)
+</span><a href="Futhark.CodeGen.Backends.SequentialC.html#compileProg"><span class="hs-identifier hs-var hs-var">compileProg</span></a></span></span><span> </span><span id="local-6989586621684531023"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684531023"><span class="hs-identifier hs-var">version</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-27"></span><span>  </span><span class="annot"><span class="annottext">(Definitions Sequential -&gt; m CParts)
+-&gt; (Warnings, Definitions Sequential) -&gt; m (Warnings, CParts)
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f (t b)
+</span><span class="hs-identifier hs-var">traverse</span></span><span>
+</span><span id="line-28"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+-&gt; Text
+-&gt; Operations Sequential ()
+-&gt; CompilerM Sequential () ()
+-&gt; Text
+-&gt; [Space]
+-&gt; [Option]
+-&gt; Definitions Sequential
+-&gt; m CParts
+forall (m :: * -&gt; *) op.
+MonadFreshNames m =&gt;
+Text
+-&gt; Text
+-&gt; Operations op ()
+-&gt; CompilerM op () ()
+-&gt; Text
+-&gt; [Space]
+-&gt; [Option]
+-&gt; Definitions op
+-&gt; m CParts
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileProg"><span class="hs-identifier hs-var">GC.compileProg</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;c&quot;</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684531023"><span class="hs-identifier hs-var">version</span></a></span><span> </span><span class="annot"><span class="annottext">Operations Sequential ()
+</span><a href="#local-6989586621684531020"><span class="hs-identifier hs-var">operations</span></a></span><span> </span><span class="annot"><span class="annottext">CompilerM Sequential () ()
+forall op s. CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.SequentialC.Boilerplate.html#generateBoilerplate"><span class="hs-identifier hs-var">generateBoilerplate</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span>    </span><span class="annot"><span class="annottext">((Warnings, Definitions Sequential) -&gt; m (Warnings, CParts))
+-&gt; (Prog SeqMem -&gt; m (Warnings, Definitions Sequential))
+-&gt; Prog SeqMem
+-&gt; m (Warnings, CParts)
+forall (m :: * -&gt; *) b c a.
+Monad m =&gt;
+(b -&gt; m c) -&gt; (a -&gt; m b) -&gt; a -&gt; m c
+</span><span class="hs-operator hs-var">&lt;=&lt;</span></span><span> </span><span class="annot"><span class="annottext">Prog SeqMem -&gt; m (Warnings, Definitions Sequential)
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Prog SeqMem -&gt; m (Warnings, Definitions Sequential)
+</span><a href="Futhark.CodeGen.ImpGen.Sequential.html#compileProg"><span class="hs-identifier hs-var">ImpGen.compileProg</span></a></span><span>
+</span><span id="line-30"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-31"></span><span>    </span><span class="annot"><a href="#local-6989586621684531020"><span class="hs-identifier hs-type">operations</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#Operations"><span class="hs-identifier hs-type">GC.Operations</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.Sequential.html#Sequential"><span class="hs-identifier hs-type">Imp.Sequential</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span>    </span><span id="local-6989586621684531020"><span class="annot"><span class="annottext">operations :: Operations Sequential ()
+</span><a href="#local-6989586621684531020"><span class="hs-identifier hs-var hs-var">operations</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-33"></span><span>      </span><span class="annot"><span class="annottext">Operations Sequential ()
+forall op s. Operations op s
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#defaultOperations"><span class="hs-identifier hs-var">GC.defaultOperations</span></a></span><span>
+</span><span id="line-34"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">opsCompiler :: OpCompiler Sequential ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#opsCompiler"><span class="hs-identifier hs-var">GC.opsCompiler</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CompilerM Sequential () () -&gt; OpCompiler Sequential ()
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">(CompilerM Sequential () () -&gt; OpCompiler Sequential ())
+-&gt; CompilerM Sequential () () -&gt; OpCompiler Sequential ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">() -&gt; CompilerM Sequential () ()
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-36"></span></pre></body></html>

@@ -1,0 +1,621 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE Strict #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- | High-level API for invoking the Futhark compiler.</span><span>
+</span><span id="line-6"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Compiler</span><span>
+</span><span id="line-7"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Compiler.html#runPipelineOnProgram"><span class="hs-identifier">runPipelineOnProgram</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Compiler.html#runCompilerOnProgram"><span class="hs-identifier">runCompilerOnProgram</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Compiler.html#dumpError"><span class="hs-identifier">dumpError</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Compiler.html#handleWarnings"><span class="hs-identifier">handleWarnings</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Futhark.Compiler.Program.html"><span class="hs-identifier">Futhark.Compiler.Program</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Futhark.Compiler.Config.html"><span class="hs-identifier">Futhark.Compiler.Config</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.Compiler.html#readProgram"><span class="hs-identifier">readProgram</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.Compiler.html#readProgramOrDie"><span class="hs-identifier">readProgramOrDie</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>    </span><span class="annot"><a href="Futhark.Compiler.html#readUntypedProgram"><span class="hs-identifier">readUntypedProgram</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><a href="Futhark.Compiler.html#readUntypedProgramOrDie"><span class="hs-identifier">readUntypedProgramOrDie</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-19"></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Except</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bifunctor</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">first</span></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text.IO</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.Alias.html"><span class="hs-identifier">Futhark.Analysis.Alias</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Alias</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Compiler.Config.html"><span class="hs-identifier">Futhark.Compiler.Config</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Compiler.Program.html"><span class="hs-identifier">Futhark.Compiler.Program</span></a></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html"><span class="hs-identifier">Futhark.IR.SOACS</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.TypeCheck.html"><span class="hs-identifier">Futhark.IR.TypeCheck</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.html"><span class="hs-identifier">Futhark.Internalise</span></a></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pipeline.html"><span class="hs-identifier">Futhark.Pipeline</span></a></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Log.html"><span class="hs-identifier">Futhark.Util.Log</span></a></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Pretty.html"><span class="hs-identifier">Futhark.Util.Pretty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ppr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Util.Pretty.html#prettyText"><span class="hs-identifier">prettyText</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Language.Futhark.html"><span class="hs-identifier">Language.Futhark</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">E</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.Semantic.html"><span class="hs-identifier">Language.Futhark.Semantic</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Semantic.html#includeToString"><span class="hs-identifier">includeToString</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.Warnings.html"><span class="hs-identifier">Language.Futhark.Warnings</span></a></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Exit</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ExitCode</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">exitWith</span></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO</span></span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- | Print a compiler error to stdout.  The 'FutharkConfig' controls</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- to which degree auxiliary information (e.g. the failing program) is</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- also printed.</span><span>
+</span><span id="line-44"></span><span class="annot"><a href="Futhark.Compiler.html#dumpError"><span class="hs-identifier hs-type">dumpError</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Compiler.Config.html#FutharkConfig"><span class="hs-identifier hs-type">FutharkConfig</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Error.html#CompilerError"><span class="hs-identifier hs-type">CompilerError</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span id="dumpError"><span class="annot"><span class="annottext">dumpError :: FutharkConfig -&gt; CompilerError -&gt; IO ()
+</span><a href="Futhark.Compiler.html#dumpError"><span class="hs-identifier hs-var hs-var">dumpError</span></a></span></span><span> </span><span id="local-6989586621684567319"><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567319"><span class="hs-identifier hs-var">config</span></a></span></span><span> </span><span id="local-6989586621684567318"><span class="annot"><span class="annottext">CompilerError
+</span><a href="#local-6989586621684567318"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-46"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">CompilerError
+</span><a href="#local-6989586621684567318"><span class="hs-identifier hs-var">err</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-47"></span><span>    </span><span class="annot"><a href="Futhark.Error.html#ExternalError"><span class="hs-identifier hs-type">ExternalError</span></a></span><span> </span><span id="local-6989586621684567316"><span class="annot"><span class="annottext">Doc
+</span><a href="#local-6989586621684567316"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-48"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; IO ()) -&gt; Text -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Text
+forall a. Pretty a =&gt; a -&gt; Text
+</span><a href="Futhark.Util.Pretty.html#prettyText"><span class="hs-identifier hs-var">prettyText</span></a></span><span> </span><span class="annot"><span class="annottext">Doc
+</span><a href="#local-6989586621684567316"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-49"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;&quot;</span></span><span>
+</span><span id="line-50"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;If you find this error message confusing, uninformative, or wrong, please open an issue:&quot;</span></span><span>
+</span><span id="line-51"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;  https://github.com/diku-dk/futhark/issues&quot;</span></span><span>
+</span><span id="line-52"></span><span>    </span><span class="annot"><a href="Futhark.Error.html#InternalError"><span class="hs-identifier hs-type">InternalError</span></a></span><span> </span><span id="local-6989586621684567312"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567312"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621684567311"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567311"><span class="hs-identifier hs-var">info</span></a></span></span><span> </span><span class="annot"><span class="annottext">ErrorClass
+</span><a href="Futhark.Error.html#CompilerBug"><span class="hs-identifier hs-var">CompilerBug</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Internal compiler error.  Please report this:&quot;</span></span><span>
+</span><span id="line-54"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;  https://github.com/diku-dk/futhark/issues&quot;</span></span><span>
+</span><span id="line-55"></span><span>      </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; IO ()
+</span><a href="#local-6989586621684567309"><span class="hs-identifier hs-var">report</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567312"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567311"><span class="hs-identifier hs-var">info</span></a></span><span>
+</span><span id="line-56"></span><span>    </span><span class="annot"><a href="Futhark.Error.html#InternalError"><span class="hs-identifier hs-type">InternalError</span></a></span><span> </span><span id="local-6989586621684567308"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567308"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621684567307"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567307"><span class="hs-identifier hs-var">info</span></a></span></span><span> </span><span class="annot"><span class="annottext">ErrorClass
+</span><a href="Futhark.Error.html#CompilerLimitation"><span class="hs-identifier hs-var">CompilerLimitation</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-57"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Known compiler limitation encountered.  Sorry.&quot;</span></span><span>
+</span><span id="line-58"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;Revise your program or try a different Futhark compiler.&quot;</span></span><span>
+</span><span id="line-59"></span><span>      </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; IO ()
+</span><a href="#local-6989586621684567309"><span class="hs-identifier hs-var">report</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567308"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567307"><span class="hs-identifier hs-var">info</span></a></span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-61"></span><span>    </span><span id="local-6989586621684567309"><span class="annot"><span class="annottext">report :: Text -&gt; Text -&gt; IO ()
+</span><a href="#local-6989586621684567309"><span class="hs-identifier hs-var hs-var">report</span></a></span></span><span> </span><span id="local-6989586621684567297"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567297"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621684567296"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567296"><span class="hs-identifier hs-var">info</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-62"></span><span>      </span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567297"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-63"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Verbosity, Maybe [Char]) -&gt; Verbosity
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FutharkConfig -&gt; (Verbosity, Maybe [Char])
+</span><a href="Futhark.Compiler.Config.html#futharkVerbose"><span class="hs-identifier hs-var hs-var">futharkVerbose</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567319"><span class="hs-identifier hs-var">config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Verbosity -&gt; Verbosity -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Verbosity
+</span><a href="Futhark.Pipeline.html#NotVerbose"><span class="hs-identifier hs-var">NotVerbose</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-64"></span><span>        </span><span class="annot"><span class="annottext">(Text -&gt; IO ())
+-&gt; ([Char] -&gt; Text -&gt; IO ()) -&gt; Maybe [Char] -&gt; Text -&gt; IO ()
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span>
+</span><span id="line-65"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Handle -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.hPutStr</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span>          </span><span class="annot"><span class="annottext">[Char] -&gt; Text -&gt; IO ()
+</span><span class="hs-identifier hs-var">T.writeFile</span></span><span>
+</span><span id="line-67"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Verbosity, Maybe [Char]) -&gt; Maybe [Char]
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FutharkConfig -&gt; (Verbosity, Maybe [Char])
+</span><a href="Futhark.Compiler.Config.html#futharkVerbose"><span class="hs-identifier hs-var hs-var">futharkVerbose</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567319"><span class="hs-identifier hs-var">config</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>          </span><span class="annot"><span class="annottext">(Text -&gt; IO ()) -&gt; Text -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684567296"><span class="hs-identifier hs-var">info</span></a></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;\n&quot;</span></span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- | Read a program from the given 'FilePath', run the given</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- 'Pipeline', and finish up with the given 'Action'.</span><span>
+</span><span id="line-72"></span><span id="local-6989586621684567453"><span class="annot"><a href="Futhark.Compiler.html#runCompilerOnProgram"><span class="hs-identifier hs-type">runCompilerOnProgram</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-73"></span><span>  </span><span class="annot"><a href="Futhark.Compiler.Config.html#FutharkConfig"><span class="hs-identifier hs-type">FutharkConfig</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-74"></span><span>  </span><span class="annot"><a href="Futhark.Pipeline.html#Pipeline"><span class="hs-identifier hs-type">Pipeline</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">I.SOACS</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567453"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-75"></span><span>  </span><span class="annot"><a href="Futhark.Pipeline.html#Action"><span class="hs-identifier hs-type">Action</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567453"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-76"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-77"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-78"></span><span id="runCompilerOnProgram"><span class="annot"><span class="annottext">runCompilerOnProgram :: forall rep.
+FutharkConfig
+-&gt; Pipeline SOACS rep -&gt; Action rep -&gt; [Char] -&gt; IO ()
+</span><a href="Futhark.Compiler.html#runCompilerOnProgram"><span class="hs-identifier hs-var hs-var">runCompilerOnProgram</span></a></span></span><span> </span><span id="local-6989586621684567282"><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567282"><span class="hs-identifier hs-var">config</span></a></span></span><span> </span><span id="local-6989586621684567281"><span class="annot"><span class="annottext">Pipeline SOACS rep
+</span><a href="#local-6989586621684567281"><span class="hs-identifier hs-var">pipeline</span></a></span></span><span> </span><span id="local-6989586621684567280"><span class="annot"><span class="annottext">Action rep
+</span><a href="#local-6989586621684567280"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span id="local-6989586621684567279"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684567279"><span class="hs-identifier hs-var">file</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-79"></span><span>  </span><span id="local-6989586621684567278"><span class="annot"><span class="annottext">Either CompilerError ()
+</span><a href="#local-6989586621684567278"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FutharkM () -&gt; Verbosity -&gt; IO (Either CompilerError ())
+forall a. FutharkM a -&gt; Verbosity -&gt; IO (Either CompilerError a)
+</span><a href="Futhark.Pipeline.html#runFutharkM"><span class="hs-identifier hs-var">runFutharkM</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkM ()
+</span><a href="#local-6989586621684567276"><span class="hs-identifier hs-var">compile</span></a></span><span> </span><span class="annot"><span class="annottext">(Verbosity -&gt; IO (Either CompilerError ()))
+-&gt; Verbosity -&gt; IO (Either CompilerError ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Verbosity, Maybe [Char]) -&gt; Verbosity
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">((Verbosity, Maybe [Char]) -&gt; Verbosity)
+-&gt; (Verbosity, Maybe [Char]) -&gt; Verbosity
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FutharkConfig -&gt; (Verbosity, Maybe [Char])
+</span><a href="Futhark.Compiler.Config.html#futharkVerbose"><span class="hs-identifier hs-var hs-var">futharkVerbose</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567282"><span class="hs-identifier hs-var">config</span></a></span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either CompilerError ()
+</span><a href="#local-6989586621684567278"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-81"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684567275"><span class="annot"><span class="annottext">CompilerError
+</span><a href="#local-6989586621684567275"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-82"></span><span>      </span><span class="annot"><span class="annottext">FutharkConfig -&gt; CompilerError -&gt; IO ()
+</span><a href="Futhark.Compiler.html#dumpError"><span class="hs-identifier hs-var">dumpError</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567282"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="annot"><span class="annottext">CompilerError
+</span><a href="#local-6989586621684567275"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-83"></span><span>      </span><span class="annot"><span class="annottext">ExitCode -&gt; IO ()
+forall a. ExitCode -&gt; IO a
+</span><span class="hs-identifier hs-var">exitWith</span></span><span> </span><span class="annot"><span class="annottext">(ExitCode -&gt; IO ()) -&gt; ExitCode -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ExitCode
+</span><span class="hs-identifier hs-var">ExitFailure</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-84"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-85"></span><span>      </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-87"></span><span>    </span><span id="local-6989586621684567276"><span class="annot"><span class="annottext">compile :: FutharkM ()
+</span><a href="#local-6989586621684567276"><span class="hs-identifier hs-var hs-var">compile</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-88"></span><span>      </span><span id="local-6989586621684567256"><span class="annot"><span class="annottext">Prog rep
+</span><a href="#local-6989586621684567256"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+-&gt; Pipeline SOACS rep -&gt; [Char] -&gt; FutharkM (Prog rep)
+forall torep.
+FutharkConfig
+-&gt; Pipeline SOACS torep -&gt; [Char] -&gt; FutharkM (Prog torep)
+</span><a href="Futhark.Compiler.html#runPipelineOnProgram"><span class="hs-identifier hs-var">runPipelineOnProgram</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567282"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="annot"><span class="annottext">Pipeline SOACS rep
+</span><a href="#local-6989586621684567281"><span class="hs-identifier hs-var">pipeline</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684567279"><span class="hs-identifier hs-var">file</span></a></span><span>
+</span><span id="line-89"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; FutharkM () -&gt; FutharkM ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Verbosity -&gt; Verbosity -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Verbosity
+</span><a href="Futhark.Pipeline.html#NotVerbose"><span class="hs-identifier hs-var">NotVerbose</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Verbosity -&gt; Bool)
+-&gt; ((Verbosity, Maybe [Char]) -&gt; Verbosity)
+-&gt; (Verbosity, Maybe [Char])
+-&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Verbosity, Maybe [Char]) -&gt; Verbosity
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">((Verbosity, Maybe [Char]) -&gt; Bool)
+-&gt; (Verbosity, Maybe [Char]) -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FutharkConfig -&gt; (Verbosity, Maybe [Char])
+</span><a href="Futhark.Compiler.Config.html#futharkVerbose"><span class="hs-identifier hs-var hs-var">futharkVerbose</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567282"><span class="hs-identifier hs-var">config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(FutharkM () -&gt; FutharkM ()) -&gt; FutharkM () -&gt; FutharkM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-90"></span><span>        </span><span class="annot"><span class="annottext">[Char] -&gt; FutharkM ()
+forall (m :: * -&gt; *) a. (MonadLogger m, ToLog a) =&gt; a -&gt; m ()
+</span><a href="Futhark.Util.Log.html#logMsg"><span class="hs-identifier hs-var">logMsg</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; FutharkM ()) -&gt; [Char] -&gt; FutharkM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Running action &quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Action rep -&gt; [Char]
+forall rep. Action rep -&gt; [Char]
+</span><a href="Futhark.Pipeline.html#actionName"><span class="hs-identifier hs-var hs-var">actionName</span></a></span><span> </span><span class="annot"><span class="annottext">Action rep
+</span><a href="#local-6989586621684567280"><span class="hs-identifier hs-var">action</span></a></span><span>
+</span><span id="line-91"></span><span>      </span><span class="annot"><span class="annottext">Action rep -&gt; Prog rep -&gt; FutharkM ()
+forall rep. Action rep -&gt; Prog rep -&gt; FutharkM ()
+</span><a href="Futhark.Pipeline.html#actionProcedure"><span class="hs-identifier hs-var hs-var">actionProcedure</span></a></span><span> </span><span class="annot"><span class="annottext">Action rep
+</span><a href="#local-6989586621684567280"><span class="hs-identifier hs-var">action</span></a></span><span> </span><span class="annot"><span class="annottext">Prog rep
+</span><a href="#local-6989586621684567256"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-92"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; FutharkM () -&gt; FutharkM ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Verbosity -&gt; Verbosity -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Verbosity
+</span><a href="Futhark.Pipeline.html#NotVerbose"><span class="hs-identifier hs-var">NotVerbose</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Verbosity -&gt; Bool)
+-&gt; ((Verbosity, Maybe [Char]) -&gt; Verbosity)
+-&gt; (Verbosity, Maybe [Char])
+-&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Verbosity, Maybe [Char]) -&gt; Verbosity
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">((Verbosity, Maybe [Char]) -&gt; Bool)
+-&gt; (Verbosity, Maybe [Char]) -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FutharkConfig -&gt; (Verbosity, Maybe [Char])
+</span><a href="Futhark.Compiler.Config.html#futharkVerbose"><span class="hs-identifier hs-var hs-var">futharkVerbose</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567282"><span class="hs-identifier hs-var">config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(FutharkM () -&gt; FutharkM ()) -&gt; FutharkM () -&gt; FutharkM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-93"></span><span>        </span><span class="annot"><span class="annottext">[Char] -&gt; FutharkM ()
+forall (m :: * -&gt; *) a. (MonadLogger m, ToLog a) =&gt; a -&gt; m ()
+</span><a href="Futhark.Util.Log.html#logMsg"><span class="hs-identifier hs-var">logMsg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Done.&quot;</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">)</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- | Read a program from the given 'FilePath', run the given</span><span>
+</span><span id="line-96"></span><span class="hs-comment">-- 'Pipeline', and return it.</span><span>
+</span><span id="line-97"></span><span id="local-6989586621684567439"><span class="annot"><a href="Futhark.Compiler.html#runPipelineOnProgram"><span class="hs-identifier hs-type">runPipelineOnProgram</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-98"></span><span>  </span><span class="annot"><a href="Futhark.Compiler.Config.html#FutharkConfig"><span class="hs-identifier hs-type">FutharkConfig</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-99"></span><span>  </span><span class="annot"><a href="Futhark.Pipeline.html#Pipeline"><span class="hs-identifier hs-type">Pipeline</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">I.SOACS</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567439"><span class="hs-identifier hs-type">torep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-100"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-101"></span><span>  </span><span class="annot"><a href="Futhark.Pipeline.html#FutharkM"><span class="hs-identifier hs-type">FutharkM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567439"><span class="hs-identifier hs-type">torep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-102"></span><span id="runPipelineOnProgram"><span class="annot"><span class="annottext">runPipelineOnProgram :: forall torep.
+FutharkConfig
+-&gt; Pipeline SOACS torep -&gt; [Char] -&gt; FutharkM (Prog torep)
+</span><a href="Futhark.Compiler.html#runPipelineOnProgram"><span class="hs-identifier hs-var hs-var">runPipelineOnProgram</span></a></span></span><span> </span><span id="local-6989586621684567230"><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567230"><span class="hs-identifier hs-var">config</span></a></span></span><span> </span><span id="local-6989586621684567229"><span class="annot"><span class="annottext">Pipeline SOACS torep
+</span><a href="#local-6989586621684567229"><span class="hs-identifier hs-var">pipeline</span></a></span></span><span> </span><span id="local-6989586621684567228"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684567228"><span class="hs-identifier hs-var">file</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-103"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; FutharkM () -&gt; FutharkM ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PipelineConfig -&gt; Bool
+</span><a href="Futhark.Pipeline.html#pipelineVerbose"><span class="hs-identifier hs-var hs-var">pipelineVerbose</span></a></span><span> </span><span class="annot"><span class="annottext">PipelineConfig
+</span><a href="#local-6989586621684567226"><span class="hs-identifier hs-var">pipeline_config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(FutharkM () -&gt; FutharkM ()) -&gt; FutharkM () -&gt; FutharkM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-104"></span><span>    </span><span class="annot"><span class="annottext">[Char] -&gt; FutharkM ()
+forall (m :: * -&gt; *) a. (MonadLogger m, ToLog a) =&gt; a -&gt; m ()
+</span><a href="Futhark.Util.Log.html#logMsg"><span class="hs-identifier hs-var">logMsg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Reading and type-checking source program&quot;</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684567225"><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684567225"><span class="hs-identifier hs-var">prog_imports</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684567224"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684567224"><span class="hs-identifier hs-var">namesrc</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-106"></span><span>    </span><span class="annot"><span class="annottext">FutharkConfig
+-&gt; FutharkM (Warnings, (Imports, VNameSource))
+-&gt; FutharkM (Imports, VNameSource)
+forall a. FutharkConfig -&gt; FutharkM (Warnings, a) -&gt; FutharkM a
+</span><a href="Futhark.Compiler.html#handleWarnings"><span class="hs-identifier hs-var">handleWarnings</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567230"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="annot"><span class="annottext">(FutharkM (Warnings, (Imports, VNameSource))
+ -&gt; FutharkM (Imports, VNameSource))
+-&gt; FutharkM (Warnings, (Imports, VNameSource))
+-&gt; FutharkM (Imports, VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-107"></span><span>      </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684567223"><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684567223"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684567222"><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684567222"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684567221"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684567221"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684567223"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684567222"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684567221"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-108"></span><span>        </span><span class="annot"><span class="annottext">((Warnings, Imports, VNameSource)
+ -&gt; (Warnings, (Imports, VNameSource)))
+-&gt; FutharkM (Warnings, Imports, VNameSource)
+-&gt; FutharkM (Warnings, (Imports, VNameSource))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[Name] -&gt; [Char] -&gt; FutharkM (Warnings, Imports, VNameSource)
+forall (m :: * -&gt; *).
+(MonadError CompilerError m, MonadIO m) =&gt;
+[Name] -&gt; [Char] -&gt; m (Warnings, Imports, VNameSource)
+</span><a href="Futhark.Compiler.html#readProgram"><span class="hs-identifier hs-var">readProgram</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FutharkConfig -&gt; [Name]
+</span><a href="Futhark.Compiler.Config.html#futharkEntryPoints"><span class="hs-identifier hs-var hs-var">futharkEntryPoints</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567230"><span class="hs-identifier hs-var">config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684567228"><span class="hs-identifier hs-var">file</span></a></span><span>
+</span><span id="line-109"></span><span>
+</span><span id="line-110"></span><span>  </span><span class="annot"><span class="annottext">VNameSource -&gt; FutharkM ()
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; VNameSource -&gt; m ()
+</span><a href="Futhark.MonadFreshNames.html#putNameSource"><span class="hs-identifier hs-var">putNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684567224"><span class="hs-identifier hs-var">namesrc</span></a></span><span>
+</span><span id="line-111"></span><span>  </span><span id="local-6989586621684567217"><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684567217"><span class="hs-identifier hs-var">int_prog</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FutharkConfig -&gt; Imports -&gt; FutharkM (Prog SOACS)
+forall (m :: * -&gt; *).
+(MonadFreshNames m, MonadLogger m) =&gt;
+FutharkConfig -&gt; Imports -&gt; m (Prog SOACS)
+</span><a href="Futhark.Internalise.html#internaliseProg"><span class="hs-identifier hs-var">internaliseProg</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567230"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="annot"><span class="annottext">Imports
+</span><a href="#local-6989586621684567225"><span class="hs-identifier hs-var">prog_imports</span></a></span><span>
+</span><span id="line-112"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; FutharkM () -&gt; FutharkM ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PipelineConfig -&gt; Bool
+</span><a href="Futhark.Pipeline.html#pipelineVerbose"><span class="hs-identifier hs-var hs-var">pipelineVerbose</span></a></span><span> </span><span class="annot"><span class="annottext">PipelineConfig
+</span><a href="#local-6989586621684567226"><span class="hs-identifier hs-var">pipeline_config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(FutharkM () -&gt; FutharkM ()) -&gt; FutharkM () -&gt; FutharkM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-113"></span><span>    </span><span class="annot"><span class="annottext">[Char] -&gt; FutharkM ()
+forall (m :: * -&gt; *) a. (MonadLogger m, ToLog a) =&gt; a -&gt; m ()
+</span><a href="Futhark.Util.Log.html#logMsg"><span class="hs-identifier hs-var">logMsg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Type-checking internalised program&quot;</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>  </span><span class="annot"><span class="annottext">Prog SOACS -&gt; FutharkM ()
+</span><a href="Futhark.Compiler.html#typeCheckInternalProgram"><span class="hs-identifier hs-var">typeCheckInternalProgram</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684567217"><span class="hs-identifier hs-var">int_prog</span></a></span><span>
+</span><span id="line-115"></span><span>  </span><span class="annot"><span class="annottext">Pipeline SOACS torep
+-&gt; PipelineConfig -&gt; Prog SOACS -&gt; FutharkM (Prog torep)
+forall fromrep torep.
+Pipeline fromrep torep
+-&gt; PipelineConfig -&gt; Prog fromrep -&gt; FutharkM (Prog torep)
+</span><a href="Futhark.Pipeline.html#runPipeline"><span class="hs-identifier hs-var">runPipeline</span></a></span><span> </span><span class="annot"><span class="annottext">Pipeline SOACS torep
+</span><a href="#local-6989586621684567229"><span class="hs-identifier hs-var">pipeline</span></a></span><span> </span><span class="annot"><span class="annottext">PipelineConfig
+</span><a href="#local-6989586621684567226"><span class="hs-identifier hs-var">pipeline_config</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684567217"><span class="hs-identifier hs-var">int_prog</span></a></span><span>
+</span><span id="line-116"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621684567226"><span class="annot"><span class="annottext">pipeline_config :: PipelineConfig
+</span><a href="#local-6989586621684567226"><span class="hs-identifier hs-var hs-var">pipeline_config</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-118"></span><span>      </span><span class="annot"><span class="annottext">PipelineConfig :: Bool -&gt; Bool -&gt; PipelineConfig
+</span><a href="Futhark.Pipeline.html#PipelineConfig"><span class="hs-identifier hs-type">PipelineConfig</span></a></span><span>
+</span><span id="line-119"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">pipelineVerbose :: Bool
+</span><a href="Futhark.Pipeline.html#pipelineVerbose"><span class="hs-identifier hs-var">pipelineVerbose</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Verbosity, Maybe [Char]) -&gt; Verbosity
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FutharkConfig -&gt; (Verbosity, Maybe [Char])
+</span><a href="Futhark.Compiler.Config.html#futharkVerbose"><span class="hs-identifier hs-var hs-var">futharkVerbose</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567230"><span class="hs-identifier hs-var">config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Verbosity -&gt; Verbosity -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Verbosity
+</span><a href="Futhark.Pipeline.html#NotVerbose"><span class="hs-identifier hs-var">NotVerbose</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-120"></span><span>          </span><span class="annot"><span class="annottext">pipelineValidate :: Bool
+</span><a href="#local-6989586621684567211"><span class="hs-identifier hs-var">pipelineValidate</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FutharkConfig -&gt; Bool
+</span><a href="Futhark.Compiler.Config.html#futharkTypeCheck"><span class="hs-identifier hs-var hs-var">futharkTypeCheck</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567230"><span class="hs-identifier hs-var">config</span></a></span><span>
+</span><span id="line-121"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-122"></span><span>
+</span><span id="line-123"></span><span class="annot"><a href="Futhark.Compiler.html#typeCheckInternalProgram"><span class="hs-identifier hs-type">typeCheckInternalProgram</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">I.Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">I.SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pipeline.html#FutharkM"><span class="hs-identifier hs-type">FutharkM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span id="typeCheckInternalProgram"><span class="annot"><span class="annottext">typeCheckInternalProgram :: Prog SOACS -&gt; FutharkM ()
+</span><a href="Futhark.Compiler.html#typeCheckInternalProgram"><span class="hs-identifier hs-var hs-var">typeCheckInternalProgram</span></a></span></span><span> </span><span id="local-6989586621684567209"><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684567209"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Prog (Aliases SOACS) -&gt; Either (TypeError SOACS) ()
+forall rep.
+Checkable rep =&gt;
+Prog (Aliases rep) -&gt; Either (TypeError rep) ()
+</span><a href="Futhark.IR.TypeCheck.html#checkProg"><span class="hs-identifier hs-var">I.checkProg</span></a></span><span> </span><span class="annot"><span class="annottext">Prog (Aliases SOACS)
+</span><a href="#local-6989586621684567207"><span class="hs-identifier hs-var">prog'</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-126"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684567206"><span class="annot"><span class="annottext">TypeError SOACS
+</span><a href="#local-6989586621684567206"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Doc -&gt; FutharkM ()
+forall (m :: * -&gt; *) a.
+MonadError CompilerError m =&gt;
+[Char] -&gt; Doc -&gt; m a
+</span><a href="Futhark.Error.html#internalErrorS"><span class="hs-identifier hs-var">internalErrorS</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;After internalisation:\n&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">TypeError SOACS -&gt; [Char]
+forall a. Show a =&gt; a -&gt; [Char]
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">TypeError SOACS
+</span><a href="#local-6989586621684567206"><span class="hs-identifier hs-var">err</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Prog (Aliases SOACS) -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">Prog (Aliases SOACS)
+</span><a href="#local-6989586621684567207"><span class="hs-identifier hs-var">prog'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; FutharkM ()
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-128"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-129"></span><span>    </span><span id="local-6989586621684567207"><span class="annot"><span class="annottext">prog' :: Prog (Aliases SOACS)
+</span><a href="#local-6989586621684567207"><span class="hs-identifier hs-var hs-var">prog'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Prog SOACS -&gt; Prog (Aliases SOACS)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+Prog rep -&gt; Prog (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#aliasAnalysis"><span class="hs-identifier hs-var">Alias.aliasAnalysis</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SOACS
+</span><a href="#local-6989586621684567209"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- | Read and type-check a Futhark program, including all imports.</span><span>
+</span><span id="line-132"></span><span id="local-6989586621684567420"><span class="annot"><a href="Futhark.Compiler.html#readProgram"><span class="hs-identifier hs-type">readProgram</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-133"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">MonadError</span></span><span> </span><span class="annot"><a href="Futhark.Error.html#CompilerError"><span class="hs-identifier hs-type">CompilerError</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567420"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621684567420"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-134"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">I.Name</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-135"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-136"></span><span>  </span><span class="annot"><a href="#local-6989586621684567420"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Warnings.html#Warnings"><span class="hs-identifier hs-type">Warnings</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Semantic.html#Imports"><span class="hs-identifier hs-type">Imports</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-137"></span><span id="readProgram"><span class="annot"><span class="annottext">readProgram :: forall (m :: * -&gt; *).
+(MonadError CompilerError m, MonadIO m) =&gt;
+[Name] -&gt; [Char] -&gt; m (Warnings, Imports, VNameSource)
+</span><a href="Futhark.Compiler.html#readProgram"><span class="hs-identifier hs-var hs-var">readProgram</span></a></span></span><span> </span><span id="local-6989586621684567190"><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684567190"><span class="hs-identifier hs-var">extra_eps</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Name] -&gt; [[Char]] -&gt; m (Warnings, Imports, VNameSource)
+forall (m :: * -&gt; *).
+(MonadError CompilerError m, MonadIO m) =&gt;
+[Name] -&gt; [[Char]] -&gt; m (Warnings, Imports, VNameSource)
+</span><a href="Futhark.Compiler.Program.html#readLibrary"><span class="hs-identifier hs-var">readLibrary</span></a></span><span> </span><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684567190"><span class="hs-identifier hs-var">extra_eps</span></a></span><span> </span><span class="annot"><span class="annottext">([[Char]] -&gt; m (Warnings, Imports, VNameSource))
+-&gt; ([Char] -&gt; [[Char]])
+-&gt; [Char]
+-&gt; m (Warnings, Imports, VNameSource)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [[Char]]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span>
+</span><span id="line-138"></span><span>
+</span><span id="line-139"></span><span class="hs-comment">-- | Read and parse (but do not type-check) a Futhark program,</span><span>
+</span><span id="line-140"></span><span class="hs-comment">-- including all imports.</span><span>
+</span><span id="line-141"></span><span id="local-6989586621684567405"><span class="annot"><a href="Futhark.Compiler.html#readUntypedProgram"><span class="hs-identifier hs-type">readUntypedProgram</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-142"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">MonadError</span></span><span> </span><span class="annot"><a href="Futhark.Error.html#CompilerError"><span class="hs-identifier hs-type">CompilerError</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567405"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621684567405"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-143"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-144"></span><span>  </span><span class="annot"><a href="#local-6989586621684567405"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Prop.html#UncheckedProg"><span class="hs-identifier hs-type">E.UncheckedProg</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span></span><span>
+</span><span id="line-145"></span><span id="readUntypedProgram"><span class="annot"><span class="annottext">readUntypedProgram :: forall (m :: * -&gt; *).
+(MonadError CompilerError m, MonadIO m) =&gt;
+[Char] -&gt; m [([Char], UncheckedProg)]
+</span><a href="Futhark.Compiler.html#readUntypedProgram"><span class="hs-identifier hs-var hs-var">readUntypedProgram</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-146"></span><span>  </span><span class="annot"><span class="annottext">([(ImportName, UncheckedProg)] -&gt; [([Char], UncheckedProg)])
+-&gt; m [(ImportName, UncheckedProg)] -&gt; m [([Char], UncheckedProg)]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((ImportName, UncheckedProg) -&gt; ([Char], UncheckedProg))
+-&gt; [(ImportName, UncheckedProg)] -&gt; [([Char], UncheckedProg)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(ImportName -&gt; [Char])
+-&gt; (ImportName, UncheckedProg) -&gt; ([Char], UncheckedProg)
+forall (p :: * -&gt; * -&gt; *) a b c.
+Bifunctor p =&gt;
+(a -&gt; b) -&gt; p a c -&gt; p b c
+</span><span class="hs-identifier hs-var">first</span></span><span> </span><span class="annot"><span class="annottext">ImportName -&gt; [Char]
+</span><a href="Language.Futhark.Semantic.html#includeToString"><span class="hs-identifier hs-var">includeToString</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(m [(ImportName, UncheckedProg)] -&gt; m [([Char], UncheckedProg)])
+-&gt; ([Char] -&gt; m [(ImportName, UncheckedProg)])
+-&gt; [Char]
+-&gt; m [([Char], UncheckedProg)]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[[Char]] -&gt; m [(ImportName, UncheckedProg)]
+forall (m :: * -&gt; *).
+(MonadIO m, MonadError CompilerError m) =&gt;
+[[Char]] -&gt; m [(ImportName, UncheckedProg)]
+</span><a href="Futhark.Compiler.Program.html#readUntypedLibrary"><span class="hs-identifier hs-var">readUntypedLibrary</span></a></span><span> </span><span class="annot"><span class="annottext">([[Char]] -&gt; m [(ImportName, UncheckedProg)])
+-&gt; ([Char] -&gt; [[Char]])
+-&gt; [Char]
+-&gt; m [(ImportName, UncheckedProg)]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [[Char]]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span id="local-6989586621684567387"><span id="local-6989586621684567388"><span class="annot"><a href="Futhark.Compiler.html#orDie"><span class="hs-identifier hs-type">orDie</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621684567388"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Pipeline.html#FutharkM"><span class="hs-identifier hs-type">FutharkM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567387"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684567388"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567387"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-149"></span><span id="orDie"><span class="annot"><span class="annottext">orDie :: forall (m :: * -&gt; *) a. MonadIO m =&gt; FutharkM a -&gt; m a
+</span><a href="Futhark.Compiler.html#orDie"><span class="hs-identifier hs-var hs-var">orDie</span></a></span></span><span> </span><span id="local-6989586621684567167"><span class="annot"><span class="annottext">FutharkM a
+</span><a href="#local-6989586621684567167"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; m a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO a -&gt; m a) -&gt; IO a -&gt; m a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-150"></span><span>  </span><span id="local-6989586621684567166"><span class="annot"><span class="annottext">Either CompilerError a
+</span><a href="#local-6989586621684567166"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FutharkM a -&gt; Verbosity -&gt; IO (Either CompilerError a)
+forall a. FutharkM a -&gt; Verbosity -&gt; IO (Either CompilerError a)
+</span><a href="Futhark.Pipeline.html#runFutharkM"><span class="hs-identifier hs-var">runFutharkM</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkM a
+</span><a href="#local-6989586621684567167"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">Verbosity
+</span><a href="Futhark.Pipeline.html#NotVerbose"><span class="hs-identifier hs-var">NotVerbose</span></a></span><span>
+</span><span id="line-151"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either CompilerError a
+</span><a href="#local-6989586621684567166"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-152"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684567165"><span class="annot"><span class="annottext">CompilerError
+</span><a href="#local-6989586621684567165"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-153"></span><span>      </span><span class="annot"><span class="annottext">FutharkConfig -&gt; CompilerError -&gt; IO ()
+</span><a href="Futhark.Compiler.html#dumpError"><span class="hs-identifier hs-var">dumpError</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="Futhark.Compiler.Config.html#newFutharkConfig"><span class="hs-identifier hs-var">newFutharkConfig</span></a></span><span> </span><span class="annot"><span class="annottext">CompilerError
+</span><a href="#local-6989586621684567165"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-154"></span><span>      </span><span class="annot"><span class="annottext">ExitCode -&gt; IO a
+forall a. ExitCode -&gt; IO a
+</span><span class="hs-identifier hs-var">exitWith</span></span><span> </span><span class="annot"><span class="annottext">(ExitCode -&gt; IO a) -&gt; ExitCode -&gt; IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ExitCode
+</span><span class="hs-identifier hs-var">ExitFailure</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-155"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621684567163"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684567163"><span class="hs-identifier hs-var">res'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684567163"><span class="hs-identifier hs-var">res'</span></a></span><span>
+</span><span id="line-156"></span><span>
+</span><span id="line-157"></span><span class="hs-comment">-- | Not verbose, and terminates process on error.</span><span>
+</span><span id="line-158"></span><span id="local-6989586621684567384"><span class="annot"><a href="Futhark.Compiler.html#readProgramOrDie"><span class="hs-identifier hs-type">readProgramOrDie</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621684567384"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684567384"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Warnings.html#Warnings"><span class="hs-identifier hs-type">Warnings</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Semantic.html#Imports"><span class="hs-identifier hs-type">Imports</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-159"></span><span id="readProgramOrDie"><span class="annot"><span class="annottext">readProgramOrDie :: forall (m :: * -&gt; *).
+MonadIO m =&gt;
+[Char] -&gt; m (Warnings, Imports, VNameSource)
+</span><a href="Futhark.Compiler.html#readProgramOrDie"><span class="hs-identifier hs-var hs-var">readProgramOrDie</span></a></span></span><span> </span><span id="local-6989586621684567156"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684567156"><span class="hs-identifier hs-var">file</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FutharkM (Warnings, Imports, VNameSource)
+-&gt; m (Warnings, Imports, VNameSource)
+forall (m :: * -&gt; *) a. MonadIO m =&gt; FutharkM a -&gt; m a
+</span><a href="Futhark.Compiler.html#orDie"><span class="hs-identifier hs-var">orDie</span></a></span><span> </span><span class="annot"><span class="annottext">(FutharkM (Warnings, Imports, VNameSource)
+ -&gt; m (Warnings, Imports, VNameSource))
+-&gt; FutharkM (Warnings, Imports, VNameSource)
+-&gt; m (Warnings, Imports, VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Name] -&gt; [Char] -&gt; FutharkM (Warnings, Imports, VNameSource)
+forall (m :: * -&gt; *).
+(MonadError CompilerError m, MonadIO m) =&gt;
+[Name] -&gt; [Char] -&gt; m (Warnings, Imports, VNameSource)
+</span><a href="Futhark.Compiler.html#readProgram"><span class="hs-identifier hs-var">readProgram</span></a></span><span> </span><span class="annot"><span class="annottext">[Name]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684567156"><span class="hs-identifier hs-var">file</span></a></span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="hs-comment">-- | Not verbose, and terminates process on error.</span><span>
+</span><span id="line-162"></span><span id="local-6989586621684567380"><span class="annot"><a href="Futhark.Compiler.html#readUntypedProgramOrDie"><span class="hs-identifier hs-type">readUntypedProgramOrDie</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621684567380"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684567380"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Prop.html#UncheckedProg"><span class="hs-identifier hs-type">E.UncheckedProg</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span></span><span>
+</span><span id="line-163"></span><span id="readUntypedProgramOrDie"><span class="annot"><span class="annottext">readUntypedProgramOrDie :: forall (m :: * -&gt; *).
+MonadIO m =&gt;
+[Char] -&gt; m [([Char], UncheckedProg)]
+</span><a href="Futhark.Compiler.html#readUntypedProgramOrDie"><span class="hs-identifier hs-var hs-var">readUntypedProgramOrDie</span></a></span></span><span> </span><span id="local-6989586621684567151"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684567151"><span class="hs-identifier hs-var">file</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FutharkM [([Char], UncheckedProg)] -&gt; m [([Char], UncheckedProg)]
+forall (m :: * -&gt; *) a. MonadIO m =&gt; FutharkM a -&gt; m a
+</span><a href="Futhark.Compiler.html#orDie"><span class="hs-identifier hs-var">orDie</span></a></span><span> </span><span class="annot"><span class="annottext">(FutharkM [([Char], UncheckedProg)] -&gt; m [([Char], UncheckedProg)])
+-&gt; FutharkM [([Char], UncheckedProg)]
+-&gt; m [([Char], UncheckedProg)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; FutharkM [([Char], UncheckedProg)]
+forall (m :: * -&gt; *).
+(MonadError CompilerError m, MonadIO m) =&gt;
+[Char] -&gt; m [([Char], UncheckedProg)]
+</span><a href="Futhark.Compiler.html#readUntypedProgram"><span class="hs-identifier hs-var">readUntypedProgram</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684567151"><span class="hs-identifier hs-var">file</span></a></span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span class="hs-comment">-- | Run an operation that produces warnings, and handle them</span><span>
+</span><span id="line-166"></span><span class="hs-comment">-- appropriately, yielding the non-warning return value.  &quot;Proper</span><span>
+</span><span id="line-167"></span><span class="hs-comment">-- handling&quot; means e.g. to print them to the screen, as directed by</span><span>
+</span><span id="line-168"></span><span class="hs-comment">-- the compiler configuration.</span><span>
+</span><span id="line-169"></span><span id="local-6989586621684567425"><span class="annot"><a href="Futhark.Compiler.html#handleWarnings"><span class="hs-identifier hs-type">handleWarnings</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Compiler.Config.html#FutharkConfig"><span class="hs-identifier hs-type">FutharkConfig</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pipeline.html#FutharkM"><span class="hs-identifier hs-type">FutharkM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Warnings.html#Warnings"><span class="hs-identifier hs-type">Warnings</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621684567425"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pipeline.html#FutharkM"><span class="hs-identifier hs-type">FutharkM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684567425"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-170"></span><span id="handleWarnings"><span class="annot"><span class="annottext">handleWarnings :: forall a. FutharkConfig -&gt; FutharkM (Warnings, a) -&gt; FutharkM a
+</span><a href="Futhark.Compiler.html#handleWarnings"><span class="hs-identifier hs-var hs-var">handleWarnings</span></a></span></span><span> </span><span id="local-6989586621684567140"><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567140"><span class="hs-identifier hs-var">config</span></a></span></span><span> </span><span id="local-6989586621684567139"><span class="annot"><span class="annottext">FutharkM (Warnings, a)
+</span><a href="#local-6989586621684567139"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-171"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684567138"><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684567138"><span class="hs-identifier hs-var">ws</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684567137"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684567137"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FutharkM (Warnings, a)
+</span><a href="#local-6989586621684567139"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; FutharkM () -&gt; FutharkM ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FutharkConfig -&gt; Bool
+</span><a href="Futhark.Compiler.Config.html#futharkWarn"><span class="hs-identifier hs-var hs-var">futharkWarn</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567140"><span class="hs-identifier hs-var">config</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Warnings -&gt; Bool
+</span><a href="Language.Futhark.Warnings.html#anyWarnings"><span class="hs-identifier hs-var">anyWarnings</span></a></span><span> </span><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684567138"><span class="hs-identifier hs-var">ws</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(FutharkM () -&gt; FutharkM ()) -&gt; FutharkM () -&gt; FutharkM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-174"></span><span>    </span><span class="annot"><span class="annottext">IO () -&gt; FutharkM ()
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; FutharkM ()) -&gt; IO () -&gt; FutharkM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; [Char] -&gt; IO ()
+</span><span class="hs-identifier hs-var">hPutStrLn</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><span class="hs-identifier hs-var">stderr</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; IO ()) -&gt; [Char] -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Warnings -&gt; [Char]
+forall a. Pretty a =&gt; a -&gt; [Char]
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684567138"><span class="hs-identifier hs-var">ws</span></a></span><span>
+</span><span id="line-175"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; FutharkM () -&gt; FutharkM ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FutharkConfig -&gt; Bool
+</span><a href="Futhark.Compiler.Config.html#futharkWerror"><span class="hs-identifier hs-var hs-var">futharkWerror</span></a></span><span> </span><span class="annot"><span class="annottext">FutharkConfig
+</span><a href="#local-6989586621684567140"><span class="hs-identifier hs-var">config</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(FutharkM () -&gt; FutharkM ()) -&gt; FutharkM () -&gt; FutharkM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-176"></span><span>      </span><span class="annot"><span class="annottext">[Char] -&gt; FutharkM ()
+forall (m :: * -&gt; *) a. MonadError CompilerError m =&gt; [Char] -&gt; m a
+</span><a href="Futhark.Error.html#externalErrorS"><span class="hs-identifier hs-var">externalErrorS</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Treating above warnings as errors due to --Werror.&quot;</span></span><span>
+</span><span id="line-177"></span><span>
+</span><span id="line-178"></span><span>  </span><span class="annot"><span class="annottext">a -&gt; FutharkM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684567137"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-179"></span></pre></body></html>

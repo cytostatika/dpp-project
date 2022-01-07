@@ -1,0 +1,873 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | Facilities for computing free variables in an expression, which</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- we need for both lambda-lifting and defunctionalisation.</span><span>
+</span><span id="line-3"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Internalise.FreeVars</span><span>
+</span><span id="line-4"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier">freeVars</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-5"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#without"><span class="hs-identifier">without</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#ident"><span class="hs-identifier">ident</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#size"><span class="hs-identifier">size</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier">sizes</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier">NameSet</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#patVars"><span class="hs-identifier">patVars</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-12"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Pretty.html"><span class="hs-identifier">Futhark.IR.Pretty</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.html"><span class="hs-identifier">Language.Futhark</span></a></span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- | A set of names where we also track uniqueness.</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">newtype</span><span> </span><span id="NameSet"><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="NameSet"><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span></span><span> </span><span class="hs-special">{</span><span id="unNameSet"><span class="annot"><span class="annottext">NameSet -&gt; Map VName StructType
+</span><a href="Futhark.Internalise.FreeVars.html#unNameSet"><span class="hs-identifier hs-var hs-var">unNameSet</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#StructType"><span class="hs-identifier hs-type">StructType</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-21"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684513073"><span id="local-6989586621684513075"><span id="local-6989586621684513083"><span class="annot"><span class="annottext">Int -&gt; NameSet -&gt; ShowS
+[NameSet] -&gt; ShowS
+NameSet -&gt; String
+(Int -&gt; NameSet -&gt; ShowS)
+-&gt; (NameSet -&gt; String) -&gt; ([NameSet] -&gt; ShowS) -&gt; Show NameSet
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [NameSet] -&gt; ShowS
+$cshowList :: [NameSet] -&gt; ShowS
+show :: NameSet -&gt; String
+$cshow :: NameSet -&gt; String
+showsPrec :: Int -&gt; NameSet -&gt; ShowS
+$cshowsPrec :: Int -&gt; NameSet -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684513061"><span id="local-6989586621684513063"><span class="annot"><span class="hs-identifier hs-type">Semigroup</span></span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-24"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span> </span><span id="local-6989586621684513052"><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513052"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684513051"><span class="annot"><span class="annottext">&lt;&gt; :: NameSet -&gt; NameSet -&gt; NameSet
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;&gt;</span></span></span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span> </span><span id="local-6989586621684513050"><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513050"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName StructType -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span><span> </span><span class="annot"><span class="annottext">(Map VName StructType -&gt; NameSet)
+-&gt; Map VName StructType -&gt; NameSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; StructType -&gt; StructType)
+-&gt; Map VName StructType
+-&gt; Map VName StructType
+-&gt; Map VName StructType
+forall k a. Ord k =&gt; (a -&gt; a -&gt; a) -&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.unionWith</span></span><span> </span><span class="annot"><span class="annottext">StructType -&gt; StructType -&gt; StructType
+forall a. Ord a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">max</span></span><span> </span><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513052"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513050"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684513041"><span id="local-6989586621684513043"><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-27"></span><span>  </span><span id="local-6989586621684513037"><span class="annot"><span class="annottext">mempty :: NameSet
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mempty</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName StructType -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName StructType
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- | Set subtraction.</span><span>
+</span><span id="line-30"></span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#without"><span class="hs-identifier hs-type">without</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.Set</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span>
+</span><span id="line-31"></span><span id="without"><span class="annot"><span class="annottext">without :: NameSet -&gt; Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#without"><span class="hs-identifier hs-var hs-var">without</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span> </span><span id="local-6989586621684513036"><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513036"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684513035"><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684513035"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName StructType -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span><span> </span><span class="annot"><span class="annottext">(Map VName StructType -&gt; NameSet)
+-&gt; Map VName StructType -&gt; NameSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; StructType -&gt; Bool)
+-&gt; Map VName StructType -&gt; Map VName StructType
+forall k a. (k -&gt; a -&gt; Bool) -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.filterWithKey</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; StructType -&gt; Bool
+forall {p}. VName -&gt; p -&gt; Bool
+</span><a href="#local-6989586621684513033"><span class="hs-identifier hs-var">keep</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513036"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-32"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-33"></span><span>    </span><span id="local-6989586621684513033"><span class="annot"><span class="annottext">keep :: VName -&gt; p -&gt; Bool
+</span><a href="#local-6989586621684513033"><span class="hs-identifier hs-var hs-var">keep</span></a></span></span><span> </span><span id="local-6989586621684513031"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513031"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="annot"><span class="annottext">p
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513031"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Set VName -&gt; Bool
+forall a. Ord a =&gt; a -&gt; Set a -&gt; Bool
+</span><span class="hs-operator hs-var">`S.notMember`</span></span><span> </span><span class="annot"><span class="annottext">Set VName
+</span><a href="#local-6989586621684513035"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#withoutM"><span class="hs-identifier hs-type">withoutM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span>
+</span><span id="line-36"></span><span id="withoutM"><span class="annot"><span class="annottext">withoutM :: NameSet -&gt; NameSet -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#withoutM"><span class="hs-identifier hs-var hs-var">withoutM</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span> </span><span id="local-6989586621684513028"><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513028"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span> </span><span id="local-6989586621684513027"><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513027"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName StructType -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span><span> </span><span class="annot"><span class="annottext">(Map VName StructType -&gt; NameSet)
+-&gt; Map VName StructType -&gt; NameSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513028"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName StructType
+-&gt; Map VName StructType -&gt; Map VName StructType
+forall k a b. Ord k =&gt; Map k a -&gt; Map k b -&gt; Map k a
+</span><span class="hs-operator hs-var">`M.difference`</span></span><span> </span><span class="annot"><span class="annottext">Map VName StructType
+</span><a href="#local-6989586621684513027"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- | A 'NameSet' with a single 'Nonunique' name.</span><span>
+</span><span id="line-39"></span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#ident"><span class="hs-identifier hs-type">ident</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#Ident"><span class="hs-identifier hs-type">Ident</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span>
+</span><span id="line-40"></span><span id="ident"><span class="annot"><span class="annottext">ident :: IdentBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#ident"><span class="hs-identifier hs-var hs-var">ident</span></a></span></span><span> </span><span id="local-6989586621684513024"><span class="annot"><span class="annottext">IdentBase Info VName
+</span><a href="#local-6989586621684513024"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName StructType -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span><span> </span><span class="annot"><span class="annottext">(Map VName StructType -&gt; NameSet)
+-&gt; Map VName StructType -&gt; NameSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; StructType -&gt; Map VName StructType
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdentBase Info VName -&gt; VName
+forall (f :: * -&gt; *) vn. IdentBase f vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#identName"><span class="hs-identifier hs-var hs-var">identName</span></a></span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName
+</span><a href="#local-6989586621684513024"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing -&gt; StructType
+forall dim as. TypeBase dim as -&gt; TypeBase dim ()
+</span><a href="Language.Futhark.Prop.html#toStruct"><span class="hs-identifier hs-var">toStruct</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) Aliasing -&gt; StructType)
+-&gt; TypeBase (DimDecl VName) Aliasing -&gt; StructType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall a. Info a -&gt; a
+</span><a href="Language.Futhark.Syntax.html#unInfo"><span class="hs-identifier hs-var hs-var">unInfo</span></a></span><span> </span><span class="annot"><span class="annottext">(Info (TypeBase (DimDecl VName) Aliasing)
+ -&gt; TypeBase (DimDecl VName) Aliasing)
+-&gt; Info (TypeBase (DimDecl VName) Aliasing)
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName -&gt; Info (TypeBase (DimDecl VName) Aliasing)
+forall (f :: * -&gt; *) vn.
+IdentBase f vn -&gt; f (TypeBase (DimDecl VName) Aliasing)
+</span><a href="Language.Futhark.Syntax.html#identType"><span class="hs-identifier hs-var hs-var">identType</span></a></span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName
+</span><a href="#local-6989586621684513024"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#size"><span class="hs-identifier hs-type">size</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span>
+</span><span id="line-43"></span><span id="size"><span class="annot"><span class="annottext">size :: VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#size"><span class="hs-identifier hs-var hs-var">size</span></a></span></span><span> </span><span id="local-6989586621684513018"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513018"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName StructType -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span><span> </span><span class="annot"><span class="annottext">(Map VName StructType -&gt; NameSet)
+-&gt; Map VName StructType -&gt; NameSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; StructType -&gt; Map VName StructType
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513018"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Map VName StructType)
+-&gt; StructType -&gt; Map VName StructType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ScalarTypeBase (DimDecl VName) () -&gt; StructType
+forall dim as. ScalarTypeBase dim as -&gt; TypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-var">Scalar</span></a></span><span> </span><span class="annot"><span class="annottext">(ScalarTypeBase (DimDecl VName) () -&gt; StructType)
+-&gt; ScalarTypeBase (DimDecl VName) () -&gt; StructType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; ScalarTypeBase (DimDecl VName) ()
+forall dim as. PrimType -&gt; ScalarTypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; ScalarTypeBase (DimDecl VName) ())
+-&gt; PrimType -&gt; ScalarTypeBase (DimDecl VName) ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IntType -&gt; PrimType
+</span><a href="Language.Futhark.Syntax.html#Signed"><span class="hs-identifier hs-var">Signed</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-type">sizes</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.Set</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span>
+</span><span id="line-46"></span><span id="sizes"><span class="annot"><span class="annottext">sizes :: Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var hs-var">sizes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VName -&gt; NameSet) -&gt; Set VName -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#size"><span class="hs-identifier hs-var">size</span></a></span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- | Compute the set of free variables of an expression.</span><span>
+</span><span id="line-49"></span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-type">freeVars</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span>
+</span><span id="line-50"></span><span id="freeVars"><span class="annot"><span class="annottext">freeVars :: Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var hs-var">freeVars</span></a></span></span><span> </span><span id="local-6989586621684513012"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684513012"><span class="hs-identifier hs-var">expr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684513012"><span class="hs-identifier hs-var">expr</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-51"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Literal"><span class="hs-identifier hs-type">Literal</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">NameSet
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#IntLit"><span class="hs-identifier hs-type">IntLit</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">NameSet
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-53"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#FloatLit"><span class="hs-identifier hs-type">FloatLit</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">NameSet
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-54"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#StringLit"><span class="hs-identifier hs-type">StringLit</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">NameSet
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-55"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Parens"><span class="hs-identifier hs-type">Parens</span></a></span><span> </span><span id="local-6989586621684513006"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684513006"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684513006"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#QualParens"><span class="hs-identifier hs-type">QualParens</span></a></span><span> </span><span class="annot"><span class="annottext">(QualName VName, SrcLoc)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684513004"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684513004"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684513004"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#TupLit"><span class="hs-identifier hs-type">TupLit</span></a></span><span> </span><span id="local-6989586621684513002"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684513002"><span class="hs-identifier hs-var">es</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; NameSet) -&gt; [Exp] -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684513002"><span class="hs-identifier hs-var">es</span></a></span><span>
+</span><span id="line-58"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#RecordLit"><span class="hs-identifier hs-type">RecordLit</span></a></span><span> </span><span id="local-6989586621684513000"><span class="annot"><span class="annottext">[FieldBase Info VName]
+</span><a href="#local-6989586621684513000"><span class="hs-identifier hs-var">fs</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(FieldBase Info VName -&gt; NameSet)
+-&gt; [FieldBase Info VName] -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">FieldBase Info VName -&gt; NameSet
+</span><a href="#local-6989586621684512999"><span class="hs-identifier hs-var">freeVarsField</span></a></span><span> </span><span class="annot"><span class="annottext">[FieldBase Info VName]
+</span><a href="#local-6989586621684513000"><span class="hs-identifier hs-var">fs</span></a></span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-60"></span><span>      </span><span id="local-6989586621684512999"><span class="annot"><span class="annottext">freeVarsField :: FieldBase Info VName -&gt; NameSet
+</span><a href="#local-6989586621684512999"><span class="hs-identifier hs-var hs-var">freeVarsField</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#RecordFieldExplicit"><span class="hs-identifier hs-type">RecordFieldExplicit</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684512995"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512995"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512995"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-61"></span><span>      </span><span class="annot"><a href="#local-6989586621684512999"><span class="hs-identifier hs-var">freeVarsField</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#RecordFieldImplicit"><span class="hs-identifier hs-type">RecordFieldImplicit</span></a></span><span> </span><span id="local-6989586621684512993"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684512993"><span class="hs-identifier hs-var">vn</span></a></span></span><span> </span><span id="local-6989586621684512992"><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><a href="#local-6989586621684512992"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#ident"><span class="hs-identifier hs-var">ident</span></a></span><span> </span><span class="annot"><span class="annottext">(IdentBase Info VName -&gt; NameSet)
+-&gt; IdentBase Info VName -&gt; NameSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName
+-&gt; Info (TypeBase (DimDecl VName) Aliasing)
+-&gt; SrcLoc
+-&gt; IdentBase Info VName
+forall (f :: * -&gt; *) vn.
+vn
+-&gt; f (TypeBase (DimDecl VName) Aliasing)
+-&gt; SrcLoc
+-&gt; IdentBase f vn
+</span><a href="Language.Futhark.Syntax.html#Ident"><span class="hs-identifier hs-var">Ident</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684512993"><span class="hs-identifier hs-var">vn</span></a></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><a href="#local-6989586621684512992"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-62"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#ArrayLit"><span class="hs-identifier hs-type">ArrayLit</span></a></span><span> </span><span id="local-6989586621684512989"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684512989"><span class="hs-identifier hs-var">es</span></a></span></span><span> </span><span id="local-6989586621684512988"><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><a href="#local-6989586621684512988"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-63"></span><span>    </span><span class="annot"><span class="annottext">(Exp -&gt; NameSet) -&gt; [Exp] -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684512989"><span class="hs-identifier hs-var">es</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing -&gt; Set VName
+forall als. TypeBase (DimDecl VName) als -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#typeDimNames"><span class="hs-identifier hs-var">typeDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) Aliasing -&gt; Set VName)
+-&gt; TypeBase (DimDecl VName) Aliasing -&gt; Set VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall a. Info a -&gt; a
+</span><a href="Language.Futhark.Syntax.html#unInfo"><span class="hs-identifier hs-var hs-var">unInfo</span></a></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><a href="#local-6989586621684512988"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Range"><span class="hs-identifier hs-type">Range</span></a></span><span> </span><span id="local-6989586621684512984"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512984"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621684512983"><span class="annot"><span class="annottext">Maybe Exp
+</span><a href="#local-6989586621684512983"><span class="hs-identifier hs-var">me</span></a></span></span><span> </span><span id="local-6989586621684512982"><span class="annot"><span class="annottext">Inclusiveness Exp
+</span><a href="#local-6989586621684512982"><span class="hs-identifier hs-var">incl</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-65"></span><span>    </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512984"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; NameSet) -&gt; Maybe Exp -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Exp
+</span><a href="#local-6989586621684512983"><span class="hs-identifier hs-var">me</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; NameSet) -&gt; Inclusiveness Exp -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Inclusiveness Exp
+</span><a href="#local-6989586621684512982"><span class="hs-identifier hs-var">incl</span></a></span><span>
+</span><span id="line-66"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684512980"><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684512980"><span class="hs-identifier hs-var">qn</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684512978"><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+</span><a href="#local-6989586621684512978"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Map VName StructType -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span><span> </span><span class="annot"><span class="annottext">(Map VName StructType -&gt; NameSet)
+-&gt; Map VName StructType -&gt; NameSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; StructType -&gt; Map VName StructType
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QualName VName -&gt; VName
+forall vn. QualName vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#qualLeaf"><span class="hs-identifier hs-var hs-var">qualLeaf</span></a></span><span> </span><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684512980"><span class="hs-identifier hs-var">qn</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Map VName StructType)
+-&gt; StructType -&gt; Map VName StructType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing -&gt; StructType
+forall dim as. TypeBase dim as -&gt; TypeBase dim ()
+</span><a href="Language.Futhark.Prop.html#toStruct"><span class="hs-identifier hs-var">toStruct</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+</span><a href="#local-6989586621684512978"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-67"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Ascript"><span class="hs-identifier hs-type">Ascript</span></a></span><span> </span><span id="local-6989586621684512975"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512975"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621684512974"><span class="annot"><span class="annottext">TypeDeclBase Info VName
+</span><a href="#local-6989586621684512974"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512975"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StructType -&gt; Set VName
+forall als. TypeBase (DimDecl VName) als -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#typeDimNames"><span class="hs-identifier hs-var">typeDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Set VName) -&gt; StructType -&gt; Set VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Info StructType -&gt; StructType
+forall a. Info a -&gt; a
+</span><a href="Language.Futhark.Syntax.html#unInfo"><span class="hs-identifier hs-var hs-var">unInfo</span></a></span><span> </span><span class="annot"><span class="annottext">(Info StructType -&gt; StructType) -&gt; Info StructType -&gt; StructType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TypeDeclBase Info VName -&gt; Info StructType
+forall (f :: * -&gt; *) vn. TypeDeclBase f vn -&gt; f StructType
+</span><a href="Language.Futhark.Syntax.html#expandedType"><span class="hs-identifier hs-var hs-var">expandedType</span></a></span><span> </span><span class="annot"><span class="annottext">TypeDeclBase Info VName
+</span><a href="#local-6989586621684512974"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Coerce"><span class="hs-identifier hs-type">Coerce</span></a></span><span> </span><span id="local-6989586621684512971"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512971"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621684512970"><span class="annot"><span class="annottext">TypeDeclBase Info VName
+</span><a href="#local-6989586621684512970"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512971"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StructType -&gt; Set VName
+forall als. TypeBase (DimDecl VName) als -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#typeDimNames"><span class="hs-identifier hs-var">typeDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Set VName) -&gt; StructType -&gt; Set VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Info StructType -&gt; StructType
+forall a. Info a -&gt; a
+</span><a href="Language.Futhark.Syntax.html#unInfo"><span class="hs-identifier hs-var hs-var">unInfo</span></a></span><span> </span><span class="annot"><span class="annottext">(Info StructType -&gt; StructType) -&gt; Info StructType -&gt; StructType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TypeDeclBase Info VName -&gt; Info StructType
+forall (f :: * -&gt; *) vn. TypeDeclBase f vn -&gt; f StructType
+</span><a href="Language.Futhark.Syntax.html#expandedType"><span class="hs-identifier hs-var hs-var">expandedType</span></a></span><span> </span><span class="annot"><span class="annottext">TypeDeclBase Info VName
+</span><a href="#local-6989586621684512970"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#LetPat"><span class="hs-identifier hs-type">LetPat</span></a></span><span> </span><span id="local-6989586621684512968"><span class="annot"><span class="annottext">[SizeBinder VName]
+</span><a href="#local-6989586621684512968"><span class="hs-identifier hs-var">let_sizes</span></a></span></span><span> </span><span id="local-6989586621684512967"><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512967"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684512966"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512966"><span class="hs-identifier hs-var">e1</span></a></span></span><span> </span><span id="local-6989586621684512965"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512965"><span class="hs-identifier hs-var">e2</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512966"><span class="hs-identifier hs-var">e1</span></a></span><span>
+</span><span id="line-71"></span><span>      </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="hs-special">(</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatBase Info VName -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#patternDimNames"><span class="hs-identifier hs-var">patternDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512967"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512965"><span class="hs-identifier hs-var">e2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span>             </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#withoutM"><span class="hs-operator hs-var">`withoutM`</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#patVars"><span class="hs-identifier hs-var">patVars</span></a></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512967"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(SizeBinder VName -&gt; NameSet) -&gt; [SizeBinder VName] -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#size"><span class="hs-identifier hs-var">size</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; NameSet)
+-&gt; (SizeBinder VName -&gt; VName) -&gt; SizeBinder VName -&gt; NameSet
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SizeBinder VName -&gt; VName
+forall vn. SizeBinder vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#sizeName"><span class="hs-identifier hs-var hs-var">sizeName</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[SizeBinder VName]
+</span><a href="#local-6989586621684512968"><span class="hs-identifier hs-var">let_sizes</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-73"></span><span>         </span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#LetFun"><span class="hs-identifier hs-type">LetFun</span></a></span><span> </span><span id="local-6989586621684512960"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684512960"><span class="hs-identifier hs-var">vn</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684512959"><span class="annot"><span class="annottext">[TypeParamBase VName]
+</span><a href="#local-6989586621684512959"><span class="hs-identifier hs-var">tparams</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684512958"><span class="annot"><span class="annottext">[PatBase Info VName]
+</span><a href="#local-6989586621684512958"><span class="hs-identifier hs-var">pats</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe (TypeExp VName)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Info StructRetType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684512957"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512957"><span class="hs-identifier hs-var">e1</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684512956"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512956"><span class="hs-identifier hs-var">e2</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-75"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512957"><span class="hs-identifier hs-var">e1</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(PatBase Info VName -&gt; Set VName)
+-&gt; [PatBase Info VName] -&gt; Set VName
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#patternDimNames"><span class="hs-identifier hs-var">patternDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">[PatBase Info VName]
+</span><a href="#local-6989586621684512958"><span class="hs-identifier hs-var">pats</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span>        </span><span class="annot"><span class="annottext">NameSet -&gt; Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#without"><span class="hs-operator hs-var">`without`</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">(IdentBase Info VName -&gt; VName)
+-&gt; Set (IdentBase Info VName) -&gt; Set VName
+forall b a. Ord b =&gt; (a -&gt; b) -&gt; Set a -&gt; Set b
+</span><span class="hs-identifier hs-var">S.map</span></span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName -&gt; VName
+forall (f :: * -&gt; *) vn. IdentBase f vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#identName"><span class="hs-identifier hs-var hs-var">identName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(PatBase Info VName -&gt; Set (IdentBase Info VName))
+-&gt; [PatBase Info VName] -&gt; Set (IdentBase Info VName)
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName -&gt; Set (IdentBase Info VName)
+forall (f :: * -&gt; *) vn.
+(Functor f, Ord vn) =&gt;
+PatBase f vn -&gt; Set (IdentBase f vn)
+</span><a href="Language.Futhark.Prop.html#patIdents"><span class="hs-identifier hs-var">patIdents</span></a></span><span> </span><span class="annot"><span class="annottext">[PatBase Info VName]
+</span><a href="#local-6989586621684512958"><span class="hs-identifier hs-var">pats</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>                      </span><span class="annot"><span class="annottext">Set VName -&gt; Set VName -&gt; Set VName
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; Set VName
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">S.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(TypeParamBase VName -&gt; VName) -&gt; [TypeParamBase VName] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">TypeParamBase VName -&gt; VName
+forall vn. TypeParamBase vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#typeParamName"><span class="hs-identifier hs-var">typeParamName</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeParamBase VName]
+</span><a href="#local-6989586621684512959"><span class="hs-identifier hs-var">tparams</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-78"></span><span>                  </span><span class="hs-special">)</span><span>
+</span><span id="line-79"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-80"></span><span>      </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512956"><span class="hs-identifier hs-var">e2</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#without"><span class="hs-operator hs-var">`without`</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Set VName
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">S.singleton</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684512960"><span class="hs-identifier hs-var">vn</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span id="local-6989586621684512949"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512949"><span class="hs-identifier hs-var">e1</span></a></span></span><span> </span><span id="local-6989586621684512948"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512948"><span class="hs-identifier hs-var">e2</span></a></span></span><span> </span><span id="local-6989586621684512947"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512947"><span class="hs-identifier hs-var">e3</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512949"><span class="hs-identifier hs-var">e1</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512948"><span class="hs-identifier hs-var">e2</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512947"><span class="hs-identifier hs-var">e3</span></a></span><span>
+</span><span id="line-82"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Apply"><span class="hs-identifier hs-type">Apply</span></a></span><span> </span><span id="local-6989586621684512945"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512945"><span class="hs-identifier hs-var">e1</span></a></span></span><span> </span><span id="local-6989586621684512944"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512944"><span class="hs-identifier hs-var">e2</span></a></span></span><span> </span><span class="annot"><span class="annottext">Info (Diet, Maybe VName)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512945"><span class="hs-identifier hs-var">e1</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512944"><span class="hs-identifier hs-var">e2</span></a></span><span>
+</span><span id="line-83"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Negate"><span class="hs-identifier hs-type">Negate</span></a></span><span> </span><span id="local-6989586621684512942"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512942"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512942"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-84"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Not"><span class="hs-identifier hs-type">Not</span></a></span><span> </span><span id="local-6989586621684512940"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512940"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512940"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-85"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span id="local-6989586621684512938"><span class="annot"><span class="annottext">[PatBase Info VName]
+</span><a href="#local-6989586621684512938"><span class="hs-identifier hs-var">pats</span></a></span></span><span> </span><span id="local-6989586621684512937"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512937"><span class="hs-identifier hs-var">e0</span></a></span></span><span> </span><span class="annot"><span class="annottext">Maybe (TypeExp VName)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Aliasing
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#RetType"><span class="hs-identifier hs-type">RetType</span></a></span><span> </span><span id="local-6989586621684512935"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684512935"><span class="hs-identifier hs-var">dims</span></a></span></span><span> </span><span id="local-6989586621684512934"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684512934"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-86"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(PatBase Info VName -&gt; Set VName)
+-&gt; [PatBase Info VName] -&gt; Set VName
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#patternDimNames"><span class="hs-identifier hs-var">patternDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">[PatBase Info VName]
+</span><a href="#local-6989586621684512938"><span class="hs-identifier hs-var">pats</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512937"><span class="hs-identifier hs-var">e0</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">StructType -&gt; Set VName
+forall als. TypeBase (DimDecl VName) als -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#typeDimNames"><span class="hs-identifier hs-var">typeDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684512934"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-87"></span><span>      </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#withoutM"><span class="hs-operator hs-var">`withoutM`</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(PatBase Info VName -&gt; NameSet) -&gt; [PatBase Info VName] -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#patVars"><span class="hs-identifier hs-var">patVars</span></a></span><span> </span><span class="annot"><span class="annottext">[PatBase Info VName]
+</span><a href="#local-6989586621684512938"><span class="hs-identifier hs-var">pats</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; NameSet) -&gt; [VName] -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#size"><span class="hs-identifier hs-var">size</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684512935"><span class="hs-identifier hs-var">dims</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#OpSection"><span class="hs-identifier hs-type">OpSection</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">NameSet
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#OpSectionLeft"><span class="hs-identifier hs-type">OpSectionLeft</span></a></span><span> </span><span class="annot"><span class="annottext">QualName VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684512931"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512931"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">(Info (PName, StructType, Maybe VName), Info (PName, StructType))
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">(Info PatRetType, Info [VName])
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512931"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-90"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#OpSectionRight"><span class="hs-identifier hs-type">OpSectionRight</span></a></span><span> </span><span class="annot"><span class="annottext">QualName VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684512929"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512929"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">(Info (PName, StructType), Info (PName, StructType, Maybe VName))
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Info PatRetType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512929"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-91"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#ProjectSection"><span class="hs-identifier hs-type">ProjectSection</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">NameSet
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-92"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#IndexSection"><span class="hs-identifier hs-type">IndexSection</span></a></span><span> </span><span id="local-6989586621684512926"><span class="annot"><span class="annottext">SliceBase Info VName
+</span><a href="#local-6989586621684512926"><span class="hs-identifier hs-var">idxs</span></a></span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(DimIndexBase Info VName -&gt; NameSet)
+-&gt; SliceBase Info VName -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">DimIndexBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeDimIndex"><span class="hs-identifier hs-var">freeDimIndex</span></a></span><span> </span><span class="annot"><span class="annottext">SliceBase Info VName
+</span><a href="#local-6989586621684512926"><span class="hs-identifier hs-var">idxs</span></a></span><span>
+</span><span id="line-93"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#DoLoop"><span class="hs-identifier hs-type">DoLoop</span></a></span><span> </span><span id="local-6989586621684512923"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684512923"><span class="hs-identifier hs-var">sparams</span></a></span></span><span> </span><span id="local-6989586621684512922"><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512922"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684512921"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512921"><span class="hs-identifier hs-var">e1</span></a></span></span><span> </span><span id="local-6989586621684512920"><span class="annot"><span class="annottext">LoopFormBase Info VName
+</span><a href="#local-6989586621684512920"><span class="hs-identifier hs-var">form</span></a></span></span><span> </span><span id="local-6989586621684512919"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512919"><span class="hs-identifier hs-var">e3</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-94"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684512918"><span class="annot"><span class="annottext">NameSet
+</span><a href="#local-6989586621684512918"><span class="hs-identifier hs-var">e2fv</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684512917"><span class="annot"><span class="annottext">NameSet
+</span><a href="#local-6989586621684512917"><span class="hs-identifier hs-var">e2ident</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LoopFormBase Info VName -&gt; (NameSet, NameSet)
+</span><a href="#local-6989586621684512916"><span class="hs-identifier hs-var">formVars</span></a></span><span> </span><span class="annot"><span class="annottext">LoopFormBase Info VName
+</span><a href="#local-6989586621684512920"><span class="hs-identifier hs-var">form</span></a></span><span>
+</span><span id="line-95"></span><span>     </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512921"><span class="hs-identifier hs-var">e1</span></a></span><span>
+</span><span id="line-96"></span><span>          </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="hs-special">(</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">NameSet
+</span><a href="#local-6989586621684512918"><span class="hs-identifier hs-var">e2fv</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512919"><span class="hs-identifier hs-var">e3</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>                 </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#withoutM"><span class="hs-operator hs-var">`withoutM`</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; Set VName
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">S.fromList</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684512923"><span class="hs-identifier hs-var">sparams</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#patVars"><span class="hs-identifier hs-var">patVars</span></a></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512922"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">NameSet
+</span><a href="#local-6989586621684512917"><span class="hs-identifier hs-var">e2ident</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>             </span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-100"></span><span>      </span><span id="local-6989586621684512916"><span class="annot"><span class="annottext">formVars :: LoopFormBase Info VName -&gt; (NameSet, NameSet)
+</span><a href="#local-6989586621684512916"><span class="hs-identifier hs-var hs-var">formVars</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#For"><span class="hs-identifier hs-type">For</span></a></span><span> </span><span id="local-6989586621684512913"><span class="annot"><span class="annottext">IdentBase Info VName
+</span><a href="#local-6989586621684512913"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684512912"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512912"><span class="hs-identifier hs-var">e2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512912"><span class="hs-identifier hs-var">e2</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#ident"><span class="hs-identifier hs-var">ident</span></a></span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName
+</span><a href="#local-6989586621684512913"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span>      </span><span class="annot"><a href="#local-6989586621684512916"><span class="hs-identifier hs-var">formVars</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#ForIn"><span class="hs-identifier hs-type">ForIn</span></a></span><span> </span><span id="local-6989586621684512910"><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512910"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621684512909"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512909"><span class="hs-identifier hs-var">e2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512909"><span class="hs-identifier hs-var">e2</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PatBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#patVars"><span class="hs-identifier hs-var">patVars</span></a></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512910"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>      </span><span class="annot"><a href="#local-6989586621684512916"><span class="hs-identifier hs-var">formVars</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#While"><span class="hs-identifier hs-type">While</span></a></span><span> </span><span id="local-6989586621684512907"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512907"><span class="hs-identifier hs-var">e2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512907"><span class="hs-identifier hs-var">e2</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">NameSet
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-103"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#BinOp"><span class="hs-identifier hs-type">BinOp</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684512905"><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684512905"><span class="hs-identifier hs-var">qn</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684512904"><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+</span><a href="#local-6989586621684512904"><span class="hs-identifier hs-var">qn_t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684512903"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512903"><span class="hs-identifier hs-var">e1</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Info (StructType, Maybe VName)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684512902"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512902"><span class="hs-identifier hs-var">e2</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Info (StructType, Maybe VName)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-104"></span><span>    </span><span class="annot"><span class="annottext">Map VName StructType -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-var">NameSet</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; StructType -&gt; Map VName StructType
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QualName VName -&gt; VName
+forall vn. QualName vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#qualLeaf"><span class="hs-identifier hs-var hs-var">qualLeaf</span></a></span><span> </span><span class="annot"><span class="annottext">QualName VName
+</span><a href="#local-6989586621684512905"><span class="hs-identifier hs-var">qn</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Map VName StructType)
+-&gt; StructType -&gt; Map VName StructType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing -&gt; StructType
+forall dim as. TypeBase dim as -&gt; TypeBase dim ()
+</span><a href="Language.Futhark.Prop.html#toStruct"><span class="hs-identifier hs-var">toStruct</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+</span><a href="#local-6989586621684512904"><span class="hs-identifier hs-var">qn_t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span>      </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512903"><span class="hs-identifier hs-var">e1</span></a></span><span>
+</span><span id="line-106"></span><span>      </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512902"><span class="hs-identifier hs-var">e2</span></a></span><span>
+</span><span id="line-107"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Project"><span class="hs-identifier hs-type">Project</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684512900"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512900"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512900"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-108"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#LetWith"><span class="hs-identifier hs-type">LetWith</span></a></span><span> </span><span id="local-6989586621684512898"><span class="annot"><span class="annottext">IdentBase Info VName
+</span><a href="#local-6989586621684512898"><span class="hs-identifier hs-var">id1</span></a></span></span><span> </span><span id="local-6989586621684512897"><span class="annot"><span class="annottext">IdentBase Info VName
+</span><a href="#local-6989586621684512897"><span class="hs-identifier hs-var">id2</span></a></span></span><span> </span><span id="local-6989586621684512896"><span class="annot"><span class="annottext">SliceBase Info VName
+</span><a href="#local-6989586621684512896"><span class="hs-identifier hs-var">idxs</span></a></span></span><span> </span><span id="local-6989586621684512895"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512895"><span class="hs-identifier hs-var">e1</span></a></span></span><span> </span><span id="local-6989586621684512894"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512894"><span class="hs-identifier hs-var">e2</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-109"></span><span>    </span><span class="annot"><span class="annottext">IdentBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#ident"><span class="hs-identifier hs-var">ident</span></a></span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName
+</span><a href="#local-6989586621684512897"><span class="hs-identifier hs-var">id2</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(DimIndexBase Info VName -&gt; NameSet)
+-&gt; SliceBase Info VName -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">DimIndexBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeDimIndex"><span class="hs-identifier hs-var">freeDimIndex</span></a></span><span> </span><span class="annot"><span class="annottext">SliceBase Info VName
+</span><a href="#local-6989586621684512896"><span class="hs-identifier hs-var">idxs</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512895"><span class="hs-identifier hs-var">e1</span></a></span><span>
+</span><span id="line-110"></span><span>      </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512894"><span class="hs-identifier hs-var">e2</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#without"><span class="hs-operator hs-var">`without`</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Set VName
+forall a. a -&gt; Set a
+</span><span class="hs-identifier hs-var">S.singleton</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IdentBase Info VName -&gt; VName
+forall (f :: * -&gt; *) vn. IdentBase f vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#identName"><span class="hs-identifier hs-var hs-var">identName</span></a></span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName
+</span><a href="#local-6989586621684512898"><span class="hs-identifier hs-var">id1</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-111"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Index"><span class="hs-identifier hs-type">Index</span></a></span><span> </span><span id="local-6989586621684512892"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512892"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621684512891"><span class="annot"><span class="annottext">SliceBase Info VName
+</span><a href="#local-6989586621684512891"><span class="hs-identifier hs-var">idxs</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512892"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(DimIndexBase Info VName -&gt; NameSet)
+-&gt; SliceBase Info VName -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">DimIndexBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeDimIndex"><span class="hs-identifier hs-var">freeDimIndex</span></a></span><span> </span><span class="annot"><span class="annottext">SliceBase Info VName
+</span><a href="#local-6989586621684512891"><span class="hs-identifier hs-var">idxs</span></a></span><span>
+</span><span id="line-112"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Update"><span class="hs-identifier hs-type">Update</span></a></span><span> </span><span id="local-6989586621684512889"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512889"><span class="hs-identifier hs-var">e1</span></a></span></span><span> </span><span id="local-6989586621684512888"><span class="annot"><span class="annottext">SliceBase Info VName
+</span><a href="#local-6989586621684512888"><span class="hs-identifier hs-var">idxs</span></a></span></span><span> </span><span id="local-6989586621684512887"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512887"><span class="hs-identifier hs-var">e2</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512889"><span class="hs-identifier hs-var">e1</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(DimIndexBase Info VName -&gt; NameSet)
+-&gt; SliceBase Info VName -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">DimIndexBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeDimIndex"><span class="hs-identifier hs-var">freeDimIndex</span></a></span><span> </span><span class="annot"><span class="annottext">SliceBase Info VName
+</span><a href="#local-6989586621684512888"><span class="hs-identifier hs-var">idxs</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512887"><span class="hs-identifier hs-var">e2</span></a></span><span>
+</span><span id="line-113"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#RecordUpdate"><span class="hs-identifier hs-type">RecordUpdate</span></a></span><span> </span><span id="local-6989586621684512885"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512885"><span class="hs-identifier hs-var">e1</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Name]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684512884"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512884"><span class="hs-identifier hs-var">e2</span></a></span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512885"><span class="hs-identifier hs-var">e1</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512884"><span class="hs-identifier hs-var">e2</span></a></span><span>
+</span><span id="line-114"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Assert"><span class="hs-identifier hs-type">Assert</span></a></span><span> </span><span id="local-6989586621684512882"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512882"><span class="hs-identifier hs-var">e1</span></a></span></span><span> </span><span id="local-6989586621684512881"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512881"><span class="hs-identifier hs-var">e2</span></a></span></span><span> </span><span class="annot"><span class="annottext">Info String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512882"><span class="hs-identifier hs-var">e1</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512881"><span class="hs-identifier hs-var">e2</span></a></span><span>
+</span><span id="line-115"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Constr"><span class="hs-identifier hs-type">Constr</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684512879"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684512879"><span class="hs-identifier hs-var">es</span></a></span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; NameSet) -&gt; [Exp] -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684512879"><span class="hs-identifier hs-var">es</span></a></span><span>
+</span><span id="line-116"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#Attr"><span class="hs-identifier hs-type">Attr</span></a></span><span> </span><span class="annot"><span class="annottext">AttrInfo VName
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684512877"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512877"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512877"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-117"></span><span>  </span><span class="annot"><a href="Language.Futhark.Syntax.html#AppExp"><span class="hs-identifier hs-type">AppExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span> </span><span id="local-6989586621684512875"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512875"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621684512874"><span class="annot"><span class="annottext">NonEmpty (CaseBase Info VName)
+</span><a href="#local-6989586621684512874"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Info AppRes
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512875"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(CaseBase Info VName -&gt; NameSet)
+-&gt; NonEmpty (CaseBase Info VName) -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">CaseBase Info VName -&gt; NameSet
+</span><a href="#local-6989586621684512873"><span class="hs-identifier hs-var">caseFV</span></a></span><span> </span><span class="annot"><span class="annottext">NonEmpty (CaseBase Info VName)
+</span><a href="#local-6989586621684512874"><span class="hs-identifier hs-var">cs</span></a></span><span>
+</span><span id="line-118"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-119"></span><span>      </span><span id="local-6989586621684512873"><span class="annot"><span class="annottext">caseFV :: CaseBase Info VName -&gt; NameSet
+</span><a href="#local-6989586621684512873"><span class="hs-identifier hs-var hs-var">caseFV</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#CasePat"><span class="hs-identifier hs-type">CasePat</span></a></span><span> </span><span id="local-6989586621684512870"><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512870"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621684512869"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512869"><span class="hs-identifier hs-var">eCase</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-120"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#sizes"><span class="hs-identifier hs-var">sizes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatBase Info VName -&gt; Set VName
+</span><a href="Language.Futhark.Prop.html#patternDimNames"><span class="hs-identifier hs-var">patternDimNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512870"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512869"><span class="hs-identifier hs-var">eCase</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-121"></span><span>          </span><span class="annot"><span class="annottext">NameSet -&gt; NameSet -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#withoutM"><span class="hs-operator hs-var">`withoutM`</span></a></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#patVars"><span class="hs-identifier hs-var">patVars</span></a></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName
+</span><a href="#local-6989586621684512870"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-122"></span><span>
+</span><span id="line-123"></span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#freeDimIndex"><span class="hs-identifier hs-type">freeDimIndex</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#DimIndexBase"><span class="hs-identifier hs-type">DimIndexBase</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span>
+</span><span id="line-124"></span><span id="freeDimIndex"><span class="annot"><span class="annottext">freeDimIndex :: DimIndexBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeDimIndex"><span class="hs-identifier hs-var hs-var">freeDimIndex</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#DimFix"><span class="hs-identifier hs-type">DimFix</span></a></span><span> </span><span id="local-6989586621684512867"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512867"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684512867"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-125"></span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#freeDimIndex"><span class="hs-identifier hs-var">freeDimIndex</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#DimSlice"><span class="hs-identifier hs-type">DimSlice</span></a></span><span> </span><span id="local-6989586621684512865"><span class="annot"><span class="annottext">Maybe Exp
+</span><a href="#local-6989586621684512865"><span class="hs-identifier hs-var">me1</span></a></span></span><span> </span><span id="local-6989586621684512864"><span class="annot"><span class="annottext">Maybe Exp
+</span><a href="#local-6989586621684512864"><span class="hs-identifier hs-var">me2</span></a></span></span><span> </span><span id="local-6989586621684512863"><span class="annot"><span class="annottext">Maybe Exp
+</span><a href="#local-6989586621684512863"><span class="hs-identifier hs-var">me3</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-126"></span><span>  </span><span class="annot"><span class="annottext">(Maybe Exp -&gt; NameSet) -&gt; [Maybe Exp] -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Exp -&gt; NameSet) -&gt; Maybe Exp -&gt; NameSet
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Maybe Exp
+</span><a href="#local-6989586621684512865"><span class="hs-identifier hs-var">me1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe Exp
+</span><a href="#local-6989586621684512864"><span class="hs-identifier hs-var">me2</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe Exp
+</span><a href="#local-6989586621684512863"><span class="hs-identifier hs-var">me3</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-127"></span><span>
+</span><span id="line-128"></span><span class="hs-comment">-- | Extract all the variable names bound in a pattern.</span><span>
+</span><span id="line-129"></span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#patVars"><span class="hs-identifier hs-type">patVars</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.FreeVars.html#NameSet"><span class="hs-identifier hs-type">NameSet</span></a></span><span>
+</span><span id="line-130"></span><span id="patVars"><span class="annot"><span class="annottext">patVars :: PatBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#patVars"><span class="hs-identifier hs-var hs-var">patVars</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[NameSet] -&gt; NameSet
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([NameSet] -&gt; NameSet)
+-&gt; (PatBase Info VName -&gt; [NameSet])
+-&gt; PatBase Info VName
+-&gt; NameSet
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(IdentBase Info VName -&gt; NameSet)
+-&gt; [IdentBase Info VName] -&gt; [NameSet]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">IdentBase Info VName -&gt; NameSet
+</span><a href="Futhark.Internalise.FreeVars.html#ident"><span class="hs-identifier hs-var">ident</span></a></span><span> </span><span class="annot"><span class="annottext">([IdentBase Info VName] -&gt; [NameSet])
+-&gt; (PatBase Info VName -&gt; [IdentBase Info VName])
+-&gt; PatBase Info VName
+-&gt; [NameSet]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Set (IdentBase Info VName) -&gt; [IdentBase Info VName]
+forall a. Set a -&gt; [a]
+</span><span class="hs-identifier hs-var">S.toList</span></span><span> </span><span class="annot"><span class="annottext">(Set (IdentBase Info VName) -&gt; [IdentBase Info VName])
+-&gt; (PatBase Info VName -&gt; Set (IdentBase Info VName))
+-&gt; PatBase Info VName
+-&gt; [IdentBase Info VName]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">PatBase Info VName -&gt; Set (IdentBase Info VName)
+forall (f :: * -&gt; *) vn.
+(Functor f, Ord vn) =&gt;
+PatBase f vn -&gt; Set (IdentBase f vn)
+</span><a href="Language.Futhark.Prop.html#patIdents"><span class="hs-identifier hs-var">patIdents</span></a></span><span>
+</span><span id="line-131"></span></pre></body></html>

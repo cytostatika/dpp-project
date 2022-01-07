@@ -1,0 +1,838 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ConstraintKinds #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE FunctionalDependencies #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# LANGUAGE StandaloneDeriving #-}</span><span>
+</span><span id="line-7"></span><span class="hs-pragma">{-# LANGUAGE Trustworthy #-}</span><span>
+</span><span id="line-8"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-9"></span><span class="hs-pragma">{-# LANGUAGE UndecidableInstances #-}</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- | The core Futhark AST does not contain type information when we</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- use a variable.  Therefore, most transformations expect to be able</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- to access some kind of symbol table that maps names to their types.</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- This module defines the concept of a type environment as a mapping</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- from variable names to 'NameInfo's.  Convenience facilities are</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- also provided to communicate that some monad or applicative functor</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- maintains type information.</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.IR.Prop.Scope</span><span>
+</span><span id="line-20"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier">HasScope</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#NameInfo"><span class="hs-identifier">NameInfo</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier">LocalScope</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier">Scope</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-24"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier">Scoped</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#inScopeOf"><span class="hs-identifier">inScopeOf</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier">scopeOfLParams</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-27"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOfFParams"><span class="hs-identifier">scopeOfFParams</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-28"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOfPat"><span class="hs-identifier">scopeOfPat</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-29"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOfPatElem"><span class="hs-identifier">scopeOfPatElem</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-30"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier">SameScope</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-31"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#castScope"><span class="hs-identifier">castScope</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Extended type environment</span></span><span>
+</span><span id="line-34"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#ExtendedScope"><span class="hs-identifier">ExtendedScope</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-35"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#extendedScope"><span class="hs-identifier">extendedScope</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-36"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Except</span></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.RWS.Lazy</span></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.RWS.Strict</span></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Pretty.html"><span class="hs-identifier">Futhark.IR.Pretty</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Types.html"><span class="hs-identifier">Futhark.IR.Prop.Types</span></a></span><span>
+</span><span id="line-46"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html"><span class="hs-identifier">Futhark.IR.Rep</span></a></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html"><span class="hs-identifier">Futhark.IR.Syntax</span></a></span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- | How some name in scope was bound.</span><span>
+</span><span id="line-50"></span><span class="hs-keyword">data</span><span> </span><span id="NameInfo"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#NameInfo"><span class="hs-identifier hs-var">NameInfo</span></a></span></span><span> </span><span id="local-6989586621684336666"><span class="annot"><a href="#local-6989586621684336666"><span class="hs-identifier hs-type">rep</span></a></span></span><span>
+</span><span id="line-51"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="LetName"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LetName"><span class="hs-identifier hs-var">LetName</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336666"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="FParamName"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#FParamName"><span class="hs-identifier hs-var">FParamName</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#FParamInfo"><span class="hs-identifier hs-type">FParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336666"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="LParamName"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LParamName"><span class="hs-identifier hs-var">LParamName</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#LParamInfo"><span class="hs-identifier hs-type">LParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336666"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="IndexName"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#IndexName"><span class="hs-identifier hs-var">IndexName</span></a></span></span><span> </span><span class="annot"><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-type">IntType</span></a></span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span id="local-6989586621684336470"><span id="local-6989586621684336472"><span id="local-6989586621684336484"><span id="local-6989586621684336859"><span class="hs-keyword">deriving</span><span> </span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336859"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#NameInfo"><span class="hs-identifier hs-type">NameInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336859"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span></span></span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span id="local-6989586621684336854"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336854"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Types.html#Typed"><span class="hs-identifier hs-type">Typed</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#NameInfo"><span class="hs-identifier hs-type">NameInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336854"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-59"></span><span>  </span><span id="local-6989586621684336449"><span class="annot"><span class="annottext">typeOf :: NameInfo rep -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var hs-var hs-var hs-var">typeOf</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LetName"><span class="hs-identifier hs-type">LetName</span></a></span><span> </span><span id="local-6989586621684336447"><span class="annot"><span class="annottext">LetDec rep
+</span><a href="#local-6989586621684336447"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LetDec rep -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">LetDec rep
+</span><a href="#local-6989586621684336447"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-60"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#FParamName"><span class="hs-identifier hs-type">FParamName</span></a></span><span> </span><span id="local-6989586621684336446"><span class="annot"><span class="annottext">FParamInfo rep
+</span><a href="#local-6989586621684336446"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FParamInfo rep -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">FParamInfo rep
+</span><a href="#local-6989586621684336446"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-61"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LParamName"><span class="hs-identifier hs-type">LParamName</span></a></span><span> </span><span id="local-6989586621684336445"><span class="annot"><span class="annottext">LParamInfo rep
+</span><a href="#local-6989586621684336445"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LParamInfo rep -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">LParamInfo rep
+</span><a href="#local-6989586621684336445"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-62"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#IndexName"><span class="hs-identifier hs-type">IndexName</span></a></span><span> </span><span id="local-6989586621684336444"><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684336444"><span class="hs-identifier hs-var">it</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; Type) -&gt; PrimType -&gt; Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IntType -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-var">IntType</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684336444"><span class="hs-identifier hs-var">it</span></a></span></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- | A scope is a mapping from variable names to information about</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- that name.</span><span>
+</span><span id="line-66"></span><span class="hs-keyword">type</span><span> </span><span id="Scope"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-var">Scope</span></a></span></span><span> </span><span id="local-6989586621684336441"><span class="annot"><a href="#local-6989586621684336441"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#NameInfo"><span class="hs-identifier hs-type">NameInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336441"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- | The class of applicative functors (or more common in practice:</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- monads) that permit the lookup of variable types.  A default method</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- for 'lookupType' exists, which is sufficient (if not always</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- maximally efficient, and using 'error' to fail) when 'askScope'</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- is defined.</span><span>
+</span><span id="line-73"></span><span class="hs-keyword">class</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="annot"><a href="#local-6989586621684336845"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336846"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span id="HasScope"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-var">HasScope</span></a></span></span><span> </span><span id="local-6989586621684336846"><span class="annot"><a href="#local-6989586621684336846"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684336845"><span class="annot"><a href="#local-6989586621684336845"><span class="hs-identifier hs-type">m</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="#local-6989586621684336845"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336846"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-74"></span><span>  </span><span class="hs-comment">-- | Return the type of the given variable, or fail if it is not in</span><span>
+</span><span id="line-75"></span><span>  </span><span class="hs-comment">-- the type environment.</span><span>
+</span><span id="line-76"></span><span>  </span><span id="lookupType"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-type">lookupType</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336845"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span>
+</span><span id="line-77"></span><span>  </span><span id="local-6989586621684336437"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var hs-var">lookupType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(NameInfo rep -&gt; Type) -&gt; m (NameInfo rep) -&gt; m Type
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">NameInfo rep -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">(m (NameInfo rep) -&gt; m Type)
+-&gt; (VName -&gt; m (NameInfo rep)) -&gt; VName -&gt; m Type
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (NameInfo rep)
+forall rep (m :: * -&gt; *).
+HasScope rep m =&gt;
+VName -&gt; m (NameInfo rep)
+</span><a href="Futhark.IR.Prop.Scope.html#lookupInfo"><span class="hs-identifier hs-var">lookupInfo</span></a></span></span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span>  </span><span class="hs-comment">-- | Return the info of the given variable, or fail if it is not in</span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-comment">-- the type environment.</span><span>
+</span><span id="line-81"></span><span>  </span><span id="lookupInfo"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#lookupInfo"><span class="hs-identifier hs-type">lookupInfo</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336845"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#NameInfo"><span class="hs-identifier hs-type">NameInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336846"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>  </span><span id="local-6989586621684336427"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#lookupInfo"><span class="hs-identifier hs-var hs-var">lookupInfo</span></a></span><span> </span><span id="local-6989586621684336419"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336419"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-83"></span><span>    </span><span class="annot"><span class="annottext">(Scope rep -&gt; NameInfo rep) -&gt; m (NameInfo rep)
+forall rep (m :: * -&gt; *) a.
+HasScope rep m =&gt;
+(Scope rep -&gt; a) -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#asksScope"><span class="hs-identifier hs-var">asksScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">NameInfo rep -&gt; VName -&gt; Scope rep -&gt; NameInfo rep
+forall k a. Ord k =&gt; a -&gt; k -&gt; Map k a -&gt; a
+</span><span class="hs-identifier hs-var">M.findWithDefault</span></span><span> </span><span class="annot"><span class="annottext">NameInfo rep
+</span><a href="#local-6989586621684336416"><span class="hs-identifier hs-var">notFound</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336419"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-84"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-85"></span><span>      </span><span id="local-6989586621684336416"><span class="annot"><span class="annottext">notFound :: NameInfo rep
+</span><a href="#local-6989586621684336416"><span class="hs-identifier hs-var hs-var">notFound</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-86"></span><span>        </span><span class="annot"><span class="annottext">String -&gt; NameInfo rep
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; NameInfo rep) -&gt; String -&gt; NameInfo rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-87"></span><span>          </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Scope.lookupInfo: Name &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; ShowS
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336419"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-88"></span><span>            </span><span class="annot"><span class="annottext">String -&gt; ShowS
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot; not found in type environment.&quot;</span></span></span><span>
+</span><span id="line-89"></span><span>
+</span><span id="line-90"></span><span>  </span><span class="hs-comment">-- | Return the type environment contained in the applicative</span><span>
+</span><span id="line-91"></span><span>  </span><span class="hs-comment">-- functor.</span><span>
+</span><span id="line-92"></span><span>  </span><span id="askScope"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-type">askScope</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621684336845"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336846"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span>  </span><span class="hs-comment">-- | Return the result of applying some function to the type</span><span>
+</span><span id="line-95"></span><span>  </span><span class="hs-comment">-- environment.</span><span>
+</span><span id="line-96"></span><span>  </span><span id="local-6989586621684336834"><span id="asksScope"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#asksScope"><span class="hs-identifier hs-type">asksScope</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336846"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336834"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336845"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336834"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-97"></span><span>  </span><span id="local-6989586621684336412"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#asksScope"><span class="hs-identifier hs-var hs-var">asksScope</span></a></span><span> </span><span id="local-6989586621684336407"><span class="annot"><span class="annottext">Scope rep -&gt; a
+</span><a href="#local-6989586621684336407"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; a
+</span><a href="#local-6989586621684336407"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; a) -&gt; m (Scope rep) -&gt; m a
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">m (Scope rep)
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; m (Scope rep)
+</span><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-var">askScope</span></a></span></span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span id="local-6989586621684336819"><span id="local-6989586621684336820"><span class="hs-keyword">instance</span><span>
+</span><span id="line-100"></span><span>  </span><span id="local-6989586621684336394"><span id="local-6989586621684336397"><span id="local-6989586621684336399"><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="annot"><a href="#local-6989586621684336820"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336820"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336819"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-101"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336819"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ReaderT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336819"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684336820"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-102"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-103"></span><span>  </span><span id="local-6989586621684336390"><span class="annot"><span class="annottext">askScope :: ReaderT (Scope rep) m (Scope rep)
+</span><a href="#local-6989586621684336390"><span class="hs-identifier hs-var hs-var hs-var hs-var">askScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ReaderT (Scope rep) m (Scope rep)
+forall r (m :: * -&gt; *). MonadReader r m =&gt; m r
+</span><span class="hs-identifier hs-var">ask</span></span></span></span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span id="local-6989586621684336808"><span id="local-6989586621684336809"><span id="local-6989586621684336810"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684336377"><span id="local-6989586621684336380"><span id="local-6989586621684336382"><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336810"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336809"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336810"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336809"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ExceptT</span></span><span> </span><span class="annot"><a href="#local-6989586621684336808"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336810"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-106"></span><span>  </span><span id="local-6989586621684336372"><span class="annot"><span class="annottext">askScope :: ExceptT e m (Scope rep)
+</span><a href="#local-6989586621684336372"><span class="hs-identifier hs-var hs-var hs-var hs-var">askScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m (Scope rep) -&gt; ExceptT e m (Scope rep)
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">m (Scope rep)
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; m (Scope rep)
+</span><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-var">askScope</span></a></span></span></span></span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span id="local-6989586621684336795"><span id="local-6989586621684336796"><span id="local-6989586621684336797"><span id="local-6989586621684336798"><span class="hs-keyword">instance</span><span>
+</span><span id="line-109"></span><span>  </span><span id="local-6989586621684336359"><span id="local-6989586621684336362"><span id="local-6989586621684336364"><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="annot"><a href="#local-6989586621684336798"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336798"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="#local-6989586621684336797"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336796"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-110"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336796"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Control.Monad.RWS.Strict.RWST</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336796"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684336797"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336795"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336798"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-111"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-112"></span><span>  </span><span id="local-6989586621684336356"><span class="annot"><span class="annottext">askScope :: RWST (Scope rep) w s m (Scope rep)
+</span><a href="#local-6989586621684336356"><span class="hs-identifier hs-var hs-var hs-var hs-var">askScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RWST (Scope rep) w s m (Scope rep)
+forall r (m :: * -&gt; *). MonadReader r m =&gt; m r
+</span><span class="hs-identifier hs-var">ask</span></span></span></span></span></span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span id="local-6989586621684336783"><span id="local-6989586621684336784"><span id="local-6989586621684336785"><span id="local-6989586621684336786"><span class="hs-keyword">instance</span><span>
+</span><span id="line-115"></span><span>  </span><span id="local-6989586621684336344"><span id="local-6989586621684336347"><span id="local-6989586621684336349"><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="annot"><a href="#local-6989586621684336786"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336786"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="#local-6989586621684336785"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336784"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-116"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336784"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Control.Monad.RWS.Lazy.RWST</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336784"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684336785"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336783"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336786"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-117"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-118"></span><span>  </span><span id="local-6989586621684336341"><span class="annot"><span class="annottext">askScope :: RWST (Scope rep) w s m (Scope rep)
+</span><a href="#local-6989586621684336341"><span class="hs-identifier hs-var hs-var hs-var hs-var">askScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RWST (Scope rep) w s m (Scope rep)
+forall r (m :: * -&gt; *). MonadReader r m =&gt; m r
+</span><span class="hs-identifier hs-var">ask</span></span></span></span></span></span><span>
+</span><span id="line-119"></span><span>
+</span><span id="line-120"></span><span class="hs-comment">-- | The class of monads that not only provide a 'Scope', but also</span><span>
+</span><span id="line-121"></span><span class="hs-comment">-- the ability to locally extend it.  A 'Reader' containing a</span><span>
+</span><span id="line-122"></span><span class="hs-comment">-- 'Scope' is the prototypical example of such a monad.</span><span>
+</span><span id="line-123"></span><span class="hs-keyword">class</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336778"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336777"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336777"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span id="LocalScope"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-var">LocalScope</span></a></span></span><span> </span><span id="local-6989586621684336778"><span class="annot"><a href="#local-6989586621684336778"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684336777"><span class="annot"><a href="#local-6989586621684336777"><span class="hs-identifier hs-type">m</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-comment">-- | Run a computation with an extended type environment.  Note that</span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-comment">-- this is intended to *add* to the current type environment, it</span><span>
+</span><span id="line-126"></span><span>  </span><span class="hs-comment">-- does not replace it.</span><span>
+</span><span id="line-127"></span><span>  </span><span id="local-6989586621684336772"><span id="localScope"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-type">localScope</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336778"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336777"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336772"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336777"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336772"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-128"></span><span>
+</span><span id="line-129"></span><span id="local-6989586621684336767"><span id="local-6989586621684336768"><span id="local-6989586621684336769"><span class="hs-keyword">instance</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336769"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336768"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336769"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336768"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ExceptT</span></span><span> </span><span class="annot"><a href="#local-6989586621684336767"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336769"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-130"></span><span>  </span><span id="local-6989586621684336325"><span class="annot"><span class="annottext">localScope :: forall a. Scope rep -&gt; ExceptT e m a -&gt; ExceptT e m a
+</span><a href="#local-6989586621684336325"><span class="hs-identifier hs-var hs-var hs-var hs-var">localScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(m (Either e a) -&gt; m (Either e a))
+-&gt; ExceptT e m a -&gt; ExceptT e m a
+forall (m :: * -&gt; *) e a (n :: * -&gt; *) e' b.
+(m (Either e a) -&gt; n (Either e' b))
+-&gt; ExceptT e m a -&gt; ExceptT e' n b
+</span><span class="hs-identifier hs-var">mapExceptT</span></span><span> </span><span class="annot"><span class="annottext">((m (Either e a) -&gt; m (Either e a))
+ -&gt; ExceptT e m a -&gt; ExceptT e m a)
+-&gt; (Scope rep -&gt; m (Either e a) -&gt; m (Either e a))
+-&gt; Scope rep
+-&gt; ExceptT e m a
+-&gt; ExceptT e m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; m (Either e a) -&gt; m (Either e a)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span></span></span></span><span>
+</span><span id="line-131"></span><span>
+</span><span id="line-132"></span><span id="local-6989586621684336754"><span id="local-6989586621684336755"><span class="hs-keyword">instance</span><span>
+</span><span id="line-133"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="annot"><a href="#local-6989586621684336755"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336755"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336754"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-134"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336754"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ReaderT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336754"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684336755"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-136"></span><span>  </span><span id="local-6989586621684336311"><span class="annot"><span class="annottext">localScope :: forall a.
+Scope rep -&gt; ReaderT (Scope rep) m a -&gt; ReaderT (Scope rep) m a
+</span><a href="#local-6989586621684336311"><span class="hs-identifier hs-var hs-var hs-var hs-var">localScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Scope rep)
+-&gt; ReaderT (Scope rep) m a -&gt; ReaderT (Scope rep) m a
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="annot"><span class="annottext">((Scope rep -&gt; Scope rep)
+ -&gt; ReaderT (Scope rep) m a -&gt; ReaderT (Scope rep) m a)
+-&gt; (Scope rep -&gt; Scope rep -&gt; Scope rep)
+-&gt; Scope rep
+-&gt; ReaderT (Scope rep) m a
+-&gt; ReaderT (Scope rep) m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; Scope rep -&gt; Scope rep
+forall k a. Ord k =&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.union</span></span></span></span><span>
+</span><span id="line-137"></span><span>
+</span><span id="line-138"></span><span id="local-6989586621684336738"><span id="local-6989586621684336739"><span id="local-6989586621684336740"><span id="local-6989586621684336741"><span class="hs-keyword">instance</span><span>
+</span><span id="line-139"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="annot"><a href="#local-6989586621684336741"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336741"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="#local-6989586621684336740"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336739"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-140"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336739"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Control.Monad.RWS.Strict.RWST</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336739"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684336740"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336738"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336741"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-141"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-142"></span><span>  </span><span id="local-6989586621684336295"><span class="annot"><span class="annottext">localScope :: forall a.
+Scope rep -&gt; RWST (Scope rep) w s m a -&gt; RWST (Scope rep) w s m a
+</span><a href="#local-6989586621684336295"><span class="hs-identifier hs-var hs-var hs-var hs-var">localScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Scope rep)
+-&gt; RWST (Scope rep) w s m a -&gt; RWST (Scope rep) w s m a
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="annot"><span class="annottext">((Scope rep -&gt; Scope rep)
+ -&gt; RWST (Scope rep) w s m a -&gt; RWST (Scope rep) w s m a)
+-&gt; (Scope rep -&gt; Scope rep -&gt; Scope rep)
+-&gt; Scope rep
+-&gt; RWST (Scope rep) w s m a
+-&gt; RWST (Scope rep) w s m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; Scope rep -&gt; Scope rep
+forall k a. Ord k =&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.union</span></span></span></span></span></span><span>
+</span><span id="line-143"></span><span>
+</span><span id="line-144"></span><span id="local-6989586621684336725"><span id="local-6989586621684336726"><span id="local-6989586621684336727"><span id="local-6989586621684336728"><span class="hs-keyword">instance</span><span>
+</span><span id="line-145"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="annot"><a href="#local-6989586621684336728"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336728"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="#local-6989586621684336727"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336726"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-146"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336726"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Control.Monad.RWS.Lazy.RWST</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336726"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684336727"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336725"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336728"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-148"></span><span>  </span><span id="local-6989586621684336281"><span class="annot"><span class="annottext">localScope :: forall a.
+Scope rep -&gt; RWST (Scope rep) w s m a -&gt; RWST (Scope rep) w s m a
+</span><a href="#local-6989586621684336281"><span class="hs-identifier hs-var hs-var hs-var hs-var">localScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Scope rep)
+-&gt; RWST (Scope rep) w s m a -&gt; RWST (Scope rep) w s m a
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="annot"><span class="annottext">((Scope rep -&gt; Scope rep)
+ -&gt; RWST (Scope rep) w s m a -&gt; RWST (Scope rep) w s m a)
+-&gt; (Scope rep -&gt; Scope rep -&gt; Scope rep)
+-&gt; Scope rep
+-&gt; RWST (Scope rep) w s m a
+-&gt; RWST (Scope rep) w s m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; Scope rep -&gt; Scope rep
+forall k a. Ord k =&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.union</span></span></span></span></span></span><span>
+</span><span id="line-149"></span><span>
+</span><span id="line-150"></span><span class="hs-comment">-- | The class of things that can provide a scope.  There is no</span><span>
+</span><span id="line-151"></span><span class="hs-comment">-- overarching rule for what this means.  For a 'Stm', it is the</span><span>
+</span><span id="line-152"></span><span class="hs-comment">-- corresponding pattern.  For a t'Lambda', is is the parameters.</span><span>
+</span><span id="line-153"></span><span class="hs-keyword">class</span><span> </span><span id="Scoped"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-var">Scoped</span></a></span></span><span> </span><span id="local-6989586621684336714"><span class="annot"><a href="#local-6989586621684336714"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684336713"><span class="annot"><a href="#local-6989586621684336713"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="#local-6989586621684336713"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336714"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-154"></span><span>  </span><span id="scopeOf"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-type">scopeOf</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621684336713"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336714"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-155"></span><span>
+</span><span id="line-156"></span><span class="hs-comment">-- | Extend the monadic scope with the 'scopeOf' the given value.</span><span>
+</span><span id="line-157"></span><span id="local-6989586621684336719"><span id="local-6989586621684336720"><span id="local-6989586621684336722"><span id="local-6989586621684336723"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#inScopeOf"><span class="hs-identifier hs-type">inScopeOf</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-type">Scoped</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336723"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336722"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336723"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336720"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336722"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336720"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336719"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684336720"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336719"><span class="hs-identifier hs-type">b</span></a></span></span></span></span></span><span>
+</span><span id="line-158"></span><span id="inScopeOf"><span class="annot"><span class="annottext">inScopeOf :: forall rep a (m :: * -&gt; *) b.
+(Scoped rep a, LocalScope rep m) =&gt;
+a -&gt; m b -&gt; m b
+</span><a href="Futhark.IR.Prop.Scope.html#inScopeOf"><span class="hs-identifier hs-var hs-var">inScopeOf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; m b -&gt; m b
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; m b -&gt; m b) -&gt; (a -&gt; Scope rep) -&gt; a -&gt; m b -&gt; m b
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Scope rep
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span>
+</span><span id="line-159"></span><span>
+</span><span id="line-160"></span><span id="local-6989586621684336709"><span id="local-6989586621684336710"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-type">Scoped</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336710"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336709"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-type">Scoped</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336710"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684336709"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-161"></span><span>  </span><span id="local-6989586621684336267"><span class="annot"><span class="annottext">scopeOf :: [a] -&gt; Scope rep
+</span><a href="#local-6989586621684336267"><span class="hs-identifier hs-var hs-var hs-var hs-var">scopeOf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Scope rep] -&gt; Scope rep
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([Scope rep] -&gt; Scope rep)
+-&gt; ([a] -&gt; [Scope rep]) -&gt; [a] -&gt; Scope rep
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; Scope rep) -&gt; [a] -&gt; [Scope rep]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Scope rep
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span></span></span><span>
+</span><span id="line-162"></span><span>
+</span><span id="line-163"></span><span id="local-6989586621684336701"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-type">Scoped</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336701"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336701"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-164"></span><span>  </span><span id="local-6989586621684336258"><span class="annot"><span class="annottext">scopeOf :: Stms rep -&gt; Scope rep
+</span><a href="#local-6989586621684336258"><span class="hs-identifier hs-var hs-var hs-var hs-var">scopeOf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Stm rep -&gt; Scope rep) -&gt; Stms rep -&gt; Scope rep
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Scope rep
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span></span><span>
+</span><span id="line-165"></span><span>
+</span><span id="line-166"></span><span id="local-6989586621684336698"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-type">Scoped</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336698"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336698"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-167"></span><span>  </span><span id="local-6989586621684336253"><span class="annot"><span class="annottext">scopeOf :: Stm rep -&gt; Scope rep
+</span><a href="#local-6989586621684336253"><span class="hs-identifier hs-var hs-var hs-var hs-var">scopeOf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep) -&gt; Scope rep
+forall rep dec. (LetDec rep ~ dec) =&gt; PatT dec -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfPat"><span class="hs-identifier hs-var">scopeOfPat</span></a></span><span> </span><span class="annot"><span class="annottext">(PatT (LetDec rep) -&gt; Scope rep)
+-&gt; (Stm rep -&gt; PatT (LetDec rep)) -&gt; Stm rep -&gt; Scope rep
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; PatT (LetDec rep)
+forall rep. Stm rep -&gt; Pat rep
+</span><a href="Futhark.IR.Syntax.html#stmPat"><span class="hs-identifier hs-var hs-var">stmPat</span></a></span></span><span>
+</span><span id="line-168"></span><span>
+</span><span id="line-169"></span><span id="local-6989586621684336686"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-type">Scoped</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336686"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336686"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-170"></span><span>  </span><span id="local-6989586621684336247"><span class="annot"><span class="annottext">scopeOf :: FunDef rep -&gt; Scope rep
+</span><a href="#local-6989586621684336247"><span class="hs-identifier hs-var hs-var hs-var hs-var">scopeOf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Param (FParamInfo rep)] -&gt; Scope rep
+forall rep dec. (FParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfFParams"><span class="hs-identifier hs-var">scopeOfFParams</span></a></span><span> </span><span class="annot"><span class="annottext">([Param (FParamInfo rep)] -&gt; Scope rep)
+-&gt; (FunDef rep -&gt; [Param (FParamInfo rep)])
+-&gt; FunDef rep
+-&gt; Scope rep
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">FunDef rep -&gt; [Param (FParamInfo rep)]
+forall rep. FunDef rep -&gt; [FParam rep]
+</span><a href="Futhark.IR.Syntax.html#funDefParams"><span class="hs-identifier hs-var hs-var">funDefParams</span></a></span></span><span>
+</span><span id="line-171"></span><span>
+</span><span id="line-172"></span><span id="local-6989586621684336679"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-type">Scoped</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336679"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#NameInfo"><span class="hs-identifier hs-type">NameInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336679"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-173"></span><span>  </span><span id="local-6989586621684336243"><span class="annot"><span class="annottext">scopeOf :: (VName, NameInfo rep) -&gt; Scope rep
+</span><a href="#local-6989586621684336243"><span class="hs-identifier hs-var hs-var hs-var hs-var">scopeOf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VName -&gt; NameInfo rep -&gt; Scope rep)
+-&gt; (VName, NameInfo rep) -&gt; Scope rep
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; NameInfo rep -&gt; Scope rep
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span></span><span>
+</span><span id="line-174"></span><span>
+</span><span id="line-175"></span><span id="local-6989586621684336671"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-type">Scoped</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336671"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#LoopForm"><span class="hs-identifier hs-type">LoopForm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336671"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-176"></span><span>  </span><span id="local-6989586621684336233"><span class="annot"><span class="annottext">scopeOf :: LoopForm rep -&gt; Scope rep
+</span><a href="#local-6989586621684336233"><span class="hs-identifier hs-var hs-var hs-var hs-var">scopeOf</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#WhileLoop"><span class="hs-identifier hs-type">WhileLoop</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope rep
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-177"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#ForLoop"><span class="hs-identifier hs-type">ForLoop</span></a></span><span> </span><span id="local-6989586621684336230"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336230"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684336229"><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684336229"><span class="hs-identifier hs-var">it</span></a></span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684336228"><span class="annot"><span class="annottext">[(LParam rep, VName)]
+</span><a href="#local-6989586621684336228"><span class="hs-identifier hs-var">xs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-178"></span><span>    </span><span class="annot"><span class="annottext">VName -&gt; NameInfo rep -&gt; Scope rep -&gt; Scope rep
+forall k a. Ord k =&gt; k -&gt; a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.insert</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336230"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; NameInfo rep
+forall rep. IntType -&gt; NameInfo rep
+</span><a href="Futhark.IR.Prop.Scope.html#IndexName"><span class="hs-identifier hs-var">IndexName</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684336229"><span class="hs-identifier hs-var">it</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Scope rep) -&gt; Scope rep -&gt; Scope rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[LParam rep] -&gt; Scope rep
+forall rep dec. (LParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-var">scopeOfLParams</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((LParam rep, VName) -&gt; LParam rep)
+-&gt; [(LParam rep, VName)] -&gt; [LParam rep]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(LParam rep, VName) -&gt; LParam rep
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">[(LParam rep, VName)]
+</span><a href="#local-6989586621684336228"><span class="hs-identifier hs-var">xs</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-179"></span><span>
+</span><span id="line-180"></span><span class="hs-comment">-- | The scope of a pattern.</span><span>
+</span><span id="line-181"></span><span id="local-6989586621684336691"><span id="local-6989586621684336692"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOfPat"><span class="hs-identifier hs-type">scopeOfPat</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336692"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="#local-6989586621684336691"><span class="hs-identifier hs-type">dec</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#PatT"><span class="hs-identifier hs-type">PatT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336691"><span class="hs-identifier hs-type">dec</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336692"><span class="hs-identifier hs-type">rep</span></a></span></span></span><span>
+</span><span id="line-182"></span><span id="scopeOfPat"><span class="annot"><span class="annottext">scopeOfPat :: forall rep dec. (LetDec rep ~ dec) =&gt; PatT dec -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfPat"><span class="hs-identifier hs-var hs-var">scopeOfPat</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-183"></span><span>  </span><span class="annot"><span class="annottext">[Scope rep] -&gt; Scope rep
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([Scope rep] -&gt; Scope rep)
+-&gt; (PatT dec -&gt; [Scope rep]) -&gt; PatT dec -&gt; Scope rep
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(PatElemT dec -&gt; Scope rep) -&gt; [PatElemT dec] -&gt; [Scope rep]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">PatElemT dec -&gt; Scope rep
+forall rep dec. (LetDec rep ~ dec) =&gt; PatElemT dec -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfPatElem"><span class="hs-identifier hs-var">scopeOfPatElem</span></a></span><span> </span><span class="annot"><span class="annottext">([PatElemT dec] -&gt; [Scope rep])
+-&gt; (PatT dec -&gt; [PatElemT dec]) -&gt; PatT dec -&gt; [Scope rep]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">PatT dec -&gt; [PatElemT dec]
+forall dec. PatT dec -&gt; [PatElemT dec]
+</span><a href="Futhark.IR.Syntax.html#patElems"><span class="hs-identifier hs-var hs-var">patElems</span></a></span><span>
+</span><span id="line-184"></span><span>
+</span><span id="line-185"></span><span class="hs-comment">-- | The scope of a pattern element.</span><span>
+</span><span id="line-186"></span><span id="local-6989586621684336657"><span id="local-6989586621684336658"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOfPatElem"><span class="hs-identifier hs-type">scopeOfPatElem</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336658"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="#local-6989586621684336657"><span class="hs-identifier hs-type">dec</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#PatElemT"><span class="hs-identifier hs-type">PatElemT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336657"><span class="hs-identifier hs-type">dec</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336658"><span class="hs-identifier hs-type">rep</span></a></span></span></span><span>
+</span><span id="line-187"></span><span id="scopeOfPatElem"><span class="annot"><span class="annottext">scopeOfPatElem :: forall rep dec. (LetDec rep ~ dec) =&gt; PatElemT dec -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfPatElem"><span class="hs-identifier hs-var hs-var">scopeOfPatElem</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#PatElem"><span class="hs-identifier hs-type">PatElem</span></a></span><span> </span><span id="local-6989586621684336212"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336212"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621684336211"><span class="annot"><span class="annottext">dec
+</span><a href="#local-6989586621684336211"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; NameInfo rep -&gt; Map VName (NameInfo rep)
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336212"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">(NameInfo rep -&gt; Map VName (NameInfo rep))
+-&gt; NameInfo rep -&gt; Map VName (NameInfo rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">LetDec rep -&gt; NameInfo rep
+forall rep. LetDec rep -&gt; NameInfo rep
+</span><a href="Futhark.IR.Prop.Scope.html#LetName"><span class="hs-identifier hs-var">LetName</span></a></span><span> </span><span class="annot"><span class="annottext">dec
+LetDec rep
+</span><a href="#local-6989586621684336211"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-188"></span><span>
+</span><span id="line-189"></span><span class="hs-comment">-- | The scope of some lambda parameters.</span><span>
+</span><span id="line-190"></span><span id="local-6989586621684336664"><span id="local-6989586621684336665"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-type">scopeOfLParams</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-191"></span><span>  </span><span class="annot"><a href="Futhark.IR.Rep.html#LParamInfo"><span class="hs-identifier hs-type">LParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336665"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="#local-6989586621684336664"><span class="hs-identifier hs-type">dec</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-192"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-type">Param</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336664"><span class="hs-identifier hs-type">dec</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-193"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336665"><span class="hs-identifier hs-type">rep</span></a></span></span></span><span>
+</span><span id="line-194"></span><span id="scopeOfLParams"><span class="annot"><span class="annottext">scopeOfLParams :: forall rep dec. (LParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-var hs-var">scopeOfLParams</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, NameInfo rep)] -&gt; Map VName (NameInfo rep)
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, NameInfo rep)] -&gt; Map VName (NameInfo rep))
+-&gt; ([Param dec] -&gt; [(VName, NameInfo rep)])
+-&gt; [Param dec]
+-&gt; Map VName (NameInfo rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Param dec -&gt; (VName, NameInfo rep))
+-&gt; [Param dec] -&gt; [(VName, NameInfo rep)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param dec -&gt; (VName, NameInfo rep)
+forall {rep}. Param (LParamInfo rep) -&gt; (VName, NameInfo rep)
+</span><a href="#local-6989586621684336204"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-195"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-196"></span><span>    </span><span id="local-6989586621684336204"><span class="annot"><span class="annottext">f :: Param (LParamInfo rep) -&gt; (VName, NameInfo rep)
+</span><a href="#local-6989586621684336204"><span class="hs-identifier hs-var hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684336203"><span class="annot"><span class="annottext">Param (LParamInfo rep)
+</span><a href="#local-6989586621684336203"><span class="hs-identifier hs-var">param</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Param (LParamInfo rep) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">Param (LParamInfo rep)
+</span><a href="#local-6989586621684336203"><span class="hs-identifier hs-var">param</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LParamInfo rep -&gt; NameInfo rep
+forall rep. LParamInfo rep -&gt; NameInfo rep
+</span><a href="Futhark.IR.Prop.Scope.html#LParamName"><span class="hs-identifier hs-var">LParamName</span></a></span><span> </span><span class="annot"><span class="annottext">(LParamInfo rep -&gt; NameInfo rep) -&gt; LParamInfo rep -&gt; NameInfo rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Param (LParamInfo rep) -&gt; LParamInfo rep
+forall dec. Param dec -&gt; dec
+</span><a href="Futhark.IR.Syntax.Core.html#paramDec"><span class="hs-identifier hs-var hs-var">paramDec</span></a></span><span> </span><span class="annot"><span class="annottext">Param (LParamInfo rep)
+</span><a href="#local-6989586621684336203"><span class="hs-identifier hs-var">param</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-197"></span><span>
+</span><span id="line-198"></span><span class="hs-comment">-- | The scope of some function or loop parameters.</span><span>
+</span><span id="line-199"></span><span id="local-6989586621684336683"><span id="local-6989586621684336684"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#scopeOfFParams"><span class="hs-identifier hs-type">scopeOfFParams</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-200"></span><span>  </span><span class="annot"><a href="Futhark.IR.Rep.html#FParamInfo"><span class="hs-identifier hs-type">FParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336684"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="#local-6989586621684336683"><span class="hs-identifier hs-type">dec</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-201"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-type">Param</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336683"><span class="hs-identifier hs-type">dec</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-202"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336684"><span class="hs-identifier hs-type">rep</span></a></span></span></span><span>
+</span><span id="line-203"></span><span id="scopeOfFParams"><span class="annot"><span class="annottext">scopeOfFParams :: forall rep dec. (FParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfFParams"><span class="hs-identifier hs-var hs-var">scopeOfFParams</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, NameInfo rep)] -&gt; Map VName (NameInfo rep)
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, NameInfo rep)] -&gt; Map VName (NameInfo rep))
+-&gt; ([Param dec] -&gt; [(VName, NameInfo rep)])
+-&gt; [Param dec]
+-&gt; Map VName (NameInfo rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Param dec -&gt; (VName, NameInfo rep))
+-&gt; [Param dec] -&gt; [(VName, NameInfo rep)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param dec -&gt; (VName, NameInfo rep)
+forall {rep}. Param (FParamInfo rep) -&gt; (VName, NameInfo rep)
+</span><a href="#local-6989586621684336195"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-204"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-205"></span><span>    </span><span id="local-6989586621684336195"><span class="annot"><span class="annottext">f :: Param (FParamInfo rep) -&gt; (VName, NameInfo rep)
+</span><a href="#local-6989586621684336195"><span class="hs-identifier hs-var hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684336194"><span class="annot"><span class="annottext">Param (FParamInfo rep)
+</span><a href="#local-6989586621684336194"><span class="hs-identifier hs-var">param</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Param (FParamInfo rep) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">Param (FParamInfo rep)
+</span><a href="#local-6989586621684336194"><span class="hs-identifier hs-var">param</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">FParamInfo rep -&gt; NameInfo rep
+forall rep. FParamInfo rep -&gt; NameInfo rep
+</span><a href="Futhark.IR.Prop.Scope.html#FParamName"><span class="hs-identifier hs-var">FParamName</span></a></span><span> </span><span class="annot"><span class="annottext">(FParamInfo rep -&gt; NameInfo rep) -&gt; FParamInfo rep -&gt; NameInfo rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Param (FParamInfo rep) -&gt; FParamInfo rep
+forall dec. Param dec -&gt; dec
+</span><a href="Futhark.IR.Syntax.Core.html#paramDec"><span class="hs-identifier hs-var hs-var">paramDec</span></a></span><span> </span><span class="annot"><span class="annottext">Param (FParamInfo rep)
+</span><a href="#local-6989586621684336194"><span class="hs-identifier hs-var">param</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-206"></span><span>
+</span><span id="line-207"></span><span id="local-6989586621684336642"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scoped"><span class="hs-identifier hs-type">Scoped</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336642"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336642"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-208"></span><span>  </span><span id="local-6989586621684336189"><span class="annot"><span class="annottext">scopeOf :: Lambda rep -&gt; Scope rep
+</span><a href="#local-6989586621684336189"><span class="hs-identifier hs-var hs-var hs-var hs-var">scopeOf</span></a></span></span><span> </span><span id="local-6989586621684336188"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684336188"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Param (LParamInfo rep)] -&gt; Scope rep
+forall rep dec. (LParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-var">scopeOfLParams</span></a></span><span> </span><span class="annot"><span class="annottext">([Param (LParamInfo rep)] -&gt; Scope rep)
+-&gt; [Param (LParamInfo rep)] -&gt; Scope rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; [Param (LParamInfo rep)]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684336188"><span class="hs-identifier hs-var">lam</span></a></span></span><span>
+</span><span id="line-209"></span><span>
+</span><span id="line-210"></span><span class="hs-comment">-- | A constraint that indicates two representations have the same 'NameInfo'</span><span>
+</span><span id="line-211"></span><span class="hs-comment">-- representation.</span><span>
+</span><span id="line-212"></span><span class="hs-keyword">type</span><span> </span><span id="SameScope"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier hs-var">SameScope</span></a></span></span><span> </span><span id="local-6989586621684336186"><span class="annot"><a href="#local-6989586621684336186"><span class="hs-identifier hs-type">rep1</span></a></span></span><span> </span><span id="local-6989586621684336185"><span class="annot"><a href="#local-6989586621684336185"><span class="hs-identifier hs-type">rep2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-213"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336186"><span class="hs-identifier hs-type">rep1</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336185"><span class="hs-identifier hs-type">rep2</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-214"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#FParamInfo"><span class="hs-identifier hs-type">FParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336186"><span class="hs-identifier hs-type">rep1</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#FParamInfo"><span class="hs-identifier hs-type">FParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336185"><span class="hs-identifier hs-type">rep2</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-215"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#LParamInfo"><span class="hs-identifier hs-type">LParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336186"><span class="hs-identifier hs-type">rep1</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LParamInfo"><span class="hs-identifier hs-type">LParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336185"><span class="hs-identifier hs-type">rep2</span></a></span><span>
+</span><span id="line-216"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-217"></span><span>
+</span><span id="line-218"></span><span class="hs-comment">-- | If two scopes are really the same, then you can convert one to</span><span>
+</span><span id="line-219"></span><span class="hs-comment">-- the other.</span><span>
+</span><span id="line-220"></span><span id="local-6989586621684336638"><span id="local-6989586621684336639"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#castScope"><span class="hs-identifier hs-type">castScope</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-221"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier hs-type">SameScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336639"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336638"><span class="hs-identifier hs-type">torep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-222"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336639"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-223"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336638"><span class="hs-identifier hs-type">torep</span></a></span></span></span><span>
+</span><span id="line-224"></span><span id="castScope"><span class="annot"><span class="annottext">castScope :: forall fromrep torep.
+SameScope fromrep torep =&gt;
+Scope fromrep -&gt; Scope torep
+</span><a href="Futhark.IR.Prop.Scope.html#castScope"><span class="hs-identifier hs-var hs-var">castScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(NameInfo fromrep -&gt; NameInfo torep)
+-&gt; Map VName (NameInfo fromrep) -&gt; Map VName (NameInfo torep)
+forall a b k. (a -&gt; b) -&gt; Map k a -&gt; Map k b
+</span><span class="hs-identifier hs-var">M.map</span></span><span> </span><span class="annot"><span class="annottext">NameInfo fromrep -&gt; NameInfo torep
+forall fromrep torep.
+SameScope fromrep torep =&gt;
+NameInfo fromrep -&gt; NameInfo torep
+</span><a href="Futhark.IR.Prop.Scope.html#castNameInfo"><span class="hs-identifier hs-var">castNameInfo</span></a></span><span>
+</span><span id="line-225"></span><span>
+</span><span id="line-226"></span><span id="local-6989586621684336627"><span id="local-6989586621684336628"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#castNameInfo"><span class="hs-identifier hs-type">castNameInfo</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-227"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier hs-type">SameScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336628"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336627"><span class="hs-identifier hs-type">torep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-228"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#NameInfo"><span class="hs-identifier hs-type">NameInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336628"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-229"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#NameInfo"><span class="hs-identifier hs-type">NameInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336627"><span class="hs-identifier hs-type">torep</span></a></span></span></span><span>
+</span><span id="line-230"></span><span id="castNameInfo"><span class="annot"><span class="annottext">castNameInfo :: forall fromrep torep.
+SameScope fromrep torep =&gt;
+NameInfo fromrep -&gt; NameInfo torep
+</span><a href="Futhark.IR.Prop.Scope.html#castNameInfo"><span class="hs-identifier hs-var hs-var">castNameInfo</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LetName"><span class="hs-identifier hs-type">LetName</span></a></span><span> </span><span id="local-6989586621684336145"><span class="annot"><span class="annottext">LetDec fromrep
+</span><a href="#local-6989586621684336145"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LetDec torep -&gt; NameInfo torep
+forall rep. LetDec rep -&gt; NameInfo rep
+</span><a href="Futhark.IR.Prop.Scope.html#LetName"><span class="hs-identifier hs-var">LetName</span></a></span><span> </span><span class="annot"><span class="annottext">LetDec fromrep
+LetDec torep
+</span><a href="#local-6989586621684336145"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-231"></span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#castNameInfo"><span class="hs-identifier hs-var">castNameInfo</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#FParamName"><span class="hs-identifier hs-type">FParamName</span></a></span><span> </span><span id="local-6989586621684336144"><span class="annot"><span class="annottext">FParamInfo fromrep
+</span><a href="#local-6989586621684336144"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FParamInfo torep -&gt; NameInfo torep
+forall rep. FParamInfo rep -&gt; NameInfo rep
+</span><a href="Futhark.IR.Prop.Scope.html#FParamName"><span class="hs-identifier hs-var">FParamName</span></a></span><span> </span><span class="annot"><span class="annottext">FParamInfo fromrep
+FParamInfo torep
+</span><a href="#local-6989586621684336144"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-232"></span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#castNameInfo"><span class="hs-identifier hs-var">castNameInfo</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LParamName"><span class="hs-identifier hs-type">LParamName</span></a></span><span> </span><span id="local-6989586621684336143"><span class="annot"><span class="annottext">LParamInfo fromrep
+</span><a href="#local-6989586621684336143"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LParamInfo torep -&gt; NameInfo torep
+forall rep. LParamInfo rep -&gt; NameInfo rep
+</span><a href="Futhark.IR.Prop.Scope.html#LParamName"><span class="hs-identifier hs-var">LParamName</span></a></span><span> </span><span class="annot"><span class="annottext">LParamInfo fromrep
+LParamInfo torep
+</span><a href="#local-6989586621684336143"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-233"></span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#castNameInfo"><span class="hs-identifier hs-var">castNameInfo</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#IndexName"><span class="hs-identifier hs-type">IndexName</span></a></span><span> </span><span id="local-6989586621684336142"><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684336142"><span class="hs-identifier hs-var">it</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntType -&gt; NameInfo torep
+forall rep. IntType -&gt; NameInfo rep
+</span><a href="Futhark.IR.Prop.Scope.html#IndexName"><span class="hs-identifier hs-var">IndexName</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684336142"><span class="hs-identifier hs-var">it</span></a></span><span>
+</span><span id="line-234"></span><span>
+</span><span id="line-235"></span><span class="hs-comment">-- | A monad transformer that carries around an extended 'Scope'.</span><span>
+</span><span id="line-236"></span><span class="hs-comment">-- Its 'lookupType' method will first look in the extended 'Scope',</span><span>
+</span><span id="line-237"></span><span class="hs-comment">-- and then use the 'lookupType' method of the underlying monad.</span><span>
+</span><span id="line-238"></span><span class="hs-keyword">newtype</span><span> </span><span id="ExtendedScope"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#ExtendedScope"><span class="hs-identifier hs-var">ExtendedScope</span></a></span></span><span> </span><span id="local-6989586621684336613"><span class="annot"><a href="#local-6989586621684336613"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684336614"><span class="annot"><a href="#local-6989586621684336614"><span class="hs-identifier hs-type">m</span></a></span></span><span> </span><span id="local-6989586621684336563"><span class="annot"><a href="#local-6989586621684336563"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ExtendedScope"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#ExtendedScope"><span class="hs-identifier hs-var">ExtendedScope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ReaderT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336613"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684336614"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336563"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-239"></span><span>  </span><span class="hs-keyword">deriving</span><span>
+</span><span id="line-240"></span><span>    </span><span class="hs-special">(</span><span> </span><span id="local-6989586621684336133"><span id="local-6989586621684336138"><span class="annot"><span class="annottext">(forall a b.
+ (a -&gt; b) -&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b)
+-&gt; (forall a b.
+    a -&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a)
+-&gt; Functor (ExtendedScope rep m)
+forall a b. a -&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a
+forall a b.
+(a -&gt; b) -&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b
+forall rep (m :: * -&gt; *) a b.
+Functor m =&gt;
+a -&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a
+forall rep (m :: * -&gt; *) a b.
+Functor m =&gt;
+(a -&gt; b) -&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+&lt;$ :: forall a b. a -&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a
+$c&lt;$ :: forall rep (m :: * -&gt; *) a b.
+Functor m =&gt;
+a -&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a
+fmap :: forall a b.
+(a -&gt; b) -&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b
+$cfmap :: forall rep (m :: * -&gt; *) a b.
+Functor m =&gt;
+(a -&gt; b) -&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-241"></span><span>      </span><span id="local-6989586621684336107"><span id="local-6989586621684336111"><span id="local-6989586621684336115"><span id="local-6989586621684336119"><span id="local-6989586621684336123"><span class="annot"><span class="annottext">Functor (ExtendedScope rep m)
+Functor (ExtendedScope rep m)
+-&gt; (forall a. a -&gt; ExtendedScope rep m a)
+-&gt; (forall a b.
+    ExtendedScope rep m (a -&gt; b)
+    -&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b)
+-&gt; (forall a b c.
+    (a -&gt; b -&gt; c)
+    -&gt; ExtendedScope rep m a
+    -&gt; ExtendedScope rep m b
+    -&gt; ExtendedScope rep m c)
+-&gt; (forall a b.
+    ExtendedScope rep m a
+    -&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b)
+-&gt; (forall a b.
+    ExtendedScope rep m a
+    -&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a)
+-&gt; Applicative (ExtendedScope rep m)
+forall a. a -&gt; ExtendedScope rep m a
+forall a b.
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a
+forall a b.
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b
+forall a b.
+ExtendedScope rep m (a -&gt; b)
+-&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b
+forall a b c.
+(a -&gt; b -&gt; c)
+-&gt; ExtendedScope rep m a
+-&gt; ExtendedScope rep m b
+-&gt; ExtendedScope rep m c
+forall {rep} {m :: * -&gt; *}.
+Applicative m =&gt;
+Functor (ExtendedScope rep m)
+forall rep (m :: * -&gt; *) a.
+Applicative m =&gt;
+a -&gt; ExtendedScope rep m a
+forall rep (m :: * -&gt; *) a b.
+Applicative m =&gt;
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a
+forall rep (m :: * -&gt; *) a b.
+Applicative m =&gt;
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b
+forall rep (m :: * -&gt; *) a b.
+Applicative m =&gt;
+ExtendedScope rep m (a -&gt; b)
+-&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b
+forall rep (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; c)
+-&gt; ExtendedScope rep m a
+-&gt; ExtendedScope rep m b
+-&gt; ExtendedScope rep m c
+forall (f :: * -&gt; *).
+Functor f
+-&gt; (forall a. a -&gt; f a)
+-&gt; (forall a b. f (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c)
+-&gt; (forall a b. f a -&gt; f b -&gt; f b)
+-&gt; (forall a b. f a -&gt; f b -&gt; f a)
+-&gt; Applicative f
+&lt;* :: forall a b.
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a
+$c&lt;* :: forall rep (m :: * -&gt; *) a b.
+Applicative m =&gt;
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m a
+*&gt; :: forall a b.
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b
+$c*&gt; :: forall rep (m :: * -&gt; *) a b.
+Applicative m =&gt;
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b
+liftA2 :: forall a b c.
+(a -&gt; b -&gt; c)
+-&gt; ExtendedScope rep m a
+-&gt; ExtendedScope rep m b
+-&gt; ExtendedScope rep m c
+$cliftA2 :: forall rep (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; c)
+-&gt; ExtendedScope rep m a
+-&gt; ExtendedScope rep m b
+-&gt; ExtendedScope rep m c
+&lt;*&gt; :: forall a b.
+ExtendedScope rep m (a -&gt; b)
+-&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b
+$c&lt;*&gt; :: forall rep (m :: * -&gt; *) a b.
+Applicative m =&gt;
+ExtendedScope rep m (a -&gt; b)
+-&gt; ExtendedScope rep m a -&gt; ExtendedScope rep m b
+pure :: forall a. a -&gt; ExtendedScope rep m a
+$cpure :: forall rep (m :: * -&gt; *) a.
+Applicative m =&gt;
+a -&gt; ExtendedScope rep m a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Applicative</span></span></span></span></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-242"></span><span>      </span><span id="local-6989586621684336089"><span id="local-6989586621684336093"><span id="local-6989586621684336097"><span class="annot"><span class="annottext">Applicative (ExtendedScope rep m)
+Applicative (ExtendedScope rep m)
+-&gt; (forall a b.
+    ExtendedScope rep m a
+    -&gt; (a -&gt; ExtendedScope rep m b) -&gt; ExtendedScope rep m b)
+-&gt; (forall a b.
+    ExtendedScope rep m a
+    -&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b)
+-&gt; (forall a. a -&gt; ExtendedScope rep m a)
+-&gt; Monad (ExtendedScope rep m)
+forall a. a -&gt; ExtendedScope rep m a
+forall a b.
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b
+forall a b.
+ExtendedScope rep m a
+-&gt; (a -&gt; ExtendedScope rep m b) -&gt; ExtendedScope rep m b
+forall {rep} {m :: * -&gt; *}.
+Monad m =&gt;
+Applicative (ExtendedScope rep m)
+forall rep (m :: * -&gt; *) a. Monad m =&gt; a -&gt; ExtendedScope rep m a
+forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b
+forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+ExtendedScope rep m a
+-&gt; (a -&gt; ExtendedScope rep m b) -&gt; ExtendedScope rep m b
+forall (m :: * -&gt; *).
+Applicative m
+-&gt; (forall a b. m a -&gt; (a -&gt; m b) -&gt; m b)
+-&gt; (forall a b. m a -&gt; m b -&gt; m b)
+-&gt; (forall a. a -&gt; m a)
+-&gt; Monad m
+return :: forall a. a -&gt; ExtendedScope rep m a
+$creturn :: forall rep (m :: * -&gt; *) a. Monad m =&gt; a -&gt; ExtendedScope rep m a
+&gt;&gt; :: forall a b.
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b
+$c&gt;&gt; :: forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+ExtendedScope rep m a
+-&gt; ExtendedScope rep m b -&gt; ExtendedScope rep m b
+&gt;&gt;= :: forall a b.
+ExtendedScope rep m a
+-&gt; (a -&gt; ExtendedScope rep m b) -&gt; ExtendedScope rep m b
+$c&gt;&gt;= :: forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+ExtendedScope rep m a
+-&gt; (a -&gt; ExtendedScope rep m b) -&gt; ExtendedScope rep m b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monad</span></span></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-243"></span><span>      </span><span id="local-6989586621684336072"><span id="local-6989586621684336076"><span id="local-6989586621684336080"><span class="annot"><span class="hs-identifier hs-type">MonadReader</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336613"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-244"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-245"></span><span>
+</span><span id="line-246"></span><span id="local-6989586621684336572"><span id="local-6989586621684336573"><span class="hs-keyword">instance</span><span>
+</span><span id="line-247"></span><span>  </span><span id="local-6989586621684336058"><span id="local-6989586621684336061"><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336573"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336572"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684336572"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-248"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336573"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#ExtendedScope"><span class="hs-identifier hs-type">ExtendedScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336573"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336572"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-249"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-250"></span><span>  </span><span id="local-6989586621684336046"><span class="annot"><span class="annottext">lookupType :: VName -&gt; ExtendedScope rep m Type
+</span><a href="#local-6989586621684336046"><span class="hs-identifier hs-var hs-var hs-var hs-var">lookupType</span></a></span></span><span> </span><span id="local-6989586621684336045"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336045"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-251"></span><span>    </span><span id="local-6989586621684336044"><span class="annot"><span class="annottext">Maybe Type
+</span><a href="#local-6989586621684336044"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Maybe Type) -&gt; ExtendedScope rep m (Maybe Type)
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">asks</span></span><span> </span><span class="annot"><span class="annottext">((Scope rep -&gt; Maybe Type) -&gt; ExtendedScope rep m (Maybe Type))
+-&gt; (Scope rep -&gt; Maybe Type) -&gt; ExtendedScope rep m (Maybe Type)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(NameInfo rep -&gt; Type) -&gt; Maybe (NameInfo rep) -&gt; Maybe Type
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">NameInfo rep -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe (NameInfo rep) -&gt; Maybe Type)
+-&gt; (Scope rep -&gt; Maybe (NameInfo rep)) -&gt; Scope rep -&gt; Maybe Type
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Scope rep -&gt; Maybe (NameInfo rep)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336045"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-252"></span><span>    </span><span class="annot"><span class="annottext">ExtendedScope rep m Type
+-&gt; (Type -&gt; ExtendedScope rep m Type)
+-&gt; Maybe Type
+-&gt; ExtendedScope rep m Type
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ReaderT (Scope rep) m Type -&gt; ExtendedScope rep m Type
+forall rep (m :: * -&gt; *) a.
+ReaderT (Scope rep) m a -&gt; ExtendedScope rep m a
+</span><a href="Futhark.IR.Prop.Scope.html#ExtendedScope"><span class="hs-identifier hs-var">ExtendedScope</span></a></span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope rep) m Type -&gt; ExtendedScope rep m Type)
+-&gt; ReaderT (Scope rep) m Type -&gt; ExtendedScope rep m Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">m Type -&gt; ReaderT (Scope rep) m Type
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m Type -&gt; ReaderT (Scope rep) m Type)
+-&gt; m Type -&gt; ReaderT (Scope rep) m Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684336045"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Type -&gt; ExtendedScope rep m Type
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Maybe Type
+</span><a href="#local-6989586621684336044"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-253"></span><span>  </span><span id="local-6989586621684336034"><span class="annot"><span class="annottext">askScope :: ExtendedScope rep m (Scope rep)
+</span><a href="#local-6989586621684336034"><span class="hs-identifier hs-var hs-var hs-var hs-var">askScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Scope rep -&gt; Scope rep)
+-&gt; ExtendedScope rep m (Scope rep -&gt; Scope rep)
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">asks</span></span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; Scope rep -&gt; Scope rep
+forall k a. Ord k =&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.union</span></span><span> </span><span class="annot"><span class="annottext">ExtendedScope rep m (Scope rep -&gt; Scope rep)
+-&gt; ExtendedScope rep m (Scope rep)
+-&gt; ExtendedScope rep m (Scope rep)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">ReaderT (Scope rep) m (Scope rep)
+-&gt; ExtendedScope rep m (Scope rep)
+forall rep (m :: * -&gt; *) a.
+ReaderT (Scope rep) m a -&gt; ExtendedScope rep m a
+</span><a href="Futhark.IR.Prop.Scope.html#ExtendedScope"><span class="hs-identifier hs-var">ExtendedScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">m (Scope rep) -&gt; ReaderT (Scope rep) m (Scope rep)
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">m (Scope rep)
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; m (Scope rep)
+</span><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-var">askScope</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-254"></span><span>
+</span><span id="line-255"></span><span class="hs-comment">-- | Run a computation in the extended type environment.</span><span>
+</span><span id="line-256"></span><span id="local-6989586621684336560"><span id="local-6989586621684336561"><span id="local-6989586621684336562"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#extendedScope"><span class="hs-identifier hs-type">extendedScope</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-257"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#ExtendedScope"><span class="hs-identifier hs-type">ExtendedScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336562"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336561"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336560"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-258"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336562"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-259"></span><span>  </span><span class="annot"><a href="#local-6989586621684336561"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684336560"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-260"></span><span id="extendedScope"><span class="annot"><span class="annottext">extendedScope :: forall rep (m :: * -&gt; *) a.
+ExtendedScope rep m a -&gt; Scope rep -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#extendedScope"><span class="hs-identifier hs-var hs-var">extendedScope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#ExtendedScope"><span class="hs-identifier hs-type">ExtendedScope</span></a></span><span> </span><span id="local-6989586621684336033"><span class="annot"><span class="annottext">ReaderT (Scope rep) m a
+</span><a href="#local-6989586621684336033"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ReaderT (Scope rep) m a -&gt; Scope rep -&gt; m a
+forall r (m :: * -&gt; *) a. ReaderT r m a -&gt; r -&gt; m a
+</span><span class="hs-identifier hs-var hs-var">runReaderT</span></span><span> </span><span class="annot"><span class="annottext">ReaderT (Scope rep) m a
+</span><a href="#local-6989586621684336033"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-261"></span></pre></body></html>

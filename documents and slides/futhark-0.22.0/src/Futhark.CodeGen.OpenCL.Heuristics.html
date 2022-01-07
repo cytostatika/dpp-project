@@ -1,0 +1,243 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | Some OpenCL platforms have a SIMD/warp/wavefront-based execution</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- model that execute groups of threads in lockstep, permitting us to</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- perform cross-thread synchronisation within each such group without</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- the use of barriers.  Unfortunately, there seems to be no reliable</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- way to query these sizes at runtime.  Instead, we use builtin</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- tables to figure out which size we should use for a specific</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- platform and device.  If nothing matches here, the wave size should</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- be set to one.</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- We also use this to select reasonable default group sizes and group</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- counts.</span><span>
+</span><span id="line-12"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CodeGen.OpenCL.Heuristics</span><span>
+</span><span id="line-13"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier">SizeHeuristic</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceType"><span class="hs-identifier">DeviceType</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#WhichSize"><span class="hs-identifier">WhichSize</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceInfo"><span class="hs-identifier">DeviceInfo</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#sizeHeuristicsTable"><span class="hs-identifier">sizeHeuristicsTable</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html"><span class="hs-identifier">Futhark.Analysis.PrimExp</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Pretty.html"><span class="hs-identifier">Futhark.Util.Pretty</span></a></span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- | The type of OpenCL device that this heuristic applies to.</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">data</span><span> </span><span id="DeviceType"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceType"><span class="hs-identifier hs-var">DeviceType</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="DeviceCPU"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceCPU"><span class="hs-identifier hs-var">DeviceCPU</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="DeviceGPU"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceGPU"><span class="hs-identifier hs-var">DeviceGPU</span></a></span></span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- | The value supplies by a heuristic can depend on some device</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- information.  This will be translated into a call to</span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- @clGetDeviceInfo()@. Make sure to only request info that can be</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- casted to a scalar type.</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">newtype</span><span> </span><span id="DeviceInfo"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceInfo"><span class="hs-identifier hs-var">DeviceInfo</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="DeviceInfo"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceInfo"><span class="hs-identifier hs-var">DeviceInfo</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684342129"><span id="local-6989586621684342131"><span class="annot"><span class="hs-identifier hs-type">Pretty</span></span><span> </span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceInfo"><span class="hs-identifier hs-type">DeviceInfo</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-34"></span><span>  </span><span id="local-6989586621684342121"><span class="annot"><span class="annottext">ppr :: DeviceInfo -&gt; Doc
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">ppr</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceInfo"><span class="hs-identifier hs-type">DeviceInfo</span></a></span><span> </span><span id="local-6989586621684342119"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684342119"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Doc
+</span><span class="hs-identifier hs-var">text</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;device_info&quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc
+</span><span class="hs-identifier hs-var">parens</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684342119"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- | A size that can be assigned a default.</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">data</span><span> </span><span id="WhichSize"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#WhichSize"><span class="hs-identifier hs-var">WhichSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="LockstepWidth"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#LockstepWidth"><span class="hs-identifier hs-var">LockstepWidth</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="NumGroups"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#NumGroups"><span class="hs-identifier hs-var">NumGroups</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="GroupSize"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#GroupSize"><span class="hs-identifier hs-var">GroupSize</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="TileSize"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#TileSize"><span class="hs-identifier hs-var">TileSize</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="RegTileSize"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#RegTileSize"><span class="hs-identifier hs-var">RegTileSize</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="Threshold"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#Threshold"><span class="hs-identifier hs-var">Threshold</span></a></span></span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- | A heuristic for setting the default value for something.</span><span>
+</span><span id="line-40"></span><span class="hs-keyword">data</span><span> </span><span id="SizeHeuristic"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="SizeHeuristic"><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span></span><span>
+</span><span id="line-41"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="platformName"><span class="annot"><span class="annottext">SizeHeuristic -&gt; String
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#platformName"><span class="hs-identifier hs-var hs-var">platformName</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">,</span><span>
+</span><span id="line-42"></span><span>    </span><span id="deviceType"><span class="annot"><span class="annottext">SizeHeuristic -&gt; DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#deviceType"><span class="hs-identifier hs-var hs-var">deviceType</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceType"><span class="hs-identifier hs-type">DeviceType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-43"></span><span>    </span><span id="heuristicSize"><span class="annot"><span class="annottext">SizeHeuristic -&gt; WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#heuristicSize"><span class="hs-identifier hs-var hs-var">heuristicSize</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#WhichSize"><span class="hs-identifier hs-type">WhichSize</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-44"></span><span>    </span><span id="heuristicValue"><span class="annot"><span class="annottext">SizeHeuristic -&gt; TPrimExp Int32 DeviceInfo
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#heuristicValue"><span class="hs-identifier hs-var hs-var">heuristicValue</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int32</span></span><span> </span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceInfo"><span class="hs-identifier hs-type">DeviceInfo</span></a></span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- | All of our heuristics.</span><span>
+</span><span id="line-48"></span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#sizeHeuristicsTable"><span class="hs-identifier hs-type">sizeHeuristicsTable</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-type">SizeHeuristic</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-49"></span><span id="sizeHeuristicsTable"><span class="annot"><span class="annottext">sizeHeuristicsTable :: [SizeHeuristic]
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#sizeHeuristicsTable"><span class="hs-identifier hs-var hs-var">sizeHeuristicsTable</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-50"></span><span>  </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;NVIDIA CUDA&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceGPU"><span class="hs-identifier hs-var">DeviceGPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#LockstepWidth"><span class="hs-identifier hs-var">LockstepWidth</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">32</span></span><span class="hs-special">,</span><span>
+</span><span id="line-51"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;AMD Accelerated Parallel Processing&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceGPU"><span class="hs-identifier hs-var">DeviceGPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#LockstepWidth"><span class="hs-identifier hs-var">LockstepWidth</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">32</span></span><span class="hs-special">,</span><span>
+</span><span id="line-52"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceGPU"><span class="hs-identifier hs-var">DeviceGPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#LockstepWidth"><span class="hs-identifier hs-var">LockstepWidth</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">1</span></span><span class="hs-special">,</span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-comment">-- We calculate the number of groups to aim for 1024 threads per</span><span>
+</span><span id="line-54"></span><span>    </span><span class="hs-comment">-- compute unit if we also use the default group size.  This seems</span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-comment">-- to perform well in practice.</span><span>
+</span><span id="line-56"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceGPU"><span class="hs-identifier hs-var">DeviceGPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#NumGroups"><span class="hs-identifier hs-var">NumGroups</span></a></span><span> </span><span class="annot"><span class="annottext">(TPrimExp Int32 DeviceInfo -&gt; SizeHeuristic)
+-&gt; TPrimExp Int32 DeviceInfo -&gt; SizeHeuristic
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">4</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+-&gt; TPrimExp Int32 DeviceInfo -&gt; TPrimExp Int32 DeviceInfo
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+forall {t}. TPrimExp t DeviceInfo
+</span><a href="#local-6989586621684342104"><span class="hs-identifier hs-var">max_compute_units</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-57"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceGPU"><span class="hs-identifier hs-var">DeviceGPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#GroupSize"><span class="hs-identifier hs-var">GroupSize</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">256</span></span><span class="hs-special">,</span><span>
+</span><span id="line-58"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceGPU"><span class="hs-identifier hs-var">DeviceGPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#TileSize"><span class="hs-identifier hs-var">TileSize</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">16</span></span><span class="hs-special">,</span><span>
+</span><span id="line-59"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceGPU"><span class="hs-identifier hs-var">DeviceGPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#RegTileSize"><span class="hs-identifier hs-var">RegTileSize</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">4</span></span><span class="hs-special">,</span><span>
+</span><span id="line-60"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceGPU"><span class="hs-identifier hs-var">DeviceGPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#Threshold"><span class="hs-identifier hs-var">Threshold</span></a></span><span> </span><span class="annot"><span class="annottext">(TPrimExp Int32 DeviceInfo -&gt; SizeHeuristic)
+-&gt; TPrimExp Int32 DeviceInfo -&gt; SizeHeuristic
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">32</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+-&gt; TPrimExp Int32 DeviceInfo -&gt; TPrimExp Int32 DeviceInfo
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">1024</span></span><span class="hs-special">,</span><span>
+</span><span id="line-61"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceCPU"><span class="hs-identifier hs-var">DeviceCPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#LockstepWidth"><span class="hs-identifier hs-var">LockstepWidth</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">1</span></span><span class="hs-special">,</span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceCPU"><span class="hs-identifier hs-var">DeviceCPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#NumGroups"><span class="hs-identifier hs-var">NumGroups</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+forall {t}. TPrimExp t DeviceInfo
+</span><a href="#local-6989586621684342104"><span class="hs-identifier hs-var">max_compute_units</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-63"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceCPU"><span class="hs-identifier hs-var">DeviceCPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#GroupSize"><span class="hs-identifier hs-var">GroupSize</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">32</span></span><span class="hs-special">,</span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceCPU"><span class="hs-identifier hs-var">DeviceCPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#TileSize"><span class="hs-identifier hs-var">TileSize</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">4</span></span><span class="hs-special">,</span><span>
+</span><span id="line-65"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceCPU"><span class="hs-identifier hs-var">DeviceCPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#RegTileSize"><span class="hs-identifier hs-var">RegTileSize</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+</span><span class="hs-number">1</span></span><span class="hs-special">,</span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><span class="annottext">String
+-&gt; DeviceType
+-&gt; WhichSize
+-&gt; TPrimExp Int32 DeviceInfo
+-&gt; SizeHeuristic
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#SizeHeuristic"><span class="hs-identifier hs-var">SizeHeuristic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">DeviceType
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceCPU"><span class="hs-identifier hs-var">DeviceCPU</span></a></span><span> </span><span class="annot"><span class="annottext">WhichSize
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#Threshold"><span class="hs-identifier hs-var">Threshold</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 DeviceInfo
+forall {t}. TPrimExp t DeviceInfo
+</span><a href="#local-6989586621684342104"><span class="hs-identifier hs-var">max_compute_units</span></a></span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-special">]</span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-69"></span><span>    </span><span id="local-6989586621684342104"><span class="annot"><span class="annottext">max_compute_units :: TPrimExp t DeviceInfo
+</span><a href="#local-6989586621684342104"><span class="hs-identifier hs-var hs-var">max_compute_units</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-70"></span><span>      </span><span class="annot"><span class="annottext">PrimExp DeviceInfo -&gt; TPrimExp t DeviceInfo
+forall t v. PrimExp v -&gt; TPrimExp t v
+</span><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-var">TPrimExp</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp DeviceInfo -&gt; TPrimExp t DeviceInfo)
+-&gt; PrimExp DeviceInfo -&gt; TPrimExp t DeviceInfo
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">DeviceInfo -&gt; PrimType -&gt; PrimExp DeviceInfo
+forall v. v -&gt; PrimType -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#LeafExp"><span class="hs-identifier hs-var">LeafExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; DeviceInfo
+</span><a href="Futhark.CodeGen.OpenCL.Heuristics.html#DeviceInfo"><span class="hs-identifier hs-var">DeviceInfo</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;MAX_COMPUTE_UNITS&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; PrimExp DeviceInfo) -&gt; PrimType -&gt; PrimExp DeviceInfo
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IntType -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-var">IntType</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int32"><span class="hs-identifier hs-var">Int32</span></a></span><span>
+</span><span id="line-71"></span></pre></body></html>

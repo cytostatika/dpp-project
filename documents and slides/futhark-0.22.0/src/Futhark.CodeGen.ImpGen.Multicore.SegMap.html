@@ -1,0 +1,294 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | Multicore code generation for 'SegMap'.</span><span>
+</span><span id="line-2"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CodeGen.ImpGen.Multicore.SegMap</span><span>
+</span><span id="line-3"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#compileSegMap"><span class="hs-identifier">compileSegMap</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-4"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-5"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.Multicore.html"><span class="hs-identifier">Futhark.CodeGen.ImpCode.Multicore</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Imp</span></span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen</span></a></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.Base.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen.Multicore.Base</span></a></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.MCMem.html"><span class="hs-identifier">Futhark.IR.MCMem</span></a></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Transform.Rename.html"><span class="hs-identifier">Futhark.Transform.Rename</span></a></span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span id="local-6989586621684533496"><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#writeResult"><span class="hs-identifier hs-type">writeResult</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-15"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-16"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#PatElemT"><span class="hs-identifier hs-type">PatElemT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684533496"><span class="hs-identifier hs-type">dec</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-17"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelResult"><span class="hs-identifier hs-type">KernelResult</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-18"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.Base.html#MulticoreGen"><span class="hs-identifier hs-type">MulticoreGen</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-19"></span><span id="writeResult"><span class="annot"><span class="annottext">writeResult :: forall dec.
+[VName] -&gt; PatElemT dec -&gt; KernelResult -&gt; MulticoreGen ()
+</span><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#writeResult"><span class="hs-identifier hs-var hs-var">writeResult</span></a></span></span><span> </span><span id="local-6989586621684533347"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684533347"><span class="hs-identifier hs-var">is</span></a></span></span><span> </span><span id="local-6989586621684533346"><span class="annot"><span class="annottext">PatElemT dec
+</span><a href="#local-6989586621684533346"><span class="hs-identifier hs-var">pe</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#Returns"><span class="hs-identifier hs-type">Returns</span></a></span><span> </span><span class="annot"><span class="annottext">ResultManifest
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684533344"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684533344"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-20"></span><span>  </span><span class="annot"><span class="annottext">VName -&gt; [TExp Int64] -&gt; SubExp -&gt; [TExp Int64] -&gt; MulticoreGen ()
+forall rep r op.
+VName -&gt; [TExp Int64] -&gt; SubExp -&gt; [TExp Int64] -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#copyDWIMFix"><span class="hs-identifier hs-var">copyDWIMFix</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatElemT dec -&gt; VName
+forall dec. PatElemT dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#patElemName"><span class="hs-identifier hs-var hs-var">patElemName</span></a></span><span> </span><span class="annot"><span class="annottext">PatElemT dec
+</span><a href="#local-6989586621684533346"><span class="hs-identifier hs-var">pe</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName -&gt; TExp Int64) -&gt; [VName] -&gt; [TExp Int64]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; TExp Int64
+forall a. a -&gt; TPrimExp Int64 a
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#le64"><span class="hs-identifier hs-var">Imp.le64</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684533347"><span class="hs-identifier hs-var">is</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684533344"><span class="hs-identifier hs-var">se</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-21"></span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#writeResult"><span class="hs-identifier hs-var">writeResult</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684533340"><span class="annot"><span class="annottext">PatElemT dec
+</span><a href="#local-6989586621684533340"><span class="hs-identifier hs-var">pe</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#WriteReturns"><span class="hs-identifier hs-type">WriteReturns</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span id="local-6989586621684533337"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684533337"><span class="hs-identifier hs-var">rws</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684533336"><span class="annot"><span class="annottext">[(Slice SubExp, SubExp)]
+</span><a href="#local-6989586621684533336"><span class="hs-identifier hs-var">idx_vals</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-22"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684533335"><span class="annot"><span class="annottext">[Slice SubExp]
+</span><a href="#local-6989586621684533335"><span class="hs-identifier hs-var">iss</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684533334"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684533334"><span class="hs-identifier hs-var">vs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(Slice SubExp, SubExp)] -&gt; ([Slice SubExp], [SubExp])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">[(Slice SubExp, SubExp)]
+</span><a href="#local-6989586621684533336"><span class="hs-identifier hs-var">idx_vals</span></a></span><span>
+</span><span id="line-23"></span><span>      </span><span id="local-6989586621684533330"><span class="annot"><span class="annottext">rws' :: [TExp Int64]
+</span><a href="#local-6989586621684533330"><span class="hs-identifier hs-var hs-var">rws'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TExp Int64) -&gt; [SubExp] -&gt; [TExp Int64]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TExp Int64
+forall a. ToExp a =&gt; a -&gt; TExp Int64
+</span><a href="Futhark.CodeGen.ImpGen.html#toInt64Exp"><span class="hs-identifier hs-var">toInt64Exp</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684533337"><span class="hs-identifier hs-var">rws</span></a></span><span>
+</span><span id="line-24"></span><span>  </span><span class="annot"><span class="annottext">[(Slice SubExp, SubExp)]
+-&gt; ((Slice SubExp, SubExp) -&gt; MulticoreGen ()) -&gt; MulticoreGen ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m ()
+</span><span class="hs-identifier hs-var">forM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Slice SubExp] -&gt; [SubExp] -&gt; [(Slice SubExp, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[Slice SubExp]
+</span><a href="#local-6989586621684533335"><span class="hs-identifier hs-var">iss</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684533334"><span class="hs-identifier hs-var">vs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(((Slice SubExp, SubExp) -&gt; MulticoreGen ()) -&gt; MulticoreGen ())
+-&gt; ((Slice SubExp, SubExp) -&gt; MulticoreGen ()) -&gt; MulticoreGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684533327"><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684533327"><span class="hs-identifier hs-var">slice</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684533326"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684533326"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-25"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684533322"><span class="annot"><span class="annottext">slice' :: Slice (TExp Int64)
+</span><a href="#local-6989586621684533322"><span class="hs-identifier hs-var hs-var">slice'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TExp Int64) -&gt; Slice SubExp -&gt; Slice (TExp Int64)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TExp Int64
+forall a. ToExp a =&gt; a -&gt; TExp Int64
+</span><a href="Futhark.CodeGen.ImpGen.html#toInt64Exp"><span class="hs-identifier hs-var">toInt64Exp</span></a></span><span> </span><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684533327"><span class="hs-identifier hs-var">slice</span></a></span><span>
+</span><span id="line-26"></span><span>        </span><span id="local-6989586621684533321"><span class="annot"><span class="annottext">when_in_bounds :: ImpM rep r op ()
+</span><a href="#local-6989586621684533321"><span class="hs-identifier hs-var hs-var">when_in_bounds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName
+-&gt; [DimIndex (TExp Int64)]
+-&gt; SubExp
+-&gt; [DimIndex (TExp Int64)]
+-&gt; ImpM rep r op ()
+forall rep r op.
+VName
+-&gt; [DimIndex (TExp Int64)]
+-&gt; SubExp
+-&gt; [DimIndex (TExp Int64)]
+-&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#copyDWIM"><span class="hs-identifier hs-var">copyDWIM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatElemT dec -&gt; VName
+forall dec. PatElemT dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#patElemName"><span class="hs-identifier hs-var hs-var">patElemName</span></a></span><span> </span><span class="annot"><span class="annottext">PatElemT dec
+</span><a href="#local-6989586621684533340"><span class="hs-identifier hs-var">pe</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Slice (TExp Int64) -&gt; [DimIndex (TExp Int64)]
+forall d. Slice d -&gt; [DimIndex d]
+</span><a href="Futhark.IR.Syntax.Core.html#unSlice"><span class="hs-identifier hs-var hs-var">unSlice</span></a></span><span> </span><span class="annot"><span class="annottext">Slice (TExp Int64)
+</span><a href="#local-6989586621684533322"><span class="hs-identifier hs-var">slice'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684533326"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-27"></span><span>    </span><span class="annot"><span class="annottext">TExp Bool -&gt; MulticoreGen () -&gt; MulticoreGen ()
+forall rep r op. TExp Bool -&gt; ImpM rep r op () -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#sWhen"><span class="hs-identifier hs-var">sWhen</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Slice (TExp Int64) -&gt; [TExp Int64] -&gt; TExp Bool
+</span><a href="Futhark.CodeGen.ImpGen.html#inBounds"><span class="hs-identifier hs-var">inBounds</span></a></span><span> </span><span class="annot"><span class="annottext">Slice (TExp Int64)
+</span><a href="#local-6989586621684533322"><span class="hs-identifier hs-var">slice'</span></a></span><span> </span><span class="annot"><span class="annottext">[TExp Int64]
+</span><a href="#local-6989586621684533330"><span class="hs-identifier hs-var">rws'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MulticoreGen ()
+forall {rep} {r} {op}. ImpM rep r op ()
+</span><a href="#local-6989586621684533321"><span class="hs-identifier hs-var">when_in_bounds</span></a></span><span>
+</span><span id="line-28"></span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#writeResult"><span class="hs-identifier hs-var">writeResult</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">PatElemT dec
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684533316"><span class="annot"><span class="annottext">KernelResult
+</span><a href="#local-6989586621684533316"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-29"></span><span>  </span><span class="annot"><span class="annottext">[Char] -&gt; MulticoreGen ()
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; MulticoreGen ()) -&gt; [Char] -&gt; MulticoreGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;writeResult: cannot handle &quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">KernelResult -&gt; [Char]
+forall a. Pretty a =&gt; a -&gt; [Char]
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">KernelResult
+</span><a href="#local-6989586621684533316"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#compileSegMapBody"><span class="hs-identifier hs-type">compileSegMapBody</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-32"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.html#TV"><span class="hs-identifier hs-type">TV</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-33"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MCMem.html#MCMem"><span class="hs-identifier hs-type">MCMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-34"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-35"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MCMem.html#MCMem"><span class="hs-identifier hs-type">MCMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-36"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.Base.html#MulticoreGen"><span class="hs-identifier hs-type">MulticoreGen</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.Multicore.html#Code"><span class="hs-identifier hs-type">Imp.Code</span></a></span><span>
+</span><span id="line-37"></span><span id="compileSegMapBody"><span class="annot"><span class="annottext">compileSegMapBody :: TV Int64
+-&gt; Pat MCMem -&gt; SegSpace -&gt; KernelBody MCMem -&gt; MulticoreGen Code
+</span><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#compileSegMapBody"><span class="hs-identifier hs-var hs-var">compileSegMapBody</span></a></span></span><span> </span><span id="local-6989586621684533312"><span class="annot"><span class="annottext">TV Int64
+</span><a href="#local-6989586621684533312"><span class="hs-identifier hs-var">flat_idx</span></a></span></span><span> </span><span id="local-6989586621684533311"><span class="annot"><span class="annottext">Pat MCMem
+</span><a href="#local-6989586621684533311"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684533310"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684533310"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><span class="annottext">BodyDec MCMem
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684533308"><span class="annot"><span class="annottext">Stms MCMem
+</span><a href="#local-6989586621684533308"><span class="hs-identifier hs-var">kstms</span></a></span></span><span> </span><span id="local-6989586621684533307"><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684533307"><span class="hs-identifier hs-var">kres</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-38"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684533306"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684533306"><span class="hs-identifier hs-var">is</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684533305"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684533305"><span class="hs-identifier hs-var">ns</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; ([VName], [SubExp])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; ([VName], [SubExp]))
+-&gt; [(VName, SubExp)] -&gt; ([VName], [SubExp])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegSpace -&gt; [(VName, SubExp)]
+</span><a href="Futhark.IR.SegOp.html#unSegSpace"><span class="hs-identifier hs-var hs-var">unSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684533310"><span class="hs-identifier hs-var">space</span></a></span><span>
+</span><span id="line-39"></span><span>      </span><span id="local-6989586621684533302"><span class="annot"><span class="annottext">ns' :: [TExp Int64]
+</span><a href="#local-6989586621684533302"><span class="hs-identifier hs-var hs-var">ns'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TExp Int64) -&gt; [SubExp] -&gt; [TExp Int64]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TExp Int64
+forall a. ToExp a =&gt; a -&gt; TExp Int64
+</span><a href="Futhark.CodeGen.ImpGen.html#toInt64Exp"><span class="hs-identifier hs-var">toInt64Exp</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684533305"><span class="hs-identifier hs-var">ns</span></a></span><span>
+</span><span id="line-40"></span><span>  </span><span id="local-6989586621684533301"><span class="annot"><span class="annottext">Stms MCMem
+</span><a href="#local-6989586621684533301"><span class="hs-identifier hs-var">kstms'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Stm MCMem -&gt; ImpM MCMem HostEnv Multicore (Stm MCMem))
+-&gt; Stms MCMem -&gt; ImpM MCMem HostEnv Multicore (Stms MCMem)
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Stm MCMem -&gt; ImpM MCMem HostEnv Multicore (Stm MCMem)
+forall rep (m :: * -&gt; *).
+(Renameable rep, MonadFreshNames m) =&gt;
+Stm rep -&gt; m (Stm rep)
+</span><a href="Futhark.Transform.Rename.html#renameStm"><span class="hs-identifier hs-var">renameStm</span></a></span><span> </span><span class="annot"><span class="annottext">Stms MCMem
+</span><a href="#local-6989586621684533308"><span class="hs-identifier hs-var">kstms</span></a></span><span>
+</span><span id="line-41"></span><span>  </span><span class="annot"><span class="annottext">MulticoreGen () -&gt; MulticoreGen Code
+forall rep r op. ImpM rep r op () -&gt; ImpM rep r op (Code op)
+</span><a href="Futhark.CodeGen.ImpGen.html#collect"><span class="hs-identifier hs-var">collect</span></a></span><span> </span><span class="annot"><span class="annottext">(MulticoreGen () -&gt; MulticoreGen Code)
+-&gt; MulticoreGen () -&gt; MulticoreGen Code
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-42"></span><span>    </span><span class="annot"><span class="annottext">Code -&gt; MulticoreGen ()
+forall op rep r. Code op -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#emit"><span class="hs-identifier hs-var">emit</span></a></span><span> </span><span class="annot"><span class="annottext">(Code -&gt; MulticoreGen ()) -&gt; Code -&gt; MulticoreGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Maybe Exp -&gt; Code
+forall a. [Char] -&gt; Maybe Exp -&gt; Code a
+</span><a href="Futhark.CodeGen.ImpCode.html#DebugPrint"><span class="hs-identifier hs-var">Imp.DebugPrint</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;SegMap fbody&quot;</span></span><span> </span><span class="annot"><span class="annottext">Maybe Exp
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-43"></span><span>    </span><span class="annot"><span class="annottext">[(VName, TExp Int64)] -&gt; TExp Int64 -&gt; MulticoreGen ()
+forall rep r op.
+[(VName, TExp Int64)] -&gt; TExp Int64 -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#dIndexSpace"><span class="hs-identifier hs-var">dIndexSpace</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [TExp Int64] -&gt; [(VName, TExp Int64)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684533306"><span class="hs-identifier hs-var">is</span></a></span><span> </span><span class="annot"><span class="annottext">[TExp Int64]
+</span><a href="#local-6989586621684533302"><span class="hs-identifier hs-var">ns'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(TExp Int64 -&gt; MulticoreGen ()) -&gt; TExp Int64 -&gt; MulticoreGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TV Int64 -&gt; TExp Int64
+forall t. TV t -&gt; TExp t
+</span><a href="Futhark.CodeGen.ImpGen.html#tvExp"><span class="hs-identifier hs-var">tvExp</span></a></span><span> </span><span class="annot"><span class="annottext">TV Int64
+</span><a href="#local-6989586621684533312"><span class="hs-identifier hs-var">flat_idx</span></a></span><span>
+</span><span id="line-44"></span><span>    </span><span class="annot"><span class="annottext">Names -&gt; Stms MCMem -&gt; MulticoreGen () -&gt; MulticoreGen ()
+forall rep r op.
+Names -&gt; Stms rep -&gt; ImpM rep r op () -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#compileStms"><span class="hs-identifier hs-var">compileStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[KernelResult] -&gt; Names
+forall a. FreeIn a =&gt; a -&gt; Names
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684533307"><span class="hs-identifier hs-var">kres</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms MCMem
+</span><a href="#local-6989586621684533301"><span class="hs-identifier hs-var">kstms'</span></a></span><span> </span><span class="annot"><span class="annottext">(MulticoreGen () -&gt; MulticoreGen ())
+-&gt; MulticoreGen () -&gt; MulticoreGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-45"></span><span>      </span><span class="annot"><span class="annottext">(PatElemT LetDecMem -&gt; KernelResult -&gt; MulticoreGen ())
+-&gt; [PatElemT LetDecMem] -&gt; [KernelResult] -&gt; MulticoreGen ()
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m ()
+</span><span class="hs-identifier hs-var">zipWithM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; PatElemT LetDecMem -&gt; KernelResult -&gt; MulticoreGen ()
+forall dec.
+[VName] -&gt; PatElemT dec -&gt; KernelResult -&gt; MulticoreGen ()
+</span><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#writeResult"><span class="hs-identifier hs-var">writeResult</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684533306"><span class="hs-identifier hs-var">is</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT LetDecMem -&gt; [PatElemT LetDecMem]
+forall dec. PatT dec -&gt; [PatElemT dec]
+</span><a href="Futhark.IR.Syntax.html#patElems"><span class="hs-identifier hs-var hs-var">patElems</span></a></span><span> </span><span class="annot"><span class="annottext">Pat MCMem
+PatT LetDecMem
+</span><a href="#local-6989586621684533311"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[KernelResult]
+</span><a href="#local-6989586621684533307"><span class="hs-identifier hs-var">kres</span></a></span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#compileSegMap"><span class="hs-identifier hs-type">compileSegMap</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-48"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MCMem.html#MCMem"><span class="hs-identifier hs-type">MCMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-49"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-50"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.MCMem.html#MCMem"><span class="hs-identifier hs-type">MCMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-51"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.Multicore.Base.html#MulticoreGen"><span class="hs-identifier hs-type">MulticoreGen</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.Multicore.html#Code"><span class="hs-identifier hs-type">Imp.Code</span></a></span><span>
+</span><span id="line-52"></span><span id="compileSegMap"><span class="annot"><span class="annottext">compileSegMap :: Pat MCMem -&gt; SegSpace -&gt; KernelBody MCMem -&gt; MulticoreGen Code
+</span><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#compileSegMap"><span class="hs-identifier hs-var hs-var">compileSegMap</span></a></span></span><span> </span><span id="local-6989586621684533289"><span class="annot"><span class="annottext">Pat MCMem
+</span><a href="#local-6989586621684533289"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684533288"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684533288"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684533287"><span class="annot"><span class="annottext">KernelBody MCMem
+</span><a href="#local-6989586621684533287"><span class="hs-identifier hs-var">kbody</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-53"></span><span>  </span><span class="annot"><span class="annottext">MulticoreGen () -&gt; MulticoreGen Code
+forall rep r op. ImpM rep r op () -&gt; ImpM rep r op (Code op)
+</span><a href="Futhark.CodeGen.ImpGen.html#collect"><span class="hs-identifier hs-var">collect</span></a></span><span> </span><span class="annot"><span class="annottext">(MulticoreGen () -&gt; MulticoreGen Code)
+-&gt; MulticoreGen () -&gt; MulticoreGen Code
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-54"></span><span>    </span><span id="local-6989586621684533286"><span class="annot"><span class="annottext">TV Int64
+</span><a href="#local-6989586621684533286"><span class="hs-identifier hs-var">flat_par_idx</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; PrimType -&gt; ImpM MCMem HostEnv Multicore (TV Int64)
+forall rep r op t. [Char] -&gt; PrimType -&gt; ImpM rep r op (TV t)
+</span><a href="Futhark.CodeGen.ImpGen.html#dPrim"><span class="hs-identifier hs-var">dPrim</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;iter&quot;</span></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int64"><span class="hs-identifier hs-var">int64</span></a></span><span>
+</span><span id="line-55"></span><span>    </span><span id="local-6989586621684533283"><span class="annot"><span class="annottext">Code
+</span><a href="#local-6989586621684533283"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TV Int64
+-&gt; Pat MCMem -&gt; SegSpace -&gt; KernelBody MCMem -&gt; MulticoreGen Code
+</span><a href="Futhark.CodeGen.ImpGen.Multicore.SegMap.html#compileSegMapBody"><span class="hs-identifier hs-var">compileSegMapBody</span></a></span><span> </span><span class="annot"><span class="annottext">TV Int64
+</span><a href="#local-6989586621684533286"><span class="hs-identifier hs-var">flat_par_idx</span></a></span><span> </span><span class="annot"><span class="annottext">Pat MCMem
+</span><a href="#local-6989586621684533289"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684533288"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody MCMem
+</span><a href="#local-6989586621684533287"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-56"></span><span>    </span><span id="local-6989586621684533282"><span class="annot"><span class="annottext">[Param]
+</span><a href="#local-6989586621684533282"><span class="hs-identifier hs-var">free_params</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Code -&gt; [VName] -&gt; MulticoreGen [Param]
+</span><a href="Futhark.CodeGen.ImpGen.Multicore.Base.html#freeParams"><span class="hs-identifier hs-var">freeParams</span></a></span><span> </span><span class="annot"><span class="annottext">Code
+</span><a href="#local-6989586621684533283"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SegSpace -&gt; VName
+</span><a href="Futhark.IR.SegOp.html#segFlat"><span class="hs-identifier hs-var hs-var">segFlat</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684533288"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">TV Int64 -&gt; VName
+forall t. TV t -&gt; VName
+</span><a href="Futhark.CodeGen.ImpGen.html#tvVar"><span class="hs-identifier hs-var">tvVar</span></a></span><span> </span><span class="annot"><span class="annottext">TV Int64
+</span><a href="#local-6989586621684533286"><span class="hs-identifier hs-var">flat_par_idx</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684533278"><span class="annot"><span class="annottext">Code
+</span><a href="#local-6989586621684533278"><span class="hs-identifier hs-var">body_allocs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684533277"><span class="annot"><span class="annottext">Code
+</span><a href="#local-6989586621684533277"><span class="hs-identifier hs-var">body'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Code -&gt; (Code, Code)
+</span><a href="Futhark.CodeGen.ImpGen.Multicore.Base.html#extractAllocations"><span class="hs-identifier hs-var">extractAllocations</span></a></span><span> </span><span class="annot"><span class="annottext">Code
+</span><a href="#local-6989586621684533283"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-58"></span><span>    </span><span class="annot"><span class="annottext">Code -&gt; MulticoreGen ()
+forall op rep r. Code op -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#emit"><span class="hs-identifier hs-var">emit</span></a></span><span> </span><span class="annot"><span class="annottext">(Code -&gt; MulticoreGen ()) -&gt; Code -&gt; MulticoreGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Multicore -&gt; Code
+forall a. a -&gt; Code a
+</span><a href="Futhark.CodeGen.ImpCode.html#Op"><span class="hs-identifier hs-var">Imp.Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Multicore -&gt; Code) -&gt; Multicore -&gt; Code
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+-&gt; VName -&gt; Code -&gt; Code -&gt; Code -&gt; [Param] -&gt; VName -&gt; Multicore
+</span><a href="Futhark.CodeGen.ImpCode.Multicore.html#ParLoop"><span class="hs-identifier hs-var">Imp.ParLoop</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;segmap&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TV Int64 -&gt; VName
+forall t. TV t -&gt; VName
+</span><a href="Futhark.CodeGen.ImpGen.html#tvVar"><span class="hs-identifier hs-var">tvVar</span></a></span><span> </span><span class="annot"><span class="annottext">TV Int64
+</span><a href="#local-6989586621684533286"><span class="hs-identifier hs-var">flat_par_idx</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Code
+</span><a href="#local-6989586621684533278"><span class="hs-identifier hs-var">body_allocs</span></a></span><span> </span><span class="annot"><span class="annottext">Code
+</span><a href="#local-6989586621684533277"><span class="hs-identifier hs-var">body'</span></a></span><span> </span><span class="annot"><span class="annottext">Code
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">[Param]
+</span><a href="#local-6989586621684533282"><span class="hs-identifier hs-var">free_params</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; Multicore) -&gt; VName -&gt; Multicore
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegSpace -&gt; VName
+</span><a href="Futhark.IR.SegOp.html#segFlat"><span class="hs-identifier hs-var hs-var">segFlat</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684533288"><span class="hs-identifier hs-var">space</span></a></span><span>
+</span><span id="line-59"></span></pre></body></html>

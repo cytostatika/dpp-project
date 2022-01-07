@@ -1,0 +1,725 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span id="local-6989586621684411134"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE UndecidableInstances #-}</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- | Definitions for multicore operations.</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Most of the interesting stuff is in &quot;Futhark.IR.SegOp&quot;, which is</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- also re-exported from here.</span><span>
+</span><span id="line-10"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.IR.MC.Op</span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier">MCOp</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.IR.MC.Op.html#traverseMCOpStms"><span class="hs-identifier">traverseMCOpStms</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.IR.MC.Op.html#typeCheckMCOp"><span class="hs-identifier">typeCheckMCOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.IR.MC.Op.html#simplifyMCOp"><span class="hs-identifier">simplifyMCOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html"><span class="hs-identifier">Futhark.IR.SegOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bifunctor</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">first</span></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Analysis.Metrics.html"><span class="hs-identifier">Futhark.Analysis.Metrics</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html"><span class="hs-identifier">Futhark.Analysis.SymbolTable</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">ST</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Aliases.html"><span class="hs-identifier">Futhark.IR.Aliases</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier">Aliases</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html"><span class="hs-identifier">Futhark.IR.Prop.Aliases</span></a></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html"><span class="hs-identifier">Futhark.IR.SegOp</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.TypeCheck.html"><span class="hs-identifier">Futhark.IR.TypeCheck</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">TC</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.html"><span class="hs-identifier">Futhark.Optimise.Simplify</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Simplify</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html"><span class="hs-identifier">Futhark.Optimise.Simplify.Engine</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Engine</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html"><span class="hs-identifier">Futhark.Optimise.Simplify.Rep</span></a></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Transform.Rename.html"><span class="hs-identifier">Futhark.Transform.Rename</span></a></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Transform.Substitute.html"><span class="hs-identifier">Futhark.Transform.Substitute</span></a></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Pretty.html"><span class="hs-identifier">Futhark.Util.Pretty</span></a></span><span>
+</span><span id="line-33"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-identifier">Pretty</span></span><span class="hs-special">,</span><span>
+</span><span id="line-34"></span><span>    </span><span class="annot"><a href="Futhark.Util.Pretty.html#nestedBlock"><span class="hs-identifier">nestedBlock</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-35"></span><span>    </span><span class="annot"><span class="hs-identifier">ppr</span></span><span class="hs-special">,</span><span>
+</span><span id="line-36"></span><span>    </span><span class="annot"><span class="hs-operator">(&lt;+&gt;)</span></span><span class="hs-special">,</span><span>
+</span><span id="line-37"></span><span>    </span><span class="annot"><span class="hs-operator">(&lt;/&gt;)</span></span><span class="hs-special">,</span><span>
+</span><span id="line-38"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">id</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-operator">(.)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- | An operation for the multicore representation.  Feel free to</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- extend this on an ad hoc basis as needed.  Parameterised with some</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- other operation.</span><span>
+</span><span id="line-44"></span><span class="hs-keyword">data</span><span> </span><span id="MCOp"><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-var">MCOp</span></a></span></span><span> </span><span id="local-6989586621684411363"><span class="annot"><a href="#local-6989586621684411363"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684411362"><span class="annot"><a href="#local-6989586621684411362"><span class="hs-identifier hs-type">op</span></a></span></span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-comment">-- | The first 'SegOp' (if it exists) contains nested parallelism,</span><span>
+</span><span id="line-46"></span><span>    </span><span class="hs-comment">-- while the second one has a fully sequential body.  They are</span><span>
+</span><span id="line-47"></span><span>    </span><span class="hs-comment">-- semantically fully equivalent.</span><span>
+</span><span id="line-48"></span><span>    </span><span id="ParOp"><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span></span><span>
+</span><span id="line-49"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684411363"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-50"></span><span>      </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684411363"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-comment">-- | Something else (in practice often a SOAC).</span><span>
+</span><span id="line-52"></span><span>    </span><span id="OtherOp"><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span></span><span> </span><span class="annot"><a href="#local-6989586621684411362"><span class="hs-identifier hs-type">op</span></a></span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684411113"><span id="local-6989586621684411120"><span class="annot"><span class="annottext">MCOp rep op -&gt; MCOp rep op -&gt; Bool
+(MCOp rep op -&gt; MCOp rep op -&gt; Bool)
+-&gt; (MCOp rep op -&gt; MCOp rep op -&gt; Bool) -&gt; Eq (MCOp rep op)
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+forall rep op.
+(RepTypes rep, Eq op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Bool
+/= :: MCOp rep op -&gt; MCOp rep op -&gt; Bool
+$c/= :: forall rep op.
+(RepTypes rep, Eq op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Bool
+== :: MCOp rep op -&gt; MCOp rep op -&gt; Bool
+$c== :: forall rep op.
+(RepTypes rep, Eq op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684411081"><span id="local-6989586621684411083"><span id="local-6989586621684411086"><span id="local-6989586621684411089"><span id="local-6989586621684411092"><span id="local-6989586621684411098"><span id="local-6989586621684411105"><span class="annot"><span class="annottext">Eq (MCOp rep op)
+Eq (MCOp rep op)
+-&gt; (MCOp rep op -&gt; MCOp rep op -&gt; Ordering)
+-&gt; (MCOp rep op -&gt; MCOp rep op -&gt; Bool)
+-&gt; (MCOp rep op -&gt; MCOp rep op -&gt; Bool)
+-&gt; (MCOp rep op -&gt; MCOp rep op -&gt; Bool)
+-&gt; (MCOp rep op -&gt; MCOp rep op -&gt; Bool)
+-&gt; (MCOp rep op -&gt; MCOp rep op -&gt; MCOp rep op)
+-&gt; (MCOp rep op -&gt; MCOp rep op -&gt; MCOp rep op)
+-&gt; Ord (MCOp rep op)
+MCOp rep op -&gt; MCOp rep op -&gt; Bool
+MCOp rep op -&gt; MCOp rep op -&gt; Ordering
+MCOp rep op -&gt; MCOp rep op -&gt; MCOp rep op
+forall a.
+Eq a
+-&gt; (a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+forall {rep} {op}. (RepTypes rep, Ord op) =&gt; Eq (MCOp rep op)
+forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Bool
+forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Ordering
+forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; MCOp rep op
+min :: MCOp rep op -&gt; MCOp rep op -&gt; MCOp rep op
+$cmin :: forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; MCOp rep op
+max :: MCOp rep op -&gt; MCOp rep op -&gt; MCOp rep op
+$cmax :: forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; MCOp rep op
+&gt;= :: MCOp rep op -&gt; MCOp rep op -&gt; Bool
+$c&gt;= :: forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Bool
+&gt; :: MCOp rep op -&gt; MCOp rep op -&gt; Bool
+$c&gt; :: forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Bool
+&lt;= :: MCOp rep op -&gt; MCOp rep op -&gt; Bool
+$c&lt;= :: forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Bool
+&lt; :: MCOp rep op -&gt; MCOp rep op -&gt; Bool
+$c&lt; :: forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Bool
+compare :: MCOp rep op -&gt; MCOp rep op -&gt; Ordering
+$ccompare :: forall rep op.
+(RepTypes rep, Ord op) =&gt;
+MCOp rep op -&gt; MCOp rep op -&gt; Ordering
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684411062"><span id="local-6989586621684411064"><span id="local-6989586621684411074"><span class="annot"><span class="annottext">Int -&gt; MCOp rep op -&gt; ShowS
+[MCOp rep op] -&gt; ShowS
+MCOp rep op -&gt; String
+(Int -&gt; MCOp rep op -&gt; ShowS)
+-&gt; (MCOp rep op -&gt; String)
+-&gt; ([MCOp rep op] -&gt; ShowS)
+-&gt; Show (MCOp rep op)
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+forall rep op.
+(RepTypes rep, Show op) =&gt;
+Int -&gt; MCOp rep op -&gt; ShowS
+forall rep op. (RepTypes rep, Show op) =&gt; [MCOp rep op] -&gt; ShowS
+forall rep op. (RepTypes rep, Show op) =&gt; MCOp rep op -&gt; String
+showList :: [MCOp rep op] -&gt; ShowS
+$cshowList :: forall rep op. (RepTypes rep, Show op) =&gt; [MCOp rep op] -&gt; ShowS
+show :: MCOp rep op -&gt; String
+$cshow :: forall rep op. (RepTypes rep, Show op) =&gt; MCOp rep op -&gt; String
+showsPrec :: Int -&gt; MCOp rep op -&gt; ShowS
+$cshowsPrec :: forall rep op.
+(RepTypes rep, Show op) =&gt;
+Int -&gt; MCOp rep op -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span id="local-6989586621684411349"><span id="local-6989586621684411350"><span id="local-6989586621684411351"><span class="annot"><a href="Futhark.IR.MC.Op.html#traverseMCOpStms"><span class="hs-identifier hs-type">traverseMCOpStms</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684411351"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Traversals.html#OpStmsTraverser"><span class="hs-identifier hs-type">OpStmsTraverser</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411351"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411350"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411349"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Traversals.html#OpStmsTraverser"><span class="hs-identifier hs-type">OpStmsTraverser</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411351"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411349"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411350"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684411349"><span class="hs-identifier hs-type">rep</span></a></span></span></span></span><span>
+</span><span id="line-56"></span><span id="traverseMCOpStms"><span class="annot"><span class="annottext">traverseMCOpStms :: forall (m :: * -&gt; *) op rep.
+Monad m =&gt;
+OpStmsTraverser m op rep -&gt; OpStmsTraverser m (MCOp rep op) rep
+</span><a href="Futhark.IR.MC.Op.html#traverseMCOpStms"><span class="hs-identifier hs-var hs-var">traverseMCOpStms</span></a></span></span><span> </span><span class="annot"><span class="annottext">OpStmsTraverser m op rep
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684411044"><span class="annot"><span class="annottext">Scope rep -&gt; Stms rep -&gt; m (Stms rep)
+</span><a href="#local-6989586621684411044"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684411043"><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684411043"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684411042"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684411042"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><span class="annottext">Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op)
+-&gt; m (Maybe (SegOp () rep)) -&gt; m (SegOp () rep -&gt; MCOp rep op)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(SegOp () rep -&gt; m (SegOp () rep))
+-&gt; Maybe (SegOp () rep) -&gt; m (Maybe (SegOp () rep))
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f (t b)
+</span><span class="hs-identifier hs-var">traverse</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OpStmsTraverser m (SegOp () rep) rep
+forall (m :: * -&gt; *) lvl rep.
+Monad m =&gt;
+OpStmsTraverser m (SegOp lvl rep) rep
+</span><a href="Futhark.IR.SegOp.html#traverseSegOpStms"><span class="hs-identifier hs-var">traverseSegOpStms</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; Stms rep -&gt; m (Stms rep)
+</span><a href="#local-6989586621684411044"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684411043"><span class="hs-identifier hs-var">par_op</span></a></span><span> </span><span class="annot"><span class="annottext">m (SegOp () rep -&gt; MCOp rep op)
+-&gt; m (SegOp () rep) -&gt; m (MCOp rep op)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">OpStmsTraverser m (SegOp () rep) rep
+forall (m :: * -&gt; *) lvl rep.
+Monad m =&gt;
+OpStmsTraverser m (SegOp lvl rep) rep
+</span><a href="Futhark.IR.SegOp.html#traverseSegOpStms"><span class="hs-identifier hs-var">traverseSegOpStms</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; Stms rep -&gt; m (Stms rep)
+</span><a href="#local-6989586621684411044"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684411042"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-58"></span><span class="annot"><a href="Futhark.IR.MC.Op.html#traverseMCOpStms"><span class="hs-identifier hs-var">traverseMCOpStms</span></a></span><span> </span><span id="local-6989586621684411038"><span class="annot"><span class="annottext">OpStmsTraverser m op rep
+</span><a href="#local-6989586621684411038"><span class="hs-identifier hs-var">onInner</span></a></span></span><span> </span><span id="local-6989586621684411037"><span class="annot"><span class="annottext">Scope rep -&gt; Stms rep -&gt; m (Stms rep)
+</span><a href="#local-6989586621684411037"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684411036"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684411036"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; MCOp rep op
+forall rep op. op -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">(op -&gt; MCOp rep op) -&gt; m op -&gt; m (MCOp rep op)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">OpStmsTraverser m op rep
+</span><a href="#local-6989586621684411038"><span class="hs-identifier hs-var">onInner</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; Stms rep -&gt; m (Stms rep)
+</span><a href="#local-6989586621684411037"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684411036"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-59"></span><span>
+</span><span id="line-60"></span><span id="local-6989586621684411320"><span id="local-6989586621684411321"><span class="hs-keyword">instance</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411321"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Transform.Substitute.html#Substitute"><span class="hs-identifier hs-type">Substitute</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411320"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Transform.Substitute.html#Substitute"><span class="hs-identifier hs-type">Substitute</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411321"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411320"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-61"></span><span>  </span><span id="local-6989586621684411022"><span class="annot"><span class="annottext">substituteNames :: Map VName VName -&gt; MCOp rep op -&gt; MCOp rep op
+</span><a href="Futhark.Transform.Substitute.html#substituteNames"><span class="hs-identifier hs-var hs-var hs-var hs-var">substituteNames</span></a></span></span><span> </span><span id="local-6989586621684411020"><span class="annot"><span class="annottext">Map VName VName
+</span><a href="#local-6989586621684411020"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684411019"><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684411019"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684411018"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684411018"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><span class="annottext">Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName VName -&gt; SegOp () rep -&gt; SegOp () rep
+forall a. Substitute a =&gt; Map VName VName -&gt; a -&gt; a
+</span><a href="Futhark.Transform.Substitute.html#substituteNames"><span class="hs-identifier hs-var">substituteNames</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName VName
+</span><a href="#local-6989586621684411020"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp () rep -&gt; SegOp () rep)
+-&gt; Maybe (SegOp () rep) -&gt; Maybe (SegOp () rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684411019"><span class="hs-identifier hs-var">par_op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName VName -&gt; SegOp () rep -&gt; SegOp () rep
+forall a. Substitute a =&gt; Map VName VName -&gt; a -&gt; a
+</span><a href="Futhark.Transform.Substitute.html#substituteNames"><span class="hs-identifier hs-var">substituteNames</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName VName
+</span><a href="#local-6989586621684411020"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684411018"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>  </span><span class="annot"><a href="Futhark.Transform.Substitute.html#substituteNames"><span class="hs-identifier hs-var">substituteNames</span></a></span><span> </span><span id="local-6989586621684411017"><span class="annot"><span class="annottext">Map VName VName
+</span><a href="#local-6989586621684411017"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684411016"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684411016"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><span class="annottext">op -&gt; MCOp rep op
+forall rep op. op -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">(op -&gt; MCOp rep op) -&gt; op -&gt; MCOp rep op
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map VName VName -&gt; op -&gt; op
+forall a. Substitute a =&gt; Map VName VName -&gt; a -&gt; a
+</span><a href="Futhark.Transform.Substitute.html#substituteNames"><span class="hs-identifier hs-var">substituteNames</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName VName
+</span><a href="#local-6989586621684411017"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684411016"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span id="local-6989586621684411308"><span id="local-6989586621684411309"><span class="hs-keyword">instance</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411309"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Transform.Rename.html#Rename"><span class="hs-identifier hs-type">Rename</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411308"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Transform.Rename.html#Rename"><span class="hs-identifier hs-type">Rename</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411309"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411308"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-67"></span><span>  </span><span id="local-6989586621684410988"><span class="annot"><span class="annottext">rename :: MCOp rep op -&gt; RenameM (MCOp rep op)
+</span><a href="Futhark.Transform.Rename.html#rename"><span class="hs-identifier hs-var hs-var hs-var hs-var">rename</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684410986"><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410986"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684410985"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410985"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op)
+-&gt; RenameM (Maybe (SegOp () rep))
+-&gt; RenameM (SegOp () rep -&gt; MCOp rep op)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep) -&gt; RenameM (Maybe (SegOp () rep))
+forall a. Rename a =&gt; a -&gt; RenameM a
+</span><a href="Futhark.Transform.Rename.html#rename"><span class="hs-identifier hs-var">rename</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410986"><span class="hs-identifier hs-var">par_op</span></a></span><span> </span><span class="annot"><span class="annottext">RenameM (SegOp () rep -&gt; MCOp rep op)
+-&gt; RenameM (SegOp () rep) -&gt; RenameM (MCOp rep op)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">SegOp () rep -&gt; RenameM (SegOp () rep)
+forall a. Rename a =&gt; a -&gt; RenameM a
+</span><a href="Futhark.Transform.Rename.html#rename"><span class="hs-identifier hs-var">rename</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410985"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><a href="Futhark.Transform.Rename.html#rename"><span class="hs-identifier hs-var">rename</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410984"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410984"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; MCOp rep op
+forall rep op. op -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">(op -&gt; MCOp rep op) -&gt; RenameM op -&gt; RenameM (MCOp rep op)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">op -&gt; RenameM op
+forall a. Rename a =&gt; a -&gt; RenameM a
+</span><a href="Futhark.Transform.Rename.html#rename"><span class="hs-identifier hs-var">rename</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410984"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span id="local-6989586621684411297"><span id="local-6989586621684411298"><span class="hs-keyword">instance</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411298"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#FreeIn"><span class="hs-identifier hs-type">FreeIn</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411297"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#FreeIn"><span class="hs-identifier hs-type">FreeIn</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411298"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411297"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-71"></span><span>  </span><span id="local-6989586621684410964"><span class="annot"><span class="annottext">freeIn' :: MCOp rep op -&gt; FV
+</span><a href="Futhark.IR.Prop.Names.html#freeIn%27"><span class="hs-identifier hs-var hs-var hs-var hs-var">freeIn'</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684410962"><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410962"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684410961"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410961"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep) -&gt; FV
+forall a. FreeIn a =&gt; a -&gt; FV
+</span><a href="Futhark.IR.Prop.Names.html#freeIn%27"><span class="hs-identifier hs-var">freeIn'</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410962"><span class="hs-identifier hs-var">par_op</span></a></span><span> </span><span class="annot"><span class="annottext">FV -&gt; FV -&gt; FV
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">SegOp () rep -&gt; FV
+forall a. FreeIn a =&gt; a -&gt; FV
+</span><a href="Futhark.IR.Prop.Names.html#freeIn%27"><span class="hs-identifier hs-var">freeIn'</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410961"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-72"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#freeIn%27"><span class="hs-identifier hs-var">freeIn'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410960"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410960"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; FV
+forall a. FreeIn a =&gt; a -&gt; FV
+</span><a href="Futhark.IR.Prop.Names.html#freeIn%27"><span class="hs-identifier hs-var">freeIn'</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410960"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span id="local-6989586621684411273"><span id="local-6989586621684411274"><span class="hs-keyword">instance</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411274"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.html#IsOp"><span class="hs-identifier hs-type">IsOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411273"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.html#IsOp"><span class="hs-identifier hs-type">IsOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411274"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411273"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-75"></span><span>  </span><span id="local-6989586621684410908"><span class="annot"><span class="annottext">safeOp :: MCOp rep op -&gt; Bool
+</span><a href="Futhark.IR.Prop.html#safeOp"><span class="hs-identifier hs-var hs-var hs-var hs-var">safeOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684410906"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410906"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegOp () rep -&gt; Bool
+forall op. IsOp op =&gt; op -&gt; Bool
+</span><a href="Futhark.IR.Prop.html#safeOp"><span class="hs-identifier hs-var">safeOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410906"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-76"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.html#safeOp"><span class="hs-identifier hs-var">safeOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410905"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410905"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; Bool
+forall op. IsOp op =&gt; op -&gt; Bool
+</span><a href="Futhark.IR.Prop.html#safeOp"><span class="hs-identifier hs-var">safeOp</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410905"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span>  </span><span id="local-6989586621684410894"><span class="annot"><span class="annottext">cheapOp :: MCOp rep op -&gt; Bool
+</span><a href="Futhark.IR.Prop.html#cheapOp"><span class="hs-identifier hs-var hs-var hs-var hs-var">cheapOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684410892"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410892"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegOp () rep -&gt; Bool
+forall op. IsOp op =&gt; op -&gt; Bool
+</span><a href="Futhark.IR.Prop.html#cheapOp"><span class="hs-identifier hs-var">cheapOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410892"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-79"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.html#cheapOp"><span class="hs-identifier hs-var">cheapOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410891"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410891"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; Bool
+forall op. IsOp op =&gt; op -&gt; Bool
+</span><a href="Futhark.IR.Prop.html#cheapOp"><span class="hs-identifier hs-var">cheapOp</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410891"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span id="local-6989586621684411275"><span id="local-6989586621684411276"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#TypedOp"><span class="hs-identifier hs-type">TypedOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411276"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#TypedOp"><span class="hs-identifier hs-type">TypedOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411275"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411276"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-82"></span><span>  </span><span id="local-6989586621684410881"><span class="annot"><span class="annottext">opType :: forall t (m :: * -&gt; *). HasScope t m =&gt; MCOp rep op -&gt; m [ExtType]
+</span><a href="Futhark.IR.Prop.TypeOf.html#opType"><span class="hs-identifier hs-var hs-var hs-var hs-var">opType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684410879"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410879"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegOp () rep -&gt; m [ExtType]
+forall op t (m :: * -&gt; *).
+(TypedOp op, HasScope t m) =&gt;
+op -&gt; m [ExtType]
+</span><a href="Futhark.IR.Prop.TypeOf.html#opType"><span class="hs-identifier hs-var">opType</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410879"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-83"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#opType"><span class="hs-identifier hs-var">opType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410878"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410878"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; m [ExtType]
+forall op t (m :: * -&gt; *).
+(TypedOp op, HasScope t m) =&gt;
+op -&gt; m [ExtType]
+</span><a href="Futhark.IR.Prop.TypeOf.html#opType"><span class="hs-identifier hs-var">opType</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410878"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-84"></span><span>
+</span><span id="line-85"></span><span id="local-6989586621684411252"><span id="local-6989586621684411253"><span class="hs-keyword">instance</span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#Aliased"><span class="hs-identifier hs-type">Aliased</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411253"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#AliasedOp"><span class="hs-identifier hs-type">AliasedOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411252"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411253"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-87"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#AliasedOp"><span class="hs-identifier hs-type">AliasedOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411253"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411252"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-89"></span><span>  </span><span id="local-6989586621684410855"><span class="annot"><span class="annottext">opAliases :: MCOp rep op -&gt; [Names]
+</span><a href="Futhark.IR.Prop.Aliases.html#opAliases"><span class="hs-identifier hs-var hs-var hs-var hs-var">opAliases</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684410853"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410853"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegOp () rep -&gt; [Names]
+forall op. AliasedOp op =&gt; op -&gt; [Names]
+</span><a href="Futhark.IR.Prop.Aliases.html#opAliases"><span class="hs-identifier hs-var">opAliases</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410853"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-90"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#opAliases"><span class="hs-identifier hs-var">opAliases</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410852"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410852"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; [Names]
+forall op. AliasedOp op =&gt; op -&gt; [Names]
+</span><a href="Futhark.IR.Prop.Aliases.html#opAliases"><span class="hs-identifier hs-var">opAliases</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410852"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span>  </span><span id="local-6989586621684410841"><span class="annot"><span class="annottext">consumedInOp :: MCOp rep op -&gt; Names
+</span><a href="Futhark.IR.Prop.Aliases.html#consumedInOp"><span class="hs-identifier hs-var hs-var hs-var hs-var">consumedInOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684410839"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410839"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegOp () rep -&gt; Names
+forall op. AliasedOp op =&gt; op -&gt; Names
+</span><a href="Futhark.IR.Prop.Aliases.html#consumedInOp"><span class="hs-identifier hs-var">consumedInOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410839"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-93"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#consumedInOp"><span class="hs-identifier hs-var">consumedInOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410838"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410838"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; Names
+forall op. AliasedOp op =&gt; op -&gt; Names
+</span><a href="Futhark.IR.Prop.Aliases.html#consumedInOp"><span class="hs-identifier hs-var">consumedInOp</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410838"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span id="local-6989586621684411238"><span id="local-6989586621684411239"><span class="hs-keyword">instance</span><span>
+</span><span id="line-96"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411239"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411238"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411239"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-97"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411239"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411238"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-99"></span><span>  </span><span class="hs-keyword">type</span><span> </span><span id="OpWithAliases"><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#OpWithAliases"><span class="hs-identifier hs-var">OpWithAliases</span></a></span></span><span> </span><span id="local-6989586621684411238"><span id="local-6989586621684411239"><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411239"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411238"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411239"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#OpWithAliases"><span class="hs-identifier hs-type">OpWithAliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411238"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span>  </span><span id="local-6989586621684410801"><span class="annot"><span class="annottext">addOpAliases :: AliasTable -&gt; MCOp rep op -&gt; OpWithAliases (MCOp rep op)
+</span><a href="Futhark.IR.Prop.Aliases.html#addOpAliases"><span class="hs-identifier hs-var hs-var hs-var hs-var">addOpAliases</span></a></span></span><span> </span><span id="local-6989586621684410799"><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684410799"><span class="hs-identifier hs-var">aliases</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684410798"><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410798"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684410797"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410797"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-102"></span><span>    </span><span class="annot"><span class="annottext">Maybe (SegOp () (Aliases rep))
+-&gt; SegOp () (Aliases rep) -&gt; MCOp (Aliases rep) (OpWithAliases op)
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AliasTable -&gt; SegOp () rep -&gt; OpWithAliases (SegOp () rep)
+forall op. CanBeAliased op =&gt; AliasTable -&gt; op -&gt; OpWithAliases op
+</span><a href="Futhark.IR.Prop.Aliases.html#addOpAliases"><span class="hs-identifier hs-var">addOpAliases</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684410799"><span class="hs-identifier hs-var">aliases</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp () rep -&gt; SegOp () (Aliases rep))
+-&gt; Maybe (SegOp () rep) -&gt; Maybe (SegOp () (Aliases rep))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410798"><span class="hs-identifier hs-var">par_op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AliasTable -&gt; SegOp () rep -&gt; OpWithAliases (SegOp () rep)
+forall op. CanBeAliased op =&gt; AliasTable -&gt; op -&gt; OpWithAliases op
+</span><a href="Futhark.IR.Prop.Aliases.html#addOpAliases"><span class="hs-identifier hs-var">addOpAliases</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684410799"><span class="hs-identifier hs-var">aliases</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410797"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-103"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#addOpAliases"><span class="hs-identifier hs-var">addOpAliases</span></a></span><span> </span><span id="local-6989586621684410796"><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684410796"><span class="hs-identifier hs-var">aliases</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410795"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410795"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-104"></span><span>    </span><span class="annot"><span class="annottext">OpWithAliases op -&gt; MCOp (Aliases rep) (OpWithAliases op)
+forall rep op. op -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">(OpWithAliases op -&gt; MCOp (Aliases rep) (OpWithAliases op))
+-&gt; OpWithAliases op -&gt; MCOp (Aliases rep) (OpWithAliases op)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; op -&gt; OpWithAliases op
+forall op. CanBeAliased op =&gt; AliasTable -&gt; op -&gt; OpWithAliases op
+</span><a href="Futhark.IR.Prop.Aliases.html#addOpAliases"><span class="hs-identifier hs-var">addOpAliases</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684410796"><span class="hs-identifier hs-var">aliases</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410795"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span>  </span><span id="local-6989586621684410779"><span class="annot"><span class="annottext">removeOpAliases :: OpWithAliases (MCOp rep op) -&gt; MCOp rep op
+</span><a href="Futhark.IR.Prop.Aliases.html#removeOpAliases"><span class="hs-identifier hs-var hs-var hs-var hs-var">removeOpAliases</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684410777"><span class="annot"><span class="annottext">Maybe (SegOp () (Aliases rep))
+</span><a href="#local-6989586621684410777"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684410776"><span class="annot"><span class="annottext">SegOp () (Aliases rep)
+</span><a href="#local-6989586621684410776"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-107"></span><span>    </span><span class="annot"><span class="annottext">Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegOp () (Aliases rep) -&gt; SegOp () rep
+forall op. CanBeAliased op =&gt; OpWithAliases op -&gt; op
+</span><a href="Futhark.IR.Prop.Aliases.html#removeOpAliases"><span class="hs-identifier hs-var">removeOpAliases</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp () (Aliases rep) -&gt; SegOp () rep)
+-&gt; Maybe (SegOp () (Aliases rep)) -&gt; Maybe (SegOp () rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () (Aliases rep))
+</span><a href="#local-6989586621684410777"><span class="hs-identifier hs-var">par_op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OpWithAliases (SegOp () rep) -&gt; SegOp () rep
+forall op. CanBeAliased op =&gt; OpWithAliases op -&gt; op
+</span><a href="Futhark.IR.Prop.Aliases.html#removeOpAliases"><span class="hs-identifier hs-var">removeOpAliases</span></a></span><span> </span><span class="annot"><span class="annottext">OpWithAliases (SegOp () rep)
+SegOp () (Aliases rep)
+</span><a href="#local-6989586621684410776"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-108"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#removeOpAliases"><span class="hs-identifier hs-var">removeOpAliases</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410775"><span class="annot"><span class="annottext">OpWithAliases op
+</span><a href="#local-6989586621684410775"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-109"></span><span>    </span><span class="annot"><span class="annottext">op -&gt; MCOp rep op
+forall rep op. op -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">(op -&gt; MCOp rep op) -&gt; op -&gt; MCOp rep op
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">OpWithAliases op -&gt; op
+forall op. CanBeAliased op =&gt; OpWithAliases op -&gt; op
+</span><a href="Futhark.IR.Prop.Aliases.html#removeOpAliases"><span class="hs-identifier hs-var">removeOpAliases</span></a></span><span> </span><span class="annot"><span class="annottext">OpWithAliases op
+</span><a href="#local-6989586621684410775"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span id="local-6989586621684411226"><span id="local-6989586621684411227"><span class="hs-keyword">instance</span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#CanBeWise"><span class="hs-identifier hs-type">CanBeWise</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411227"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#CanBeWise"><span class="hs-identifier hs-type">CanBeWise</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411226"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411227"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-113"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#CanBeWise"><span class="hs-identifier hs-type">CanBeWise</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411227"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411226"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-115"></span><span>  </span><span class="hs-keyword">type</span><span> </span><span id="OpWithWisdom"><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#OpWithWisdom"><span class="hs-identifier hs-var">OpWithWisdom</span></a></span></span><span> </span><span id="local-6989586621684411226"><span id="local-6989586621684411227"><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411227"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411226"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411227"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#OpWithWisdom"><span class="hs-identifier hs-type">OpWithWisdom</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411226"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span>  </span><span id="local-6989586621684410732"><span class="annot"><span class="annottext">removeOpWisdom :: OpWithWisdom (MCOp rep op) -&gt; MCOp rep op
+</span><a href="Futhark.Optimise.Simplify.Rep.html#removeOpWisdom"><span class="hs-identifier hs-var hs-var hs-var hs-var">removeOpWisdom</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684410730"><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+</span><a href="#local-6989586621684410730"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684410729"><span class="annot"><span class="annottext">SegOp () (Wise rep)
+</span><a href="#local-6989586621684410729"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-118"></span><span>    </span><span class="annot"><span class="annottext">Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegOp () (Wise rep) -&gt; SegOp () rep
+forall op. CanBeWise op =&gt; OpWithWisdom op -&gt; op
+</span><a href="Futhark.Optimise.Simplify.Rep.html#removeOpWisdom"><span class="hs-identifier hs-var">removeOpWisdom</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp () (Wise rep) -&gt; SegOp () rep)
+-&gt; Maybe (SegOp () (Wise rep)) -&gt; Maybe (SegOp () rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+</span><a href="#local-6989586621684410730"><span class="hs-identifier hs-var">par_op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">OpWithWisdom (SegOp () rep) -&gt; SegOp () rep
+forall op. CanBeWise op =&gt; OpWithWisdom op -&gt; op
+</span><a href="Futhark.Optimise.Simplify.Rep.html#removeOpWisdom"><span class="hs-identifier hs-var">removeOpWisdom</span></a></span><span> </span><span class="annot"><span class="annottext">OpWithWisdom (SegOp () rep)
+SegOp () (Wise rep)
+</span><a href="#local-6989586621684410729"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-119"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#removeOpWisdom"><span class="hs-identifier hs-var">removeOpWisdom</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410728"><span class="annot"><span class="annottext">OpWithWisdom op
+</span><a href="#local-6989586621684410728"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-120"></span><span>    </span><span class="annot"><span class="annottext">op -&gt; MCOp rep op
+forall rep op. op -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">(op -&gt; MCOp rep op) -&gt; op -&gt; MCOp rep op
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">OpWithWisdom op -&gt; op
+forall op. CanBeWise op =&gt; OpWithWisdom op -&gt; op
+</span><a href="Futhark.Optimise.Simplify.Rep.html#removeOpWisdom"><span class="hs-identifier hs-var">removeOpWisdom</span></a></span><span> </span><span class="annot"><span class="annottext">OpWithWisdom op
+</span><a href="#local-6989586621684410728"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span>  </span><span id="local-6989586621684410714"><span class="annot"><span class="annottext">addOpWisdom :: MCOp rep op -&gt; OpWithWisdom (MCOp rep op)
+</span><a href="Futhark.Optimise.Simplify.Rep.html#addOpWisdom"><span class="hs-identifier hs-var hs-var hs-var hs-var">addOpWisdom</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684410712"><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410712"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684410711"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410711"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-123"></span><span>    </span><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+-&gt; SegOp () (Wise rep) -&gt; MCOp (Wise rep) (OpWithWisdom op)
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegOp () rep -&gt; SegOp () (Wise rep)
+forall op. CanBeWise op =&gt; op -&gt; OpWithWisdom op
+</span><a href="Futhark.Optimise.Simplify.Rep.html#addOpWisdom"><span class="hs-identifier hs-var">addOpWisdom</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp () rep -&gt; SegOp () (Wise rep))
+-&gt; Maybe (SegOp () rep) -&gt; Maybe (SegOp () (Wise rep))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410712"><span class="hs-identifier hs-var">par_op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegOp () rep -&gt; OpWithWisdom (SegOp () rep)
+forall op. CanBeWise op =&gt; op -&gt; OpWithWisdom op
+</span><a href="Futhark.Optimise.Simplify.Rep.html#addOpWisdom"><span class="hs-identifier hs-var">addOpWisdom</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410711"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#addOpWisdom"><span class="hs-identifier hs-var">addOpWisdom</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410710"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410710"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-125"></span><span>    </span><span class="annot"><span class="annottext">OpWithWisdom op -&gt; MCOp (Wise rep) (OpWithWisdom op)
+forall rep op. op -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">(OpWithWisdom op -&gt; MCOp (Wise rep) (OpWithWisdom op))
+-&gt; OpWithWisdom op -&gt; MCOp (Wise rep) (OpWithWisdom op)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">op -&gt; OpWithWisdom op
+forall op. CanBeWise op =&gt; op -&gt; OpWithWisdom op
+</span><a href="Futhark.Optimise.Simplify.Rep.html#addOpWisdom"><span class="hs-identifier hs-var">addOpWisdom</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410710"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span id="local-6989586621684411214"><span id="local-6989586621684411215"><span class="hs-keyword">instance</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411215"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#IndexOp"><span class="hs-identifier hs-type">ST.IndexOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411214"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#IndexOp"><span class="hs-identifier hs-type">ST.IndexOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411215"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411214"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-128"></span><span>  </span><span id="local-6989586621684410693"><span class="annot"><span class="annottext">indexOp :: forall rep.
+(ASTRep rep, IndexOp (Op rep)) =&gt;
+SymbolTable rep
+-&gt; Int -&gt; MCOp rep op -&gt; [TPrimExp Int64 VName] -&gt; Maybe Indexed
+</span><a href="Futhark.Analysis.SymbolTable.html#indexOp"><span class="hs-identifier hs-var hs-var hs-var hs-var">indexOp</span></a></span></span><span> </span><span id="local-6989586621684410691"><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684410691"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684410690"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684410690"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684410689"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410689"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684410688"><span class="annot"><span class="annottext">[TPrimExp Int64 VName]
+</span><a href="#local-6989586621684410688"><span class="hs-identifier hs-var">is</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+-&gt; Int -&gt; SegOp () rep -&gt; [TPrimExp Int64 VName] -&gt; Maybe Indexed
+forall op rep.
+(IndexOp op, ASTRep rep, IndexOp (Op rep)) =&gt;
+SymbolTable rep
+-&gt; Int -&gt; op -&gt; [TPrimExp Int64 VName] -&gt; Maybe Indexed
+</span><a href="Futhark.Analysis.SymbolTable.html#indexOp"><span class="hs-identifier hs-var">ST.indexOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684410691"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684410690"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410689"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">[TPrimExp Int64 VName]
+</span><a href="#local-6989586621684410688"><span class="hs-identifier hs-var">is</span></a></span><span>
+</span><span id="line-129"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#indexOp"><span class="hs-identifier hs-var">indexOp</span></a></span><span> </span><span id="local-6989586621684410687"><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684410687"><span class="hs-identifier hs-var">vtable</span></a></span></span><span> </span><span id="local-6989586621684410686"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684410686"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410685"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410685"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684410684"><span class="annot"><span class="annottext">[TPrimExp Int64 VName]
+</span><a href="#local-6989586621684410684"><span class="hs-identifier hs-var">is</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+-&gt; Int -&gt; op -&gt; [TPrimExp Int64 VName] -&gt; Maybe Indexed
+forall op rep.
+(IndexOp op, ASTRep rep, IndexOp (Op rep)) =&gt;
+SymbolTable rep
+-&gt; Int -&gt; op -&gt; [TPrimExp Int64 VName] -&gt; Maybe Indexed
+</span><a href="Futhark.Analysis.SymbolTable.html#indexOp"><span class="hs-identifier hs-var">ST.indexOp</span></a></span><span> </span><span class="annot"><span class="annottext">SymbolTable rep
+</span><a href="#local-6989586621684410687"><span class="hs-identifier hs-var">vtable</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684410686"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410685"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">[TPrimExp Int64 VName]
+</span><a href="#local-6989586621684410684"><span class="hs-identifier hs-var">is</span></a></span></span></span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span id="local-6989586621684411277"><span id="local-6989586621684411278"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684410679"><span id="local-6989586621684410681"><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Pretty.html#PrettyRep"><span class="hs-identifier hs-type">PrettyRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411278"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Pretty</span></span><span> </span><span class="annot"><a href="#local-6989586621684411277"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Pretty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411278"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411277"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-132"></span><span>  </span><span id="local-6989586621684410668"><span class="annot"><span class="annottext">ppr :: MCOp rep op -&gt; Doc
+</span><a href="#local-6989586621684410668"><span class="hs-identifier hs-var hs-var hs-var hs-var">ppr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span id="local-6989586621684410667"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410667"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SegOp () rep -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410667"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-133"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684410666"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410666"><span class="hs-identifier hs-var">par_op</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684410665"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410665"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-134"></span><span>    </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot;par&quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;+&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; Doc -&gt; Doc
+</span><a href="Futhark.Util.Pretty.html#nestedBlock"><span class="hs-identifier hs-var">nestedBlock</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;{&quot;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;}&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegOp () rep -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410666"><span class="hs-identifier hs-var">par_op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>      </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;/&gt;</span></span><span> </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot;seq&quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;+&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; Doc -&gt; Doc
+</span><a href="Futhark.Util.Pretty.html#nestedBlock"><span class="hs-identifier hs-var">nestedBlock</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;{&quot;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;}&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegOp () rep -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410665"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-136"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410664"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410664"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410664"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-137"></span><span>
+</span><span id="line-138"></span><span id="local-6989586621684411200"><span id="local-6989586621684411201"><span class="hs-keyword">instance</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.Metrics.html#OpMetrics"><span class="hs-identifier hs-type">OpMetrics</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411201"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Analysis.Metrics.html#OpMetrics"><span class="hs-identifier hs-type">OpMetrics</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411200"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.Metrics.html#OpMetrics"><span class="hs-identifier hs-type">OpMetrics</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411201"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411200"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-139"></span><span>  </span><span id="local-6989586621684410648"><span class="annot"><span class="annottext">opMetrics :: MCOp rep op -&gt; MetricsM ()
+</span><a href="Futhark.Analysis.Metrics.html#opMetrics"><span class="hs-identifier hs-var hs-var hs-var hs-var">opMetrics</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684410646"><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410646"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684410645"><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410645"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep) -&gt; MetricsM ()
+forall op. OpMetrics op =&gt; op -&gt; MetricsM ()
+</span><a href="Futhark.Analysis.Metrics.html#opMetrics"><span class="hs-identifier hs-var">opMetrics</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () rep)
+</span><a href="#local-6989586621684410646"><span class="hs-identifier hs-var">par_op</span></a></span><span> </span><span class="annot"><span class="annottext">MetricsM () -&gt; MetricsM () -&gt; MetricsM ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">SegOp () rep -&gt; MetricsM ()
+forall op. OpMetrics op =&gt; op -&gt; MetricsM ()
+</span><a href="Futhark.Analysis.Metrics.html#opMetrics"><span class="hs-identifier hs-var">opMetrics</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () rep
+</span><a href="#local-6989586621684410645"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-140"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.Metrics.html#opMetrics"><span class="hs-identifier hs-var">opMetrics</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410644"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410644"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; MetricsM ()
+forall op. OpMetrics op =&gt; op -&gt; MetricsM ()
+</span><a href="Futhark.Analysis.Metrics.html#opMetrics"><span class="hs-identifier hs-var">opMetrics</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410644"><span class="hs-identifier hs-var">op</span></a></span></span></span><span>
+</span><span id="line-141"></span><span>
+</span><span id="line-142"></span><span id="local-6989586621684411192"><span id="local-6989586621684411194"><span class="annot"><a href="Futhark.IR.MC.Op.html#typeCheckMCOp"><span class="hs-identifier hs-type">typeCheckMCOp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-143"></span><span>  </span><span class="annot"><a href="Futhark.IR.TypeCheck.html#Checkable"><span class="hs-identifier hs-type">TC.Checkable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411194"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-144"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684411192"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.TypeCheck.html#TypeM"><span class="hs-identifier hs-type">TC.TypeM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411194"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-145"></span><span>  </span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411194"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684411192"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-146"></span><span>  </span><span class="annot"><a href="Futhark.IR.TypeCheck.html#TypeM"><span class="hs-identifier hs-type">TC.TypeM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411194"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-147"></span><span id="typeCheckMCOp"><span class="annot"><span class="annottext">typeCheckMCOp :: forall rep op.
+Checkable rep =&gt;
+(op -&gt; TypeM rep ()) -&gt; MCOp (Aliases rep) op -&gt; TypeM rep ()
+</span><a href="Futhark.IR.MC.Op.html#typeCheckMCOp"><span class="hs-identifier hs-var hs-var">typeCheckMCOp</span></a></span></span><span> </span><span class="annot"><span class="annottext">op -&gt; TypeM rep ()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684410633"><span class="annot"><span class="annottext">SegOp () (Aliases rep)
+</span><a href="#local-6989586621684410633"><span class="hs-identifier hs-var">par_op</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684410632"><span class="annot"><span class="annottext">SegOp () (Aliases rep)
+</span><a href="#local-6989586621684410632"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-148"></span><span>  </span><span class="hs-comment">-- It is valid for the same array to be consumed in both par_op and op.</span><span>
+</span><span id="line-149"></span><span>  </span><span class="annot"><span class="annottext">((), ())
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(() -&gt; TypeM rep ()) -&gt; SegOp () (Aliases rep) -&gt; TypeM rep ()
+forall rep lvl.
+Checkable rep =&gt;
+(lvl -&gt; TypeM rep ()) -&gt; SegOp lvl (Aliases rep) -&gt; TypeM rep ()
+</span><a href="Futhark.IR.SegOp.html#typeCheckSegOp"><span class="hs-identifier hs-var">typeCheckSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">() -&gt; TypeM rep ()
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">SegOp () (Aliases rep)
+</span><a href="#local-6989586621684410633"><span class="hs-identifier hs-var">par_op</span></a></span><span> </span><span class="annot"><span class="annottext">TypeM rep () -&gt; TypeM rep () -&gt; TypeM rep ((), ())
+forall rep a b. TypeM rep a -&gt; TypeM rep b -&gt; TypeM rep (a, b)
+</span><a href="Futhark.IR.TypeCheck.html#alternative"><span class="hs-operator hs-var">`TC.alternative`</span></a></span><span> </span><span class="annot"><span class="annottext">(() -&gt; TypeM rep ()) -&gt; SegOp () (Aliases rep) -&gt; TypeM rep ()
+forall rep lvl.
+Checkable rep =&gt;
+(lvl -&gt; TypeM rep ()) -&gt; SegOp lvl (Aliases rep) -&gt; TypeM rep ()
+</span><a href="Futhark.IR.SegOp.html#typeCheckSegOp"><span class="hs-identifier hs-var">typeCheckSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">() -&gt; TypeM rep ()
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">SegOp () (Aliases rep)
+</span><a href="#local-6989586621684410632"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-150"></span><span>  </span><span class="annot"><span class="annottext">() -&gt; TypeM rep ()
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span class="annot"><a href="Futhark.IR.MC.Op.html#typeCheckMCOp"><span class="hs-identifier hs-var">typeCheckMCOp</span></a></span><span> </span><span class="annot"><span class="annottext">op -&gt; TypeM rep ()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () (Aliases rep))
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span id="local-6989586621684410629"><span class="annot"><span class="annottext">SegOp () (Aliases rep)
+</span><a href="#local-6989586621684410629"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-152"></span><span>  </span><span class="annot"><span class="annottext">(() -&gt; TypeM rep ()) -&gt; SegOp () (Aliases rep) -&gt; TypeM rep ()
+forall rep lvl.
+Checkable rep =&gt;
+(lvl -&gt; TypeM rep ()) -&gt; SegOp lvl (Aliases rep) -&gt; TypeM rep ()
+</span><a href="Futhark.IR.SegOp.html#typeCheckSegOp"><span class="hs-identifier hs-var">typeCheckSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">() -&gt; TypeM rep ()
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">SegOp () (Aliases rep)
+</span><a href="#local-6989586621684410629"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-153"></span><span class="annot"><a href="Futhark.IR.MC.Op.html#typeCheckMCOp"><span class="hs-identifier hs-var">typeCheckMCOp</span></a></span><span> </span><span id="local-6989586621684410628"><span class="annot"><span class="annottext">op -&gt; TypeM rep ()
+</span><a href="#local-6989586621684410628"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410627"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410627"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">op -&gt; TypeM rep ()
+</span><a href="#local-6989586621684410628"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410627"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-154"></span><span>
+</span><span id="line-155"></span><span id="local-6989586621684411178"><span id="local-6989586621684411181"><span class="annot"><a href="Futhark.IR.MC.Op.html#simplifyMCOp"><span class="hs-identifier hs-type">simplifyMCOp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-156"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimplifiableRep"><span class="hs-identifier hs-type">Engine.SimplifiableRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411181"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-157"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#BodyDec"><span class="hs-identifier hs-type">BodyDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411181"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-158"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-159"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimplifyOp"><span class="hs-identifier hs-type">Simplify.SimplifyOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411181"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411178"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-160"></span><span>  </span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411181"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684411178"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-161"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimpleM"><span class="hs-identifier hs-type">Engine.SimpleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411181"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#MCOp"><span class="hs-identifier hs-type">MCOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411181"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684411178"><span class="hs-identifier hs-type">op</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684411181"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-162"></span><span id="simplifyMCOp"><span class="annot"><span class="annottext">simplifyMCOp :: forall rep op.
+(SimplifiableRep rep, BodyDec rep ~ ()) =&gt;
+SimplifyOp rep op
+-&gt; MCOp (Wise rep) op
+-&gt; SimpleM rep (MCOp (Wise rep) op, Stms (Wise rep))
+</span><a href="Futhark.IR.MC.Op.html#simplifyMCOp"><span class="hs-identifier hs-var hs-var">simplifyMCOp</span></a></span></span><span> </span><span id="local-6989586621684410591"><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><a href="#local-6989586621684410591"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-type">OtherOp</span></a></span><span> </span><span id="local-6989586621684410590"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410590"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-163"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684410589"><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410589"><span class="hs-identifier hs-var">op'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684410588"><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684410588"><span class="hs-identifier hs-var">stms</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><a href="#local-6989586621684410591"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410590"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-164"></span><span>  </span><span class="annot"><span class="annottext">(MCOp (Wise rep) op, Stms (Wise rep))
+-&gt; SimpleM rep (MCOp (Wise rep) op, Stms (Wise rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">op -&gt; MCOp (Wise rep) op
+forall rep op. op -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span> </span><span class="annot"><span class="annottext">op
+</span><a href="#local-6989586621684410589"><span class="hs-identifier hs-var">op'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684410588"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-165"></span><span class="annot"><a href="Futhark.IR.MC.Op.html#simplifyMCOp"><span class="hs-identifier hs-var">simplifyMCOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplifyOp rep op
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-type">ParOp</span></a></span><span> </span><span id="local-6989586621684410587"><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+</span><a href="#local-6989586621684410587"><span class="hs-identifier hs-var">par_op</span></a></span></span><span> </span><span id="local-6989586621684410586"><span class="annot"><span class="annottext">SegOp () (Wise rep)
+</span><a href="#local-6989586621684410586"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-166"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684410585"><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+</span><a href="#local-6989586621684410585"><span class="hs-identifier hs-var">par_op'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684410584"><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684410584"><span class="hs-identifier hs-var">par_op_hoisted</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-167"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+</span><a href="#local-6989586621684410587"><span class="hs-identifier hs-var">par_op</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-168"></span><span>      </span><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Maybe (SegOp () (Wise rep)), Stms (Wise rep))
+-&gt; SimpleM rep (Maybe (SegOp () (Wise rep)), Stms (Wise rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-169"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684410583"><span class="annot"><span class="annottext">SegOp () (Wise rep)
+</span><a href="#local-6989586621684410583"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(SegOp () (Wise rep) -&gt; Maybe (SegOp () (Wise rep)))
+-&gt; (SegOp () (Wise rep), Stms (Wise rep))
+-&gt; (Maybe (SegOp () (Wise rep)), Stms (Wise rep))
+forall (p :: * -&gt; * -&gt; *) a b c.
+Bifunctor p =&gt;
+(a -&gt; b) -&gt; p a c -&gt; p b c
+</span><span class="hs-identifier hs-var">first</span></span><span> </span><span class="annot"><span class="annottext">SegOp () (Wise rep) -&gt; Maybe (SegOp () (Wise rep))
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">((SegOp () (Wise rep), Stms (Wise rep))
+ -&gt; (Maybe (SegOp () (Wise rep)), Stms (Wise rep)))
+-&gt; SimpleM rep (SegOp () (Wise rep), Stms (Wise rep))
+-&gt; SimpleM rep (Maybe (SegOp () (Wise rep)), Stms (Wise rep))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SegOp () (Wise rep)
+-&gt; SimpleM rep (SegOp () (Wise rep), Stms (Wise rep))
+forall rep lvl.
+(SimplifiableRep rep, BodyDec rep ~ (), Simplifiable lvl) =&gt;
+SegOp lvl (Wise rep)
+-&gt; SimpleM rep (SegOp lvl (Wise rep), Stms (Wise rep))
+</span><a href="Futhark.IR.SegOp.html#simplifySegOp"><span class="hs-identifier hs-var">simplifySegOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () (Wise rep)
+</span><a href="#local-6989586621684410583"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-170"></span><span>
+</span><span id="line-171"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684410581"><span class="annot"><span class="annottext">SegOp () (Wise rep)
+</span><a href="#local-6989586621684410581"><span class="hs-identifier hs-var">op'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684410580"><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684410580"><span class="hs-identifier hs-var">op_hoisted</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SegOp () (Wise rep)
+-&gt; SimpleM rep (SegOp () (Wise rep), Stms (Wise rep))
+forall rep lvl.
+(SimplifiableRep rep, BodyDec rep ~ (), Simplifiable lvl) =&gt;
+SegOp lvl (Wise rep)
+-&gt; SimpleM rep (SegOp lvl (Wise rep), Stms (Wise rep))
+</span><a href="Futhark.IR.SegOp.html#simplifySegOp"><span class="hs-identifier hs-var">simplifySegOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () (Wise rep)
+</span><a href="#local-6989586621684410586"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><span class="annottext">(MCOp (Wise rep) op, Stms (Wise rep))
+-&gt; SimpleM rep (MCOp (Wise rep) op, Stms (Wise rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+-&gt; SegOp () (Wise rep) -&gt; MCOp (Wise rep) op
+forall rep op. Maybe (SegOp () rep) -&gt; SegOp () rep -&gt; MCOp rep op
+</span><a href="Futhark.IR.MC.Op.html#ParOp"><span class="hs-identifier hs-var">ParOp</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (SegOp () (Wise rep))
+</span><a href="#local-6989586621684410585"><span class="hs-identifier hs-var">par_op'</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp () (Wise rep)
+</span><a href="#local-6989586621684410581"><span class="hs-identifier hs-var">op'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684410584"><span class="hs-identifier hs-var">par_op_hoisted</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep) -&gt; Stms (Wise rep) -&gt; Stms (Wise rep)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Stms (Wise rep)
+</span><a href="#local-6989586621684410580"><span class="hs-identifier hs-var">op_hoisted</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-174"></span></pre></body></html>

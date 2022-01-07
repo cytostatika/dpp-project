@@ -1,0 +1,964 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE TupleSections #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Analysis.HORep.MapNest</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#Nesting"><span class="hs-identifier">Nesting</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier">MapNest</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#typeOf"><span class="hs-identifier">typeOf</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#params"><span class="hs-identifier">params</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#inputs"><span class="hs-identifier">inputs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#setInputs"><span class="hs-identifier">setInputs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#fromSOAC"><span class="hs-identifier">fromSOAC</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#toSOAC"><span class="hs-identifier">toSOAC</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-16"></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">find</span></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html"><span class="hs-identifier">Futhark.Analysis.HORep.SOAC</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#SOAC"><span class="hs-identifier">SOAC</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html"><span class="hs-identifier">Futhark.Analysis.HORep.SOAC</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">SOAC</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Construct.html"><span class="hs-identifier">Futhark.Construct</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier">typeOf</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html"><span class="hs-identifier">Futhark.IR.SOACS.SOAC</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Futhark</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Transform.Substitute.html"><span class="hs-identifier">Futhark.Transform.Substitute</span></a></span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">data</span><span> </span><span id="Nesting"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#Nesting"><span class="hs-identifier hs-var">Nesting</span></a></span></span><span> </span><span id="local-6989586621684454704"><span class="annot"><a href="#local-6989586621684454704"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Nesting"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#Nesting"><span class="hs-identifier hs-var">Nesting</span></a></span></span><span>
+</span><span id="line-28"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="nestingParamNames"><span class="annot"><span class="annottext">forall rep. Nesting rep -&gt; [VName]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingParamNames"><span class="hs-identifier hs-var hs-var">nestingParamNames</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-29"></span><span>    </span><span id="nestingResult"><span class="annot"><span class="annottext">forall rep. Nesting rep -&gt; [VName]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingResult"><span class="hs-identifier hs-var hs-var">nestingResult</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-30"></span><span>    </span><span id="nestingReturnType"><span class="annot"><span class="annottext">forall rep. Nesting rep -&gt; [Type]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingReturnType"><span class="hs-identifier hs-var hs-var">nestingReturnType</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-31"></span><span>    </span><span id="nestingWidth"><span class="annot"><span class="annottext">forall rep. Nesting rep -&gt; SubExp
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingWidth"><span class="hs-identifier hs-var hs-var">nestingWidth</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span>
+</span><span id="line-32"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-33"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684454448"><span id="local-6989586621684454458"><span class="annot"><span class="annottext">Nesting rep -&gt; Nesting rep -&gt; Bool
+(Nesting rep -&gt; Nesting rep -&gt; Bool)
+-&gt; (Nesting rep -&gt; Nesting rep -&gt; Bool) -&gt; Eq (Nesting rep)
+forall rep. Nesting rep -&gt; Nesting rep -&gt; Bool
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+/= :: Nesting rep -&gt; Nesting rep -&gt; Bool
+$c/= :: forall rep. Nesting rep -&gt; Nesting rep -&gt; Bool
+== :: Nesting rep -&gt; Nesting rep -&gt; Bool
+$c== :: forall rep. Nesting rep -&gt; Nesting rep -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684454406"><span id="local-6989586621684454408"><span id="local-6989586621684454411"><span id="local-6989586621684454414"><span id="local-6989586621684454417"><span id="local-6989586621684454426"><span id="local-6989586621684454436"><span class="annot"><span class="annottext">Eq (Nesting rep)
+Eq (Nesting rep)
+-&gt; (Nesting rep -&gt; Nesting rep -&gt; Ordering)
+-&gt; (Nesting rep -&gt; Nesting rep -&gt; Bool)
+-&gt; (Nesting rep -&gt; Nesting rep -&gt; Bool)
+-&gt; (Nesting rep -&gt; Nesting rep -&gt; Bool)
+-&gt; (Nesting rep -&gt; Nesting rep -&gt; Bool)
+-&gt; (Nesting rep -&gt; Nesting rep -&gt; Nesting rep)
+-&gt; (Nesting rep -&gt; Nesting rep -&gt; Nesting rep)
+-&gt; Ord (Nesting rep)
+Nesting rep -&gt; Nesting rep -&gt; Bool
+Nesting rep -&gt; Nesting rep -&gt; Ordering
+Nesting rep -&gt; Nesting rep -&gt; Nesting rep
+forall rep. Eq (Nesting rep)
+forall a.
+Eq a
+-&gt; (a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+forall rep. Nesting rep -&gt; Nesting rep -&gt; Bool
+forall rep. Nesting rep -&gt; Nesting rep -&gt; Ordering
+forall rep. Nesting rep -&gt; Nesting rep -&gt; Nesting rep
+min :: Nesting rep -&gt; Nesting rep -&gt; Nesting rep
+$cmin :: forall rep. Nesting rep -&gt; Nesting rep -&gt; Nesting rep
+max :: Nesting rep -&gt; Nesting rep -&gt; Nesting rep
+$cmax :: forall rep. Nesting rep -&gt; Nesting rep -&gt; Nesting rep
+&gt;= :: Nesting rep -&gt; Nesting rep -&gt; Bool
+$c&gt;= :: forall rep. Nesting rep -&gt; Nesting rep -&gt; Bool
+&gt; :: Nesting rep -&gt; Nesting rep -&gt; Bool
+$c&gt; :: forall rep. Nesting rep -&gt; Nesting rep -&gt; Bool
+&lt;= :: Nesting rep -&gt; Nesting rep -&gt; Bool
+$c&lt;= :: forall rep. Nesting rep -&gt; Nesting rep -&gt; Bool
+&lt; :: Nesting rep -&gt; Nesting rep -&gt; Bool
+$c&lt; :: forall rep. Nesting rep -&gt; Nesting rep -&gt; Bool
+compare :: Nesting rep -&gt; Nesting rep -&gt; Ordering
+$ccompare :: forall rep. Nesting rep -&gt; Nesting rep -&gt; Ordering
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684454380"><span id="local-6989586621684454382"><span id="local-6989586621684454394"><span class="annot"><span class="annottext">Int -&gt; Nesting rep -&gt; ShowS
+[Nesting rep] -&gt; ShowS
+Nesting rep -&gt; String
+(Int -&gt; Nesting rep -&gt; ShowS)
+-&gt; (Nesting rep -&gt; String)
+-&gt; ([Nesting rep] -&gt; ShowS)
+-&gt; Show (Nesting rep)
+forall rep. Int -&gt; Nesting rep -&gt; ShowS
+forall rep. [Nesting rep] -&gt; ShowS
+forall rep. Nesting rep -&gt; String
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [Nesting rep] -&gt; ShowS
+$cshowList :: forall rep. [Nesting rep] -&gt; ShowS
+show :: Nesting rep -&gt; String
+$cshow :: forall rep. Nesting rep -&gt; String
+showsPrec :: Int -&gt; Nesting rep -&gt; ShowS
+$cshowsPrec :: forall rep. Int -&gt; Nesting rep -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">data</span><span> </span><span id="MapNest"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-var">MapNest</span></a></span></span><span> </span><span id="local-6989586621684454679"><span class="annot"><a href="#local-6989586621684454679"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="MapNest"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-var">MapNest</span></a></span></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454679"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#Nesting"><span class="hs-identifier hs-type">Nesting</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454679"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#Input"><span class="hs-identifier hs-type">SOAC.Input</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-36"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684454357"><span id="local-6989586621684454359"><span id="local-6989586621684454369"><span class="annot"><span class="annottext">Int -&gt; MapNest rep -&gt; ShowS
+[MapNest rep] -&gt; ShowS
+MapNest rep -&gt; String
+(Int -&gt; MapNest rep -&gt; ShowS)
+-&gt; (MapNest rep -&gt; String)
+-&gt; ([MapNest rep] -&gt; ShowS)
+-&gt; Show (MapNest rep)
+forall rep. RepTypes rep =&gt; Int -&gt; MapNest rep -&gt; ShowS
+forall rep. RepTypes rep =&gt; [MapNest rep] -&gt; ShowS
+forall rep. RepTypes rep =&gt; MapNest rep -&gt; String
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [MapNest rep] -&gt; ShowS
+$cshowList :: forall rep. RepTypes rep =&gt; [MapNest rep] -&gt; ShowS
+show :: MapNest rep -&gt; String
+$cshow :: forall rep. RepTypes rep =&gt; MapNest rep -&gt; String
+showsPrec :: Int -&gt; MapNest rep -&gt; ShowS
+$cshowsPrec :: forall rep. RepTypes rep =&gt; Int -&gt; MapNest rep -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span id="local-6989586621684454678"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#typeOf"><span class="hs-identifier hs-type">typeOf</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454678"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-39"></span><span id="typeOf"><span class="annot"><span class="annottext">typeOf :: forall rep. MapNest rep -&gt; [Type]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#typeOf"><span class="hs-identifier hs-var hs-var">typeOf</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span id="local-6989586621684454352"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454352"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684454351"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454351"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-40"></span><span>  </span><span class="annot"><span class="annottext">(Type -&gt; Type) -&gt; [Type] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; SubExp -&gt; Type
+forall d.
+ArrayShape (ShapeBase d) =&gt;
+TypeBase (ShapeBase d) NoUniqueness
+-&gt; d -&gt; TypeBase (ShapeBase d) NoUniqueness
+</span><a href="Futhark.IR.Prop.Types.html#arrayOfRow"><span class="hs-operator hs-var">`arrayOfRow`</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454352"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Type] -&gt; [Type]) -&gt; [Type] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454351"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-41"></span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span id="local-6989586621684454348"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454348"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684454347"><span class="annot"><span class="annottext">Nesting rep
+</span><a href="#local-6989586621684454347"><span class="hs-identifier hs-var">nest</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[Nesting rep]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-42"></span><span>  </span><span class="annot"><span class="annottext">(Type -&gt; Type) -&gt; [Type] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; SubExp -&gt; Type
+forall d.
+ArrayShape (ShapeBase d) =&gt;
+TypeBase (ShapeBase d) NoUniqueness
+-&gt; d -&gt; TypeBase (ShapeBase d) NoUniqueness
+</span><a href="Futhark.IR.Prop.Types.html#arrayOfRow"><span class="hs-operator hs-var">`arrayOfRow`</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454348"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Type] -&gt; [Type]) -&gt; [Type] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Nesting rep -&gt; [Type]
+forall rep. Nesting rep -&gt; [Type]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingReturnType"><span class="hs-identifier hs-var hs-var">nestingReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Nesting rep
+</span><a href="#local-6989586621684454347"><span class="hs-identifier hs-var">nest</span></a></span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span id="local-6989586621684454668"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#params"><span class="hs-identifier hs-type">params</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454668"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-45"></span><span id="params"><span class="annot"><span class="annottext">params :: forall rep. MapNest rep -&gt; [VName]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#params"><span class="hs-identifier hs-var hs-var">params</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684454346"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454346"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-46"></span><span>  </span><span class="annot"><span class="annottext">(Param (LParamInfo rep) -&gt; VName)
+-&gt; [Param (LParamInfo rep)] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param (LParamInfo rep) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">([Param (LParamInfo rep)] -&gt; [VName])
+-&gt; [Param (LParamInfo rep)] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; [Param (LParamInfo rep)]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454346"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-47"></span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#params"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684454343"><span class="annot"><span class="annottext">Nesting rep
+</span><a href="#local-6989586621684454343"><span class="hs-identifier hs-var">nest</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[Nesting rep]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-48"></span><span>  </span><span class="annot"><span class="annottext">Nesting rep -&gt; [VName]
+forall rep. Nesting rep -&gt; [VName]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingParamNames"><span class="hs-identifier hs-var hs-var">nestingParamNames</span></a></span><span> </span><span class="annot"><span class="annottext">Nesting rep
+</span><a href="#local-6989586621684454343"><span class="hs-identifier hs-var">nest</span></a></span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span id="local-6989586621684454662"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#inputs"><span class="hs-identifier hs-type">inputs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454662"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#Input"><span class="hs-identifier hs-type">SOAC.Input</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-51"></span><span id="inputs"><span class="annot"><span class="annottext">inputs :: forall rep. MapNest rep -&gt; [Input]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#inputs"><span class="hs-identifier hs-var hs-var">inputs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Nesting rep]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684454342"><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454342"><span class="hs-identifier hs-var">inps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454342"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-52"></span><span>
+</span><span id="line-53"></span><span id="local-6989586621684454660"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#setInputs"><span class="hs-identifier hs-type">setInputs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#Input"><span class="hs-identifier hs-type">SOAC.Input</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454660"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454660"><span class="hs-identifier hs-type">rep</span></a></span></span><span>
+</span><span id="line-54"></span><span id="setInputs"><span class="annot"><span class="annottext">setInputs :: forall rep. [Input] -&gt; MapNest rep -&gt; MapNest rep
+</span><a href="Futhark.Analysis.HORep.MapNest.html#setInputs"><span class="hs-identifier hs-var hs-var">setInputs</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span id="local-6989586621684454341"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454341"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684454340"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454340"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span id="local-6989586621684454339"><span class="annot"><span class="annottext">[Nesting rep]
+</span><a href="#local-6989586621684454339"><span class="hs-identifier hs-var">ns</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+forall rep.
+SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+</span><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-var">MapNest</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454341"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454340"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="annot"><span class="annottext">[Nesting rep]
+</span><a href="#local-6989586621684454339"><span class="hs-identifier hs-var">ns</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-55"></span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#setInputs"><span class="hs-identifier hs-var">setInputs</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684454338"><span class="annot"><span class="annottext">Input
+</span><a href="#local-6989586621684454338"><span class="hs-identifier hs-var">inp</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684454337"><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454337"><span class="hs-identifier hs-var">inps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684454336"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454336"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span id="local-6989586621684454335"><span class="annot"><span class="annottext">[Nesting rep]
+</span><a href="#local-6989586621684454335"><span class="hs-identifier hs-var">ns</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+forall rep.
+SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+</span><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-var">MapNest</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454334"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454336"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="annot"><span class="annottext">[Nesting rep]
+</span><a href="#local-6989586621684454333"><span class="hs-identifier hs-var">ns'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Input
+</span><a href="#local-6989586621684454338"><span class="hs-identifier hs-var">inp</span></a></span><span> </span><span class="annot"><span class="annottext">Input -&gt; [Input] -&gt; [Input]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454337"><span class="hs-identifier hs-var">inps</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-57"></span><span>    </span><span id="local-6989586621684454334"><span class="annot"><span class="annottext">w :: SubExp
+</span><a href="#local-6989586621684454334"><span class="hs-identifier hs-var hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Type -&gt; SubExp
+forall u. Int -&gt; TypeBase (ShapeBase SubExp) u -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Types.html#arraySize"><span class="hs-identifier hs-var">arraySize</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; SubExp) -&gt; Type -&gt; SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Input -&gt; Type
+</span><a href="Futhark.Analysis.HORep.SOAC.html#inputType"><span class="hs-identifier hs-var">SOAC.inputType</span></a></span><span> </span><span class="annot"><span class="annottext">Input
+</span><a href="#local-6989586621684454338"><span class="hs-identifier hs-var">inp</span></a></span><span>
+</span><span id="line-58"></span><span>    </span><span id="local-6989586621684454330"><span class="annot"><span class="annottext">ws :: [SubExp]
+</span><a href="#local-6989586621684454330"><span class="hs-identifier hs-var hs-var">ws</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [SubExp] -&gt; [SubExp]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">drop</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; [SubExp]) -&gt; [SubExp] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase (ShapeBase SubExp) u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [SubExp]) -&gt; Type -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Input -&gt; Type
+</span><a href="Futhark.Analysis.HORep.SOAC.html#inputType"><span class="hs-identifier hs-var">SOAC.inputType</span></a></span><span> </span><span class="annot"><span class="annottext">Input
+</span><a href="#local-6989586621684454338"><span class="hs-identifier hs-var">inp</span></a></span><span>
+</span><span id="line-59"></span><span>    </span><span id="local-6989586621684454333"><span class="annot"><span class="annottext">ns' :: [Nesting rep]
+</span><a href="#local-6989586621684454333"><span class="hs-identifier hs-var hs-var">ns'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Nesting rep -&gt; SubExp -&gt; Nesting rep)
+-&gt; [Nesting rep] -&gt; [SubExp] -&gt; [Nesting rep]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">Nesting rep -&gt; SubExp -&gt; Nesting rep
+forall {rep} {rep}. Nesting rep -&gt; SubExp -&gt; Nesting rep
+</span><a href="#local-6989586621684454326"><span class="hs-identifier hs-var">setDepth</span></a></span><span> </span><span class="annot"><span class="annottext">[Nesting rep]
+</span><a href="#local-6989586621684454335"><span class="hs-identifier hs-var">ns</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684454330"><span class="hs-identifier hs-var">ws</span></a></span><span>
+</span><span id="line-60"></span><span>    </span><span id="local-6989586621684454326"><span class="annot"><span class="annottext">setDepth :: Nesting rep -&gt; SubExp -&gt; Nesting rep
+</span><a href="#local-6989586621684454326"><span class="hs-identifier hs-var hs-var">setDepth</span></a></span></span><span> </span><span id="local-6989586621684454325"><span class="annot"><span class="annottext">Nesting rep
+</span><a href="#local-6989586621684454325"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621684454324"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454324"><span class="hs-identifier hs-var">nw</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nesting rep
+</span><a href="#local-6989586621684454325"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">nestingWidth :: SubExp
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingWidth"><span class="hs-identifier hs-var">nestingWidth</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454324"><span class="hs-identifier hs-var">nw</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span id="local-6989586621684454647"><span id="local-6989586621684454649"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#fromSOAC"><span class="hs-identifier hs-type">fromSOAC</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454649"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454647"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-65"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454649"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454647"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454649"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#SOAC"><span class="hs-identifier hs-type">Futhark.SOAC</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454649"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#SOAC"><span class="hs-identifier hs-type">SOAC</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454649"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><a href="#local-6989586621684454647"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454649"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-70"></span><span id="fromSOAC"><span class="annot"><span class="annottext">fromSOAC :: forall rep (m :: * -&gt; *).
+(Buildable rep, MonadFreshNames m, LocalScope rep m,
+ Op rep ~ SOAC rep) =&gt;
+SOAC rep -&gt; m (Maybe (MapNest rep))
+</span><a href="Futhark.Analysis.HORep.MapNest.html#fromSOAC"><span class="hs-identifier hs-var hs-var">fromSOAC</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Ident] -&gt; SOAC rep -&gt; m (Maybe (MapNest rep))
+forall rep (m :: * -&gt; *).
+(Buildable rep, MonadFreshNames m, LocalScope rep m,
+ Op rep ~ SOAC rep) =&gt;
+[Ident] -&gt; SOAC rep -&gt; m (Maybe (MapNest rep))
+</span><a href="Futhark.Analysis.HORep.MapNest.html#fromSOAC%27"><span class="hs-identifier hs-var">fromSOAC'</span></a></span><span> </span><span class="annot"><span class="annottext">[Ident]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-71"></span><span>
+</span><span id="line-72"></span><span id="local-6989586621684454636"><span id="local-6989586621684454637"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#fromSOAC%27"><span class="hs-identifier hs-type">fromSOAC'</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-73"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454637"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-74"></span><span>    </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454636"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-75"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454637"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454636"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-76"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454637"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#SOAC"><span class="hs-identifier hs-type">Futhark.SOAC</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454637"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Ident"><span class="hs-identifier hs-type">Ident</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-79"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#SOAC"><span class="hs-identifier hs-type">SOAC</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454637"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-80"></span><span>  </span><span class="annot"><a href="#local-6989586621684454636"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454637"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-81"></span><span id="fromSOAC%27"><span class="annot"><span class="annottext">fromSOAC' :: forall rep (m :: * -&gt; *).
+(Buildable rep, MonadFreshNames m, LocalScope rep m,
+ Op rep ~ SOAC rep) =&gt;
+[Ident] -&gt; SOAC rep -&gt; m (Maybe (MapNest rep))
+</span><a href="Futhark.Analysis.HORep.MapNest.html#fromSOAC%27"><span class="hs-identifier hs-var hs-var">fromSOAC'</span></a></span></span><span> </span><span id="local-6989586621684454178"><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454178"><span class="hs-identifier hs-var">bound</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#Screma"><span class="hs-identifier hs-type">SOAC.Screma</span></a></span><span> </span><span id="local-6989586621684454176"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454176"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#ScremaForm"><span class="hs-identifier hs-type">SOAC.ScremaForm</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span id="local-6989586621684454174"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684454173"><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454173"><span class="hs-identifier hs-var">inps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-82"></span><span>  </span><span id="local-6989586621684454172"><span class="annot"><span class="annottext">Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+</span><a href="#local-6989586621684454172"><span class="hs-identifier hs-var">maybenest</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; [Stm rep]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms rep -&gt; [Stm rep]) -&gt; Stms rep -&gt; [Stm rep]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep -&gt; Stms rep
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">(BodyT rep -&gt; Stms rep) -&gt; BodyT rep -&gt; Stms rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; BodyT rep
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-83"></span><span>                      </span><span class="annot"><span class="annottext">BodyT rep -&gt; Result
+forall rep. BodyT rep -&gt; Result
+</span><a href="Futhark.IR.Syntax.html#bodyResult"><span class="hs-identifier hs-var hs-var">bodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">(BodyT rep -&gt; Result) -&gt; BodyT rep -&gt; Result
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; BodyT rep
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-84"></span><span>                    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-85"></span><span>    </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684454166"><span class="annot"><span class="annottext">PatT (LetDec rep)
+</span><a href="#local-6989586621684454166"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684454165"><span class="annot"><span class="annottext">Exp rep
+</span><a href="#local-6989586621684454165"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684454164"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684454164"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">(SubExpRes -&gt; SubExp) -&gt; Result -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExpRes -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.html#resSubExp"><span class="hs-identifier hs-var hs-var">resSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684454164"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; [VName] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT (LetDec rep) -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep)
+</span><a href="#local-6989586621684454166"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-87"></span><span>        </span><span class="annot"><span class="annottext">Scope rep
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param Type] -&gt; Scope rep
+forall rep dec. (LParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-var">scopeOfLParams</span></a></span><span> </span><span class="annot"><span class="annottext">([Param Type] -&gt; Scope rep) -&gt; [Param Type] -&gt; Scope rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; [LParam rep]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+ -&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))))
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-88"></span><span>          </span><span class="annot"><span class="annottext">Exp rep -&gt; m (Either NotSOAC (SOAC rep))
+forall rep (m :: * -&gt; *).
+(Op rep ~ SOAC rep, HasScope rep m) =&gt;
+Exp rep -&gt; m (Either NotSOAC (SOAC rep))
+</span><a href="Futhark.Analysis.HORep.SOAC.html#fromExp"><span class="hs-identifier hs-var">SOAC.fromExp</span></a></span><span> </span><span class="annot"><span class="annottext">Exp rep
+</span><a href="#local-6989586621684454165"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-89"></span><span>            </span><span class="annot"><span class="annottext">m (Either NotSOAC (SOAC rep))
+-&gt; (Either NotSOAC (SOAC rep)
+    -&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))))
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">(NotSOAC
+ -&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))))
+-&gt; (SOAC rep
+    -&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))))
+-&gt; Either NotSOAC (SOAC rep)
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall a c b. (a -&gt; c) -&gt; (b -&gt; c) -&gt; Either a b -&gt; c
+</span><span class="hs-identifier hs-var">either</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+ -&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))))
+-&gt; (NotSOAC
+    -&gt; Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+-&gt; NotSOAC
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">NotSOAC -&gt; Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+forall a b. a -&gt; Either a b
+</span><span class="hs-identifier hs-var">Left</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Maybe (MapNest rep)
+ -&gt; Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+-&gt; m (Maybe (MapNest rep))
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe (PatT (LetDec rep), MapNest rep)
+-&gt; Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+forall a b. b -&gt; Either a b
+</span><span class="hs-identifier hs-var">Right</span></span><span> </span><span class="annot"><span class="annottext">(Maybe (PatT (LetDec rep), MapNest rep)
+ -&gt; Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+-&gt; (Maybe (MapNest rep) -&gt; Maybe (PatT (LetDec rep), MapNest rep))
+-&gt; Maybe (MapNest rep)
+-&gt; Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(MapNest rep -&gt; (PatT (LetDec rep), MapNest rep))
+-&gt; Maybe (MapNest rep) -&gt; Maybe (PatT (LetDec rep), MapNest rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT (LetDec rep)
+</span><a href="#local-6989586621684454166"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">,</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(m (Maybe (MapNest rep))
+ -&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))))
+-&gt; (SOAC rep -&gt; m (Maybe (MapNest rep)))
+-&gt; SOAC rep
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[Ident] -&gt; SOAC rep -&gt; m (Maybe (MapNest rep))
+forall rep (m :: * -&gt; *).
+(Buildable rep, MonadFreshNames m, LocalScope rep m,
+ Op rep ~ SOAC rep) =&gt;
+[Ident] -&gt; SOAC rep -&gt; m (Maybe (MapNest rep))
+</span><a href="Futhark.Analysis.HORep.MapNest.html#fromSOAC%27"><span class="hs-identifier hs-var">fromSOAC'</span></a></span><span> </span><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454155"><span class="hs-identifier hs-var">bound'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-90"></span><span>    </span><span class="annot"><span class="annottext">([Stm rep], Result)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-91"></span><span>      </span><span class="annot"><span class="annottext">Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+ -&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))))
+-&gt; Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+-&gt; m (Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep)))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Maybe (PatT (LetDec rep), MapNest rep)
+-&gt; Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+forall a b. b -&gt; Either a b
+</span><span class="hs-identifier hs-var">Right</span></span><span> </span><span class="annot"><span class="annottext">Maybe (PatT (LetDec rep), MapNest rep)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+</span><a href="#local-6989586621684454172"><span class="hs-identifier hs-var">maybenest</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-94"></span><span>    </span><span class="hs-comment">-- Do we have a nested MapNest?</span><span>
+</span><span id="line-95"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684454154"><span class="annot"><span class="annottext">PatT (LetDec rep)
+</span><a href="#local-6989586621684454154"><span class="hs-identifier hs-var">pat</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684454153"><span class="annot"><span class="annottext">mn :: MapNest rep
+</span><a href="#local-6989586621684454153"><span class="hs-identifier hs-var">mn</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span id="local-6989586621684454152"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454152"><span class="hs-identifier hs-var">inner_w</span></a></span></span><span> </span><span id="local-6989586621684454151"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454151"><span class="hs-identifier hs-var">body'</span></a></span></span><span> </span><span id="local-6989586621684454150"><span class="annot"><span class="annottext">[Nesting rep]
+</span><a href="#local-6989586621684454150"><span class="hs-identifier hs-var">ns'</span></a></span></span><span> </span><span id="local-6989586621684454149"><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454149"><span class="hs-identifier hs-var">inps'</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-96"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684454148"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684454148"><span class="hs-identifier hs-var">ps</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684454147"><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454147"><span class="hs-identifier hs-var">inps''</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-97"></span><span>        </span><span class="annot"><span class="annottext">[(VName, Input)] -&gt; ([VName], [Input])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span>
+</span><span id="line-98"></span><span>          </span><span class="annot"><span class="annottext">([(VName, Input)] -&gt; ([VName], [Input]))
+-&gt; m [(VName, Input)] -&gt; m ([VName], [Input])
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+-&gt; [(VName, Input)] -&gt; [(VName, Input)] -&gt; m [(VName, Input)]
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+SubExp
+-&gt; [(VName, Input)] -&gt; [(VName, Input)] -&gt; m [(VName, Input)]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#fixInputs"><span class="hs-identifier hs-var">fixInputs</span></a></span><span>
+</span><span id="line-99"></span><span>            </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454176"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-100"></span><span>            </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [Input] -&gt; [(VName, Input)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Param Type -&gt; VName) -&gt; [Param Type] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param Type -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">([Param Type] -&gt; [VName]) -&gt; [Param Type] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; [LParam rep]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454173"><span class="hs-identifier hs-var">inps</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span>            </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [Input] -&gt; [(VName, Input)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MapNest rep -&gt; [VName]
+forall rep. MapNest rep -&gt; [VName]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#params"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">MapNest rep
+</span><a href="#local-6989586621684454153"><span class="hs-identifier hs-var">mn</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454149"><span class="hs-identifier hs-var">inps'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684454143"><span class="annot"><span class="annottext">n' :: Nesting rep
+</span><a href="#local-6989586621684454143"><span class="hs-identifier hs-var hs-var">n'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-103"></span><span>            </span><span class="annot"><span class="annottext">Nesting :: forall rep. [VName] -&gt; [VName] -&gt; [Type] -&gt; SubExp -&gt; Nesting rep
+</span><a href="Futhark.Analysis.HORep.MapNest.html#Nesting"><span class="hs-identifier hs-type">Nesting</span></a></span><span>
+</span><span id="line-104"></span><span>              </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">nestingParamNames :: [VName]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingParamNames"><span class="hs-identifier hs-var">nestingParamNames</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684454148"><span class="hs-identifier hs-var">ps</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-105"></span><span>                </span><span class="annot"><span class="annottext">nestingResult :: [VName]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingResult"><span class="hs-identifier hs-var">nestingResult</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep) -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep)
+</span><a href="#local-6989586621684454154"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-106"></span><span>                </span><span class="annot"><span class="annottext">nestingReturnType :: [Type]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingReturnType"><span class="hs-identifier hs-var">nestingReturnType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MapNest rep -&gt; [Type]
+forall rep. MapNest rep -&gt; [Type]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">MapNest rep
+</span><a href="#local-6989586621684454153"><span class="hs-identifier hs-var">mn</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-107"></span><span>                </span><span class="annot"><span class="annottext">nestingWidth :: SubExp
+</span><a href="Futhark.Analysis.HORep.MapNest.html#nestingWidth"><span class="hs-identifier hs-var">nestingWidth</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454152"><span class="hs-identifier hs-var">inner_w</span></a></span><span>
+</span><span id="line-108"></span><span>              </span><span class="hs-special">}</span><span>
+</span><span id="line-109"></span><span>      </span><span class="annot"><span class="annottext">Maybe (MapNest rep) -&gt; m (Maybe (MapNest rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Maybe (MapNest rep) -&gt; m (Maybe (MapNest rep)))
+-&gt; Maybe (MapNest rep) -&gt; m (Maybe (MapNest rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">MapNest rep -&gt; Maybe (MapNest rep)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(MapNest rep -&gt; Maybe (MapNest rep))
+-&gt; MapNest rep -&gt; Maybe (MapNest rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+forall rep.
+SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+</span><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-var">MapNest</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454176"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454151"><span class="hs-identifier hs-var">body'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Nesting rep
+</span><a href="#local-6989586621684454143"><span class="hs-identifier hs-var">n'</span></a></span><span> </span><span class="annot"><span class="annottext">Nesting rep -&gt; [Nesting rep] -&gt; [Nesting rep]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Nesting rep]
+</span><a href="#local-6989586621684454150"><span class="hs-identifier hs-var">ns'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454147"><span class="hs-identifier hs-var">inps''</span></a></span><span>
+</span><span id="line-110"></span><span>    </span><span class="hs-comment">-- No nested MapNest it seems.</span><span>
+</span><span id="line-111"></span><span>    </span><span class="annot"><span class="annottext">Either NotSOAC (Maybe (PatT (LetDec rep), MapNest rep))
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-112"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684454142"><span class="annot"><span class="annottext">isBound :: VName -&gt; Maybe Ident
+</span><a href="#local-6989586621684454142"><span class="hs-identifier hs-var hs-var">isBound</span></a></span></span><span> </span><span id="local-6989586621684454141"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684454141"><span class="hs-identifier hs-var">name</span></a></span></span><span>
+</span><span id="line-113"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684454140"><span class="annot"><span class="annottext">Ident
+</span><a href="#local-6989586621684454140"><span class="hs-identifier hs-var">param</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Ident -&gt; Bool) -&gt; [Ident] -&gt; Maybe Ident
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">find</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684454141"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; VName -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(VName -&gt; Bool) -&gt; (Ident -&gt; VName) -&gt; Ident -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Ident -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#identName"><span class="hs-identifier hs-var hs-var">identName</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454178"><span class="hs-identifier hs-var">bound</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-114"></span><span>              </span><span class="annot"><span class="annottext">Ident -&gt; Maybe Ident
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Ident
+</span><a href="#local-6989586621684454140"><span class="hs-identifier hs-var">param</span></a></span><span>
+</span><span id="line-115"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-116"></span><span>              </span><span class="annot"><span class="annottext">Maybe Ident
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-117"></span><span>          </span><span id="local-6989586621684454138"><span class="annot"><span class="annottext">boundUsedInBody :: [Ident]
+</span><a href="#local-6989586621684454138"><span class="hs-identifier hs-var hs-var">boundUsedInBody</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-118"></span><span>            </span><span class="annot"><span class="annottext">(VName -&gt; Maybe Ident) -&gt; [VName] -&gt; [Ident]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Maybe Ident
+</span><a href="#local-6989586621684454142"><span class="hs-identifier hs-var">isBound</span></a></span><span> </span><span class="annot"><span class="annottext">([VName] -&gt; [Ident]) -&gt; [VName] -&gt; [Ident]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Names -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Names.html#namesToList"><span class="hs-identifier hs-var">namesToList</span></a></span><span> </span><span class="annot"><span class="annottext">(Names -&gt; [VName]) -&gt; Names -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; Names
+forall a. FreeIn a =&gt; a -&gt; Names
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-119"></span><span>      </span><span id="local-6989586621684454134"><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454134"><span class="hs-identifier hs-var">newParams</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Ident -&gt; m Ident) -&gt; [Ident] -&gt; m [Ident]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ShowS -&gt; Ident -&gt; m Ident
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+ShowS -&gt; Ident -&gt; m Ident
+</span><a href="Futhark.MonadFreshNames.html#newIdent%27"><span class="hs-identifier hs-var">newIdent'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; ShowS
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_wasfree&quot;</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454138"><span class="hs-identifier hs-var">boundUsedInBody</span></a></span><span>
+</span><span id="line-120"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684454131"><span class="annot"><span class="annottext">subst :: Map VName VName
+</span><a href="#local-6989586621684454131"><span class="hs-identifier hs-var hs-var">subst</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-121"></span><span>            </span><span class="annot"><span class="annottext">[(VName, VName)] -&gt; Map VName VName
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, VName)] -&gt; Map VName VName)
+-&gt; [(VName, VName)] -&gt; Map VName VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-122"></span><span>              </span><span class="annot"><span class="annottext">[VName] -&gt; [VName] -&gt; [(VName, VName)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Ident -&gt; VName) -&gt; [Ident] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Ident -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#identName"><span class="hs-identifier hs-var hs-var">identName</span></a></span><span> </span><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454138"><span class="hs-identifier hs-var">boundUsedInBody</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Ident -&gt; VName) -&gt; [Ident] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Ident -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#identName"><span class="hs-identifier hs-var hs-var">identName</span></a></span><span> </span><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454134"><span class="hs-identifier hs-var">newParams</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>          </span><span id="local-6989586621684454129"><span class="annot"><span class="annottext">inps' :: [Input]
+</span><a href="#local-6989586621684454129"><span class="hs-identifier hs-var hs-var">inps'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-124"></span><span>            </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454173"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-125"></span><span>              </span><span class="annot"><span class="annottext">[Input] -&gt; [Input] -&gt; [Input]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(Ident -&gt; Input) -&gt; [Ident] -&gt; [Input]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span>
+</span><span id="line-126"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ArrayTransform -&gt; Input -&gt; Input
+</span><a href="Futhark.Analysis.HORep.SOAC.html#addTransform"><span class="hs-identifier hs-var">SOAC.addTransform</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Certs -&gt; ShapeBase SubExp -&gt; ArrayTransform
+</span><a href="Futhark.Analysis.HORep.SOAC.html#Replicate"><span class="hs-identifier hs-var">SOAC.Replicate</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">(ShapeBase SubExp -&gt; ArrayTransform)
+-&gt; ShapeBase SubExp -&gt; ArrayTransform
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; ShapeBase SubExp
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454176"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Input -&gt; Input) -&gt; (Ident -&gt; Input) -&gt; Ident -&gt; Input
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Ident -&gt; Input
+</span><a href="Futhark.Analysis.HORep.SOAC.html#identInput"><span class="hs-identifier hs-var">SOAC.identInput</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>                </span><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454138"><span class="hs-identifier hs-var">boundUsedInBody</span></a></span><span>
+</span><span id="line-128"></span><span>          </span><span id="local-6989586621684454124"><span class="annot"><span class="annottext">lam' :: Lambda rep
+</span><a href="#local-6989586621684454124"><span class="hs-identifier hs-var hs-var">lam'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-129"></span><span>            </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-130"></span><span>              </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">lambdaBody :: BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var">lambdaBody</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-131"></span><span>                  </span><span class="annot"><span class="annottext">Map VName VName -&gt; BodyT rep -&gt; BodyT rep
+forall a. Substitute a =&gt; Map VName VName -&gt; a -&gt; a
+</span><a href="Futhark.Transform.Substitute.html#substituteNames"><span class="hs-identifier hs-var">substituteNames</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName VName
+</span><a href="#local-6989586621684454131"><span class="hs-identifier hs-var">subst</span></a></span><span> </span><span class="annot"><span class="annottext">(BodyT rep -&gt; BodyT rep) -&gt; BodyT rep -&gt; BodyT rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; BodyT rep
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-132"></span><span>                </span><span class="annot"><span class="annottext">lambdaParams :: [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var">lambdaParams</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-133"></span><span>                  </span><span class="annot"><span class="annottext">Lambda rep -&gt; [LParam rep]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-134"></span><span>                    </span><span class="annot"><span class="annottext">[Param Type] -&gt; [Param Type] -&gt; [Param Type]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Attrs -&gt; VName -&gt; Type -&gt; Param Type
+forall dec. Attrs -&gt; VName -&gt; dec -&gt; Param dec
+</span><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-var">Param</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684454121"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684454120"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Ident"><span class="hs-identifier hs-type">Ident</span></a></span><span> </span><span id="local-6989586621684454121"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684454121"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621684454120"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684454120"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454134"><span class="hs-identifier hs-var">newParams</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-135"></span><span>              </span><span class="hs-special">}</span><span>
+</span><span id="line-136"></span><span>      </span><span class="annot"><span class="annottext">Maybe (MapNest rep) -&gt; m (Maybe (MapNest rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Maybe (MapNest rep) -&gt; m (Maybe (MapNest rep)))
+-&gt; Maybe (MapNest rep) -&gt; m (Maybe (MapNest rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">MapNest rep -&gt; Maybe (MapNest rep)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(MapNest rep -&gt; Maybe (MapNest rep))
+-&gt; MapNest rep -&gt; Maybe (MapNest rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+forall rep.
+SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+</span><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-var">MapNest</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454176"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454124"><span class="hs-identifier hs-var">lam'</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454129"><span class="hs-identifier hs-var">inps'</span></a></span><span>
+</span><span id="line-137"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-138"></span><span>    </span><span id="local-6989586621684454155"><span class="annot"><span class="annottext">bound' :: [Ident]
+</span><a href="#local-6989586621684454155"><span class="hs-identifier hs-var hs-var">bound'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Ident]
+</span><a href="#local-6989586621684454178"><span class="hs-identifier hs-var">bound</span></a></span><span> </span><span class="annot"><span class="annottext">[Ident] -&gt; [Ident] -&gt; [Ident]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Param Type -&gt; Ident) -&gt; [Param Type] -&gt; [Ident]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param Type -&gt; Ident
+forall dec. Typed dec =&gt; Param dec -&gt; Ident
+</span><a href="Futhark.IR.Prop.Patterns.html#paramIdent"><span class="hs-identifier hs-var">paramIdent</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; [LParam rep]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454174"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#fromSOAC%27"><span class="hs-identifier hs-var">fromSOAC'</span></a></span><span> </span><span class="annot"><span class="annottext">[Ident]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SOAC rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (MapNest rep) -&gt; m (Maybe (MapNest rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Maybe (MapNest rep)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-140"></span><span>
+</span><span id="line-141"></span><span id="local-6989586621684454529"><span id="local-6989586621684454530"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#toSOAC"><span class="hs-identifier hs-type">toSOAC</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-142"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454530"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-143"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454529"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454530"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-144"></span><span>    </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454529"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-145"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-type">BuilderOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454529"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-146"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454529"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#SOAC"><span class="hs-identifier hs-type">Futhark.SOAC</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454529"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-147"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-148"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454529"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-149"></span><span>  </span><span class="annot"><a href="#local-6989586621684454530"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#SOAC"><span class="hs-identifier hs-type">SOAC</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454529"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-150"></span><span id="toSOAC"><span class="annot"><span class="annottext">toSOAC :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, HasScope rep m, Buildable rep, BuilderOps rep,
+ Op rep ~ SOAC rep) =&gt;
+MapNest rep -&gt; m (SOAC rep)
+</span><a href="Futhark.Analysis.HORep.MapNest.html#toSOAC"><span class="hs-identifier hs-var hs-var">toSOAC</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span id="local-6989586621684454048"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454048"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684454047"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454047"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span id="local-6989586621684454046"><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454046"><span class="hs-identifier hs-var">inps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-151"></span><span>  </span><span class="annot"><span class="annottext">SOAC rep -&gt; m (SOAC rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SOAC rep -&gt; m (SOAC rep)) -&gt; SOAC rep -&gt; m (SOAC rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; ScremaForm rep -&gt; [Input] -&gt; SOAC rep
+forall rep. SubExp -&gt; ScremaForm rep -&gt; [Input] -&gt; SOAC rep
+</span><a href="Futhark.Analysis.HORep.SOAC.html#Screma"><span class="hs-identifier hs-var">SOAC.Screma</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454048"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; ScremaForm rep
+forall rep. Lambda rep -&gt; ScremaForm rep
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapSOAC"><span class="hs-identifier hs-var">Futhark.mapSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454047"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454046"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-152"></span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#toSOAC"><span class="hs-identifier hs-var">toSOAC</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-type">MapNest</span></a></span><span> </span><span id="local-6989586621684454044"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454044"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684454043"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454043"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#Nesting"><span class="hs-identifier hs-type">Nesting</span></a></span><span> </span><span id="local-6989586621684454042"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684454042"><span class="hs-identifier hs-var">npnames</span></a></span></span><span> </span><span id="local-6989586621684454041"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684454041"><span class="hs-identifier hs-var">nres</span></a></span></span><span> </span><span id="local-6989586621684454040"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684454040"><span class="hs-identifier hs-var">nrettype</span></a></span></span><span> </span><span id="local-6989586621684454039"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454039"><span class="hs-identifier hs-var">nw</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684454038"><span class="annot"><span class="annottext">[Nesting rep]
+</span><a href="#local-6989586621684454038"><span class="hs-identifier hs-var">ns</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684454037"><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454037"><span class="hs-identifier hs-var">inps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-153"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684454036"><span class="annot"><span class="annottext">nparams :: [Param Type]
+</span><a href="#local-6989586621684454036"><span class="hs-identifier hs-var hs-var">nparams</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VName -&gt; Type -&gt; Param Type) -&gt; [VName] -&gt; [Type] -&gt; [Param Type]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Attrs -&gt; VName -&gt; Type -&gt; Param Type
+forall dec. Attrs -&gt; VName -&gt; dec -&gt; Param dec
+</span><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-var">Param</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684454042"><span class="hs-identifier hs-var">npnames</span></a></span><span> </span><span class="annot"><span class="annottext">([Type] -&gt; [Param Type]) -&gt; [Type] -&gt; [Param Type]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Input -&gt; Type) -&gt; [Input] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Input -&gt; Type
+</span><a href="Futhark.Analysis.HORep.SOAC.html#inputRowType"><span class="hs-identifier hs-var">SOAC.inputRowType</span></a></span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454037"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-154"></span><span>  </span><span id="local-6989586621684454034"><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684454034"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Builder rep (Body rep) -&gt; m (Body rep)
+forall rep (m :: * -&gt; *) somerep.
+(Buildable rep, MonadFreshNames m, HasScope somerep m,
+ SameScope somerep rep) =&gt;
+Builder rep (Body rep) -&gt; m (Body rep)
+</span><a href="Futhark.Builder.html#runBodyBuilder"><span class="hs-identifier hs-var">runBodyBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder rep (Body rep) -&gt; m (Body rep))
+-&gt; Builder rep (Body rep) -&gt; m (Body rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-155"></span><span>    </span><span class="annot"><span class="annottext">Scope rep -&gt; Builder rep (Body rep) -&gt; Builder rep (Body rep)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param Type] -&gt; Scope rep
+forall rep dec. (LParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-var">scopeOfLParams</span></a></span><span> </span><span class="annot"><span class="annottext">[Param Type]
+</span><a href="#local-6989586621684454036"><span class="hs-identifier hs-var">nparams</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Builder rep (Body rep) -&gt; Builder rep (Body rep))
+-&gt; Builder rep (Body rep) -&gt; Builder rep (Body rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-156"></span><span>      </span><span class="annot"><span class="annottext">[VName]
+-&gt; Exp (Rep (BuilderT rep (State VNameSource)))
+-&gt; BuilderT rep (State VNameSource) ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684454041"><span class="hs-identifier hs-var">nres</span></a></span><span> </span><span class="annot"><span class="annottext">(ExpT rep -&gt; BuilderT rep (State VNameSource) ())
+-&gt; BuilderT rep (State VNameSource) (ExpT rep)
+-&gt; BuilderT rep (State VNameSource) ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">SOAC rep -&gt; BuilderT rep (State VNameSource) (ExpT rep)
+forall (m :: * -&gt; *).
+(MonadBuilder m, Op (Rep m) ~ SOAC (Rep m)) =&gt;
+SOAC (Rep m) -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Analysis.HORep.SOAC.html#toExp"><span class="hs-identifier hs-var">SOAC.toExp</span></a></span><span>
+</span><span id="line-157"></span><span>        </span><span class="annot"><span class="annottext">(SOAC rep -&gt; BuilderT rep (State VNameSource) (ExpT rep))
+-&gt; BuilderT rep (State VNameSource) (SOAC rep)
+-&gt; BuilderT rep (State VNameSource) (ExpT rep)
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">MapNest rep -&gt; BuilderT rep (State VNameSource) (SOAC rep)
+forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, HasScope rep m, Buildable rep, BuilderOps rep,
+ Op rep ~ SOAC rep) =&gt;
+MapNest rep -&gt; m (SOAC rep)
+</span><a href="Futhark.Analysis.HORep.MapNest.html#toSOAC"><span class="hs-identifier hs-var">toSOAC</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+forall rep.
+SubExp -&gt; Lambda rep -&gt; [Nesting rep] -&gt; [Input] -&gt; MapNest rep
+</span><a href="Futhark.Analysis.HORep.MapNest.html#MapNest"><span class="hs-identifier hs-var">MapNest</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454039"><span class="hs-identifier hs-var">nw</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454043"><span class="hs-identifier hs-var">lam</span></a></span><span> </span><span class="annot"><span class="annottext">[Nesting rep]
+</span><a href="#local-6989586621684454038"><span class="hs-identifier hs-var">ns</span></a></span><span> </span><span class="annot"><span class="annottext">([Input] -&gt; MapNest rep) -&gt; [Input] -&gt; MapNest rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Param Type -&gt; Input) -&gt; [Param Type] -&gt; [Input]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ident -&gt; Input
+</span><a href="Futhark.Analysis.HORep.SOAC.html#identInput"><span class="hs-identifier hs-var">SOAC.identInput</span></a></span><span> </span><span class="annot"><span class="annottext">(Ident -&gt; Input) -&gt; (Param Type -&gt; Ident) -&gt; Param Type -&gt; Input
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Param Type -&gt; Ident
+forall dec. Typed dec =&gt; Param dec -&gt; Ident
+</span><a href="Futhark.IR.Prop.Patterns.html#paramIdent"><span class="hs-identifier hs-var">paramIdent</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Param Type]
+</span><a href="#local-6989586621684454036"><span class="hs-identifier hs-var">nparams</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-158"></span><span>      </span><span class="annot"><span class="annottext">Body rep -&gt; Builder rep (Body rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Body rep -&gt; Builder rep (Body rep))
+-&gt; Body rep -&gt; Builder rep (Body rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Body rep
+forall rep. Buildable rep =&gt; [SubExp] -&gt; Body rep
+</span><a href="Futhark.Construct.html#resultBody"><span class="hs-identifier hs-var">resultBody</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; Body rep) -&gt; [SubExp] -&gt; Body rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; [VName] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684454041"><span class="hs-identifier hs-var">nres</span></a></span><span>
+</span><span id="line-159"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684454028"><span class="annot"><span class="annottext">outerlam :: Lambda rep
+</span><a href="#local-6989586621684454028"><span class="hs-identifier hs-var hs-var">outerlam</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-160"></span><span>        </span><span class="annot"><span class="annottext">Lambda :: forall rep. [LParam rep] -&gt; BodyT rep -&gt; [Type] -&gt; LambdaT rep
+</span><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span>
+</span><span id="line-161"></span><span>          </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">lambdaParams :: [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var">lambdaParams</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Param Type]
+[LParam rep]
+</span><a href="#local-6989586621684454036"><span class="hs-identifier hs-var">nparams</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-162"></span><span>            </span><span class="annot"><span class="annottext">lambdaBody :: Body rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var">lambdaBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body rep
+</span><a href="#local-6989586621684454034"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-163"></span><span>            </span><span class="annot"><span class="annottext">lambdaReturnType :: [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var">lambdaReturnType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684454040"><span class="hs-identifier hs-var">nrettype</span></a></span><span>
+</span><span id="line-164"></span><span>          </span><span class="hs-special">}</span><span>
+</span><span id="line-165"></span><span>  </span><span class="annot"><span class="annottext">SOAC rep -&gt; m (SOAC rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SOAC rep -&gt; m (SOAC rep)) -&gt; SOAC rep -&gt; m (SOAC rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; ScremaForm rep -&gt; [Input] -&gt; SOAC rep
+forall rep. SubExp -&gt; ScremaForm rep -&gt; [Input] -&gt; SOAC rep
+</span><a href="Futhark.Analysis.HORep.SOAC.html#Screma"><span class="hs-identifier hs-var">SOAC.Screma</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454044"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; ScremaForm rep
+forall rep. Lambda rep -&gt; ScremaForm rep
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapSOAC"><span class="hs-identifier hs-var">Futhark.mapSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684454028"><span class="hs-identifier hs-var">outerlam</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Input]
+</span><a href="#local-6989586621684454037"><span class="hs-identifier hs-var">inps</span></a></span><span>
+</span><span id="line-166"></span><span>
+</span><span id="line-167"></span><span id="local-6989586621684454552"><span class="annot"><a href="Futhark.Analysis.HORep.MapNest.html#fixInputs"><span class="hs-identifier hs-type">fixInputs</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-168"></span><span>  </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684454552"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-169"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-170"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#Input"><span class="hs-identifier hs-type">SOAC.Input</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-171"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#Input"><span class="hs-identifier hs-type">SOAC.Input</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-172"></span><span>  </span><span class="annot"><a href="#local-6989586621684454552"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#Input"><span class="hs-identifier hs-type">SOAC.Input</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span></span><span>
+</span><span id="line-173"></span><span id="fixInputs"><span class="annot"><span class="annottext">fixInputs :: forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+SubExp
+-&gt; [(VName, Input)] -&gt; [(VName, Input)] -&gt; m [(VName, Input)]
+</span><a href="Futhark.Analysis.HORep.MapNest.html#fixInputs"><span class="hs-identifier hs-var hs-var">fixInputs</span></a></span></span><span> </span><span id="local-6989586621684454013"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454013"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684454012"><span class="annot"><span class="annottext">[(VName, Input)]
+</span><a href="#local-6989586621684454012"><span class="hs-identifier hs-var">ourInps</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((VName, Input) -&gt; m (VName, Input))
+-&gt; [(VName, Input)] -&gt; m [(VName, Input)]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">(VName, Input) -&gt; m (VName, Input)
+</span><a href="#local-6989586621684454011"><span class="hs-identifier hs-var">inspect</span></a></span><span>
+</span><span id="line-174"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-175"></span><span>    </span><span id="local-6989586621684454008"><span class="annot"><span class="annottext">isParam :: a -&gt; (a, b) -&gt; Bool
+</span><a href="#local-6989586621684454008"><span class="hs-identifier hs-var hs-var">isParam</span></a></span></span><span> </span><span id="local-6989586621684454007"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684454007"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684454006"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684454006"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">b
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684454007"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684454006"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-176"></span><span>
+</span><span id="line-177"></span><span>    </span><span id="local-6989586621684454011"><span class="annot"><span class="annottext">inspect :: (VName, Input) -&gt; m (VName, Input)
+</span><a href="#local-6989586621684454011"><span class="hs-identifier hs-var hs-var">inspect</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#Input"><span class="hs-identifier hs-type">SOAC.Input</span></a></span><span> </span><span id="local-6989586621684454004"><span class="annot"><span class="annottext">ArrayTransforms
+</span><a href="#local-6989586621684454004"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684454003"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684454003"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="annot"><span class="annottext">Type
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-178"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684454002"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684454002"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684454001"><span class="annot"><span class="annottext">Input
+</span><a href="#local-6989586621684454001"><span class="hs-identifier hs-var">pInp</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">((VName, Input) -&gt; Bool)
+-&gt; [(VName, Input)] -&gt; Maybe (VName, Input)
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">find</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; (VName, Input) -&gt; Bool
+forall {a} {b}. Eq a =&gt; a -&gt; (a, b) -&gt; Bool
+</span><a href="#local-6989586621684454008"><span class="hs-identifier hs-var">isParam</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684454003"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(VName, Input)]
+</span><a href="#local-6989586621684454012"><span class="hs-identifier hs-var">ourInps</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-179"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684454000"><span class="annot"><span class="annottext">pInp' :: Input
+</span><a href="#local-6989586621684454000"><span class="hs-identifier hs-var hs-var">pInp'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ArrayTransforms -&gt; Input -&gt; Input
+</span><a href="Futhark.Analysis.HORep.SOAC.html#transformRows"><span class="hs-identifier hs-var">SOAC.transformRows</span></a></span><span> </span><span class="annot"><span class="annottext">ArrayTransforms
+</span><a href="#local-6989586621684454004"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">Input
+</span><a href="#local-6989586621684454001"><span class="hs-identifier hs-var">pInp</span></a></span><span>
+</span><span id="line-180"></span><span>        </span><span id="local-6989586621684453998"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684453998"><span class="hs-identifier hs-var">p'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; m VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newNameFromString"><span class="hs-identifier hs-var">newNameFromString</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; m VName) -&gt; String -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684454002"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-181"></span><span>        </span><span class="annot"><span class="annottext">(VName, Input) -&gt; m (VName, Input)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684453998"><span class="hs-identifier hs-var">p'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Input
+</span><a href="#local-6989586621684454000"><span class="hs-identifier hs-var">pInp'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-182"></span><span>    </span><span class="annot"><a href="#local-6989586621684454011"><span class="hs-identifier hs-var">inspect</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684453995"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684453995"><span class="hs-identifier hs-var">param</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Analysis.HORep.SOAC.html#Input"><span class="hs-identifier hs-type">SOAC.Input</span></a></span><span> </span><span id="local-6989586621684453994"><span class="annot"><span class="annottext">ArrayTransforms
+</span><a href="#local-6989586621684453994"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684453993"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684453993"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621684453992"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684453992"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-183"></span><span>      </span><span id="local-6989586621684453991"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684453991"><span class="hs-identifier hs-var">param'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; m VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newNameFromString"><span class="hs-identifier hs-var">newNameFromString</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684453995"><span class="hs-identifier hs-var">param</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; ShowS
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_rep&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-184"></span><span>      </span><span class="annot"><span class="annottext">(VName, Input) -&gt; m (VName, Input)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684453991"><span class="hs-identifier hs-var">param'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ArrayTransforms -&gt; VName -&gt; Type -&gt; Input
+</span><a href="Futhark.Analysis.HORep.SOAC.html#Input"><span class="hs-identifier hs-var">SOAC.Input</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ArrayTransforms
+</span><a href="#local-6989586621684453994"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">ArrayTransforms -&gt; ArrayTransform -&gt; ArrayTransforms
+</span><a href="Futhark.Analysis.HORep.SOAC.html#%7C%3E"><span class="hs-operator hs-var">SOAC.|&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Certs -&gt; ShapeBase SubExp -&gt; ArrayTransform
+</span><a href="Futhark.Analysis.HORep.SOAC.html#Replicate"><span class="hs-identifier hs-var">SOAC.Replicate</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; ShapeBase SubExp
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684454013"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684453993"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684453992"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-185"></span></pre></body></html>

@@ -1,0 +1,822 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span id="local-6989586621684525870"><span id="local-6989586621684525871"></span></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | Checking for missing cases in a match expression.  Based on</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- &quot;Warnings for pattern matching&quot; by Luc Maranget.  We only detect</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- inexhaustiveness here - ideally, we would also like to check for</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- redundant cases.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Language.Futhark.TypeChecker.Match</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#unmatched"><span class="hs-identifier">unmatched</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier">Match</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-11"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.html"><span class="hs-identifier">Futhark.Util</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.html#maybeHead"><span class="hs-identifier">maybeHead</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Util.html#nubOrd"><span class="hs-identifier">nubOrd</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Pretty.html"><span class="hs-identifier">Futhark.Util.Pretty</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">bool</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">group</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">space</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.html"><span class="hs-identifier">Language.Futhark</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#ExpBase"><span class="hs-identifier">ExpBase</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Constr"><span class="hs-identifier">Constr</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">data</span><span> </span><span id="Constr"><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Constr"><span class="hs-identifier hs-var">Constr</span></a></span></span><span>
+</span><span id="line-20"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="Constr"><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Constr"><span class="hs-identifier hs-var">Constr</span></a></span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span>
+</span><span id="line-21"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="ConstrTuple"><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#ConstrTuple"><span class="hs-identifier hs-var">ConstrTuple</span></a></span></span><span>
+</span><span id="line-22"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="ConstrRecord"><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#ConstrRecord"><span class="hs-identifier hs-var">ConstrRecord</span></a></span></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-23"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-comment">-- | Treated as 0-ary.</span><span>
+</span><span id="line-24"></span><span>    </span><span id="ConstrLit"><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#ConstrLit"><span class="hs-identifier hs-var">ConstrLit</span></a></span></span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#PatLit"><span class="hs-identifier hs-type">PatLit</span></a></span><span>
+</span><span id="line-25"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684525812"><span id="local-6989586621684525819"><span class="annot"><span class="annottext">Constr -&gt; Constr -&gt; Bool
+(Constr -&gt; Constr -&gt; Bool)
+-&gt; (Constr -&gt; Constr -&gt; Bool) -&gt; Eq Constr
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+/= :: Constr -&gt; Constr -&gt; Bool
+$c/= :: Constr -&gt; Constr -&gt; Bool
+== :: Constr -&gt; Constr -&gt; Bool
+$c== :: Constr -&gt; Constr -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684525789"><span id="local-6989586621684525791"><span id="local-6989586621684525793"><span id="local-6989586621684525795"><span id="local-6989586621684525797"><span id="local-6989586621684525799"><span id="local-6989586621684525807"><span class="annot"><span class="annottext">Eq Constr
+Eq Constr
+-&gt; (Constr -&gt; Constr -&gt; Ordering)
+-&gt; (Constr -&gt; Constr -&gt; Bool)
+-&gt; (Constr -&gt; Constr -&gt; Bool)
+-&gt; (Constr -&gt; Constr -&gt; Bool)
+-&gt; (Constr -&gt; Constr -&gt; Bool)
+-&gt; (Constr -&gt; Constr -&gt; Constr)
+-&gt; (Constr -&gt; Constr -&gt; Constr)
+-&gt; Ord Constr
+Constr -&gt; Constr -&gt; Bool
+Constr -&gt; Constr -&gt; Ordering
+Constr -&gt; Constr -&gt; Constr
+forall a.
+Eq a
+-&gt; (a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+min :: Constr -&gt; Constr -&gt; Constr
+$cmin :: Constr -&gt; Constr -&gt; Constr
+max :: Constr -&gt; Constr -&gt; Constr
+$cmax :: Constr -&gt; Constr -&gt; Constr
+&gt;= :: Constr -&gt; Constr -&gt; Bool
+$c&gt;= :: Constr -&gt; Constr -&gt; Bool
+&gt; :: Constr -&gt; Constr -&gt; Bool
+$c&gt; :: Constr -&gt; Constr -&gt; Bool
+&lt;= :: Constr -&gt; Constr -&gt; Bool
+$c&lt;= :: Constr -&gt; Constr -&gt; Bool
+&lt; :: Constr -&gt; Constr -&gt; Bool
+$c&lt; :: Constr -&gt; Constr -&gt; Bool
+compare :: Constr -&gt; Constr -&gt; Ordering
+$ccompare :: Constr -&gt; Constr -&gt; Ordering
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684525773"><span id="local-6989586621684525775"><span id="local-6989586621684525786"><span class="annot"><span class="annottext">Int -&gt; Constr -&gt; ShowS
+[Constr] -&gt; ShowS
+Constr -&gt; String
+(Int -&gt; Constr -&gt; ShowS)
+-&gt; (Constr -&gt; String) -&gt; ([Constr] -&gt; ShowS) -&gt; Show Constr
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [Constr] -&gt; ShowS
+$cshowList :: [Constr] -&gt; ShowS
+show :: Constr -&gt; String
+$cshow :: Constr -&gt; String
+showsPrec :: Int -&gt; Constr -&gt; ShowS
+$cshowsPrec :: Int -&gt; Constr -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- | A representation of the essentials of a pattern.</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">data</span><span> </span><span id="Match"><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-var">Match</span></a></span></span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="MatchWild"><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-var">MatchWild</span></a></span></span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#StructType"><span class="hs-identifier hs-type">StructType</span></a></span><span>
+</span><span id="line-30"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="MatchConstr"><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-var">MatchConstr</span></a></span></span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Constr"><span class="hs-identifier hs-type">Constr</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#StructType"><span class="hs-identifier hs-type">StructType</span></a></span><span>
+</span><span id="line-31"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684525758"><span id="local-6989586621684525768"><span class="annot"><span class="annottext">Match -&gt; Match -&gt; Bool
+(Match -&gt; Match -&gt; Bool) -&gt; (Match -&gt; Match -&gt; Bool) -&gt; Eq Match
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+/= :: Match -&gt; Match -&gt; Bool
+$c/= :: Match -&gt; Match -&gt; Bool
+== :: Match -&gt; Match -&gt; Bool
+$c== :: Match -&gt; Match -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684525724"><span id="local-6989586621684525726"><span id="local-6989586621684525729"><span id="local-6989586621684525732"><span id="local-6989586621684525735"><span id="local-6989586621684525743"><span id="local-6989586621684525752"><span class="annot"><span class="annottext">Eq Match
+Eq Match
+-&gt; (Match -&gt; Match -&gt; Ordering)
+-&gt; (Match -&gt; Match -&gt; Bool)
+-&gt; (Match -&gt; Match -&gt; Bool)
+-&gt; (Match -&gt; Match -&gt; Bool)
+-&gt; (Match -&gt; Match -&gt; Bool)
+-&gt; (Match -&gt; Match -&gt; Match)
+-&gt; (Match -&gt; Match -&gt; Match)
+-&gt; Ord Match
+Match -&gt; Match -&gt; Bool
+Match -&gt; Match -&gt; Ordering
+Match -&gt; Match -&gt; Match
+forall a.
+Eq a
+-&gt; (a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+min :: Match -&gt; Match -&gt; Match
+$cmin :: Match -&gt; Match -&gt; Match
+max :: Match -&gt; Match -&gt; Match
+$cmax :: Match -&gt; Match -&gt; Match
+&gt;= :: Match -&gt; Match -&gt; Bool
+$c&gt;= :: Match -&gt; Match -&gt; Bool
+&gt; :: Match -&gt; Match -&gt; Bool
+$c&gt; :: Match -&gt; Match -&gt; Bool
+&lt;= :: Match -&gt; Match -&gt; Bool
+$c&lt;= :: Match -&gt; Match -&gt; Bool
+&lt; :: Match -&gt; Match -&gt; Bool
+$c&lt; :: Match -&gt; Match -&gt; Bool
+compare :: Match -&gt; Match -&gt; Ordering
+$ccompare :: Match -&gt; Match -&gt; Ordering
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684525706"><span id="local-6989586621684525708"><span id="local-6989586621684525720"><span class="annot"><span class="annottext">Int -&gt; Match -&gt; ShowS
+[Match] -&gt; ShowS
+Match -&gt; String
+(Int -&gt; Match -&gt; ShowS)
+-&gt; (Match -&gt; String) -&gt; ([Match] -&gt; ShowS) -&gt; Show Match
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [Match] -&gt; ShowS
+$cshowList :: [Match] -&gt; ShowS
+show :: Match -&gt; String
+$cshow :: Match -&gt; String
+showsPrec :: Int -&gt; Match -&gt; ShowS
+$cshowsPrec :: Int -&gt; Match -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#matchType"><span class="hs-identifier hs-type">matchType</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#StructType"><span class="hs-identifier hs-type">StructType</span></a></span><span>
+</span><span id="line-34"></span><span id="matchType"><span class="annot"><span class="annottext">matchType :: Match -&gt; StructType
+</span><a href="Language.Futhark.TypeChecker.Match.html#matchType"><span class="hs-identifier hs-var hs-var">matchType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-type">MatchWild</span></a></span><span> </span><span id="local-6989586621684525700"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525700"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525700"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-35"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#matchType"><span class="hs-identifier hs-var">matchType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="annot"><span class="annottext">Constr
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684525699"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525699"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525699"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-type">pprMatch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Doc</span></span><span>
+</span><span id="line-38"></span><span id="pprMatch"><span class="annot"><span class="annottext">pprMatch :: Int -&gt; Match -&gt; Doc
+</span><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-var hs-var">pprMatch</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-type">MatchWild</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot;_&quot;</span></span><span>
+</span><span id="line-39"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-var">pprMatch</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#ConstrLit"><span class="hs-identifier hs-type">ConstrLit</span></a></span><span> </span><span id="local-6989586621684525697"><span class="annot"><span class="annottext">PatLit
+</span><a href="#local-6989586621684525697"><span class="hs-identifier hs-var">l</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PatLit -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">PatLit
+</span><a href="#local-6989586621684525697"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-40"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-var">pprMatch</span></a></span><span> </span><span id="local-6989586621684525695"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684525695"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Constr"><span class="hs-identifier hs-type">Constr</span></a></span><span> </span><span id="local-6989586621684525694"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525694"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684525693"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525693"><span class="hs-identifier hs-var">ps</span></a></span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-41"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; Doc -&gt; Doc
+</span><span class="hs-identifier hs-var">parensIf</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Match] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">null</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525693"><span class="hs-identifier hs-var">ps</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684525695"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Doc -&gt; Doc) -&gt; Doc -&gt; Doc
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-42"></span><span>    </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot;#&quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525694"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[Doc] -&gt; Doc
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Match -&gt; Doc) -&gt; [Match] -&gt; [Doc]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot; &quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Doc -&gt; Doc) -&gt; (Match -&gt; Doc) -&gt; Match -&gt; Doc
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Match -&gt; Doc
+</span><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-var">pprMatch</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525693"><span class="hs-identifier hs-var">ps</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-var">pprMatch</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="annot"><span class="annottext">Constr
+</span><a href="Language.Futhark.TypeChecker.Match.html#ConstrTuple"><span class="hs-identifier hs-var">ConstrTuple</span></a></span><span> </span><span id="local-6989586621684525687"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525687"><span class="hs-identifier hs-var">ps</span></a></span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-44"></span><span>  </span><span class="annot"><span class="annottext">Doc -&gt; Doc
+</span><span class="hs-identifier hs-var">parens</span></span><span> </span><span class="annot"><span class="annottext">(Doc -&gt; Doc) -&gt; Doc -&gt; Doc
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Doc] -&gt; Doc
+</span><span class="hs-identifier hs-var">commasep</span></span><span> </span><span class="annot"><span class="annottext">([Doc] -&gt; Doc) -&gt; [Doc] -&gt; Doc
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Match -&gt; Doc) -&gt; [Match] -&gt; [Doc]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Match -&gt; Doc
+</span><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-var">pprMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525687"><span class="hs-identifier hs-var">ps</span></a></span><span>
+</span><span id="line-45"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-var">pprMatch</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#ConstrRecord"><span class="hs-identifier hs-type">ConstrRecord</span></a></span><span> </span><span id="local-6989586621684525684"><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684525684"><span class="hs-identifier hs-var">fs</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684525683"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525683"><span class="hs-identifier hs-var">ps</span></a></span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-46"></span><span>  </span><span class="annot"><span class="annottext">Doc -&gt; Doc
+</span><span class="hs-identifier hs-var">braces</span></span><span> </span><span class="annot"><span class="annottext">(Doc -&gt; Doc) -&gt; Doc -&gt; Doc
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Doc] -&gt; Doc
+</span><span class="hs-identifier hs-var">commasep</span></span><span> </span><span class="annot"><span class="annottext">([Doc] -&gt; Doc) -&gt; [Doc] -&gt; Doc
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Name -&gt; Match -&gt; Doc) -&gt; [Name] -&gt; [Match] -&gt; [Doc]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; Match -&gt; Doc
+</span><a href="#local-6989586621684525680"><span class="hs-identifier hs-var">ppField</span></a></span><span> </span><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684525684"><span class="hs-identifier hs-var">fs</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525683"><span class="hs-identifier hs-var">ps</span></a></span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-48"></span><span>    </span><span id="local-6989586621684525680"><span class="annot"><span class="annottext">ppField :: Name -&gt; Match -&gt; Doc
+</span><a href="#local-6989586621684525680"><span class="hs-identifier hs-var hs-var">ppField</span></a></span></span><span> </span><span id="local-6989586621684525675"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525675"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621684525674"><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525674"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Doc
+</span><span class="hs-identifier hs-var">text</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; String
+</span><a href="Language.Futhark.Core.html#nameToString"><span class="hs-identifier hs-var">nameToString</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525675"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-identifier hs-var">equals</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Match -&gt; Doc
+</span><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-var">pprMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525674"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684525666"><span id="local-6989586621684525668"><span class="annot"><span class="hs-identifier hs-type">Pretty</span></span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-51"></span><span>  </span><span id="local-6989586621684525662"><span class="annot"><span class="annottext">ppr :: Match -&gt; Doc
+</span><a href="#local-6989586621684525662"><span class="hs-identifier hs-var hs-var hs-var hs-var">ppr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Match -&gt; Doc
+</span><a href="Language.Futhark.TypeChecker.Match.html#pprMatch"><span class="hs-identifier hs-var">pprMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>
+</span><span id="line-53"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-type">patternToMatch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span>
+</span><span id="line-54"></span><span id="patternToMatch"><span class="annot"><span class="annottext">patternToMatch :: Pat -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var hs-var">patternToMatch</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Id"><span class="hs-identifier hs-type">Id</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684525658"><span class="annot"><span class="annottext">PatType
+</span><a href="#local-6989586621684525658"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-var">MatchWild</span></a></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Match) -&gt; StructType -&gt; Match
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PatType -&gt; StructType
+forall dim as. TypeBase dim as -&gt; TypeBase dim ()
+</span><a href="Language.Futhark.Prop.html#toStruct"><span class="hs-identifier hs-var">toStruct</span></a></span><span> </span><span class="annot"><span class="annottext">PatType
+</span><a href="#local-6989586621684525658"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-55"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Wildcard"><span class="hs-identifier hs-type">Wildcard</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684525655"><span class="annot"><span class="annottext">PatType
+</span><a href="#local-6989586621684525655"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-var">MatchWild</span></a></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Match) -&gt; StructType -&gt; Match
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PatType -&gt; StructType
+forall dim as. TypeBase dim as -&gt; TypeBase dim ()
+</span><a href="Language.Futhark.Prop.html#toStruct"><span class="hs-identifier hs-var">toStruct</span></a></span><span> </span><span class="annot"><span class="annottext">PatType
+</span><a href="#local-6989586621684525655"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-56"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatParens"><span class="hs-identifier hs-type">PatParens</span></a></span><span> </span><span id="local-6989586621684525653"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684525653"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pat -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684525653"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-57"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatAttr"><span class="hs-identifier hs-type">PatAttr</span></a></span><span> </span><span class="annot"><span class="annottext">AttrInfo VName
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684525651"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684525651"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pat -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684525651"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-58"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatAscription"><span class="hs-identifier hs-type">PatAscription</span></a></span><span> </span><span id="local-6989586621684525649"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684525649"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="annottext">TypeDeclBase Info VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pat -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684525649"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-59"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatLit"><span class="hs-identifier hs-type">PatLit</span></a></span><span> </span><span id="local-6989586621684525647"><span class="annot"><span class="annottext">PatLit
+</span><a href="#local-6989586621684525647"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684525646"><span class="annot"><span class="annottext">PatType
+</span><a href="#local-6989586621684525646"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-60"></span><span>  </span><span class="annot"><span class="annottext">Constr -&gt; [Match] -&gt; StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-var">MatchConstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatLit -&gt; Constr
+</span><a href="Language.Futhark.TypeChecker.Match.html#ConstrLit"><span class="hs-identifier hs-var">ConstrLit</span></a></span><span> </span><span class="annot"><span class="annottext">PatLit
+</span><a href="#local-6989586621684525647"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Match) -&gt; StructType -&gt; Match
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PatType -&gt; StructType
+forall dim as. TypeBase dim as -&gt; TypeBase dim ()
+</span><a href="Language.Futhark.Prop.html#toStruct"><span class="hs-identifier hs-var">toStruct</span></a></span><span> </span><span class="annot"><span class="annottext">PatType
+</span><a href="#local-6989586621684525646"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-61"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span id="local-6989586621684525645"><span class="annot"><span class="annottext">p :: Pat
+</span><a href="#local-6989586621684525645"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#TuplePat"><span class="hs-identifier hs-type">TuplePat</span></a></span><span> </span><span id="local-6989586621684525643"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684525643"><span class="hs-identifier hs-var">ps</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-62"></span><span>  </span><span class="annot"><span class="annottext">Constr -&gt; [Match] -&gt; StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-var">MatchConstr</span></a></span><span> </span><span class="annot"><span class="annottext">Constr
+</span><a href="Language.Futhark.TypeChecker.Match.html#ConstrTuple"><span class="hs-identifier hs-var">ConstrTuple</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Pat -&gt; Match) -&gt; [Pat] -&gt; [Match]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684525643"><span class="hs-identifier hs-var">ps</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Match) -&gt; StructType -&gt; Match
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-63"></span><span>    </span><span class="annot"><span class="annottext">Pat -&gt; StructType
+</span><a href="Language.Futhark.Prop.html#patternStructType"><span class="hs-identifier hs-var">patternStructType</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684525645"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-64"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span id="local-6989586621684525641"><span class="annot"><span class="annottext">p :: Pat
+</span><a href="#local-6989586621684525641"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#RecordPat"><span class="hs-identifier hs-type">RecordPat</span></a></span><span> </span><span id="local-6989586621684525639"><span class="annot"><span class="annottext">[(Name, Pat)]
+</span><a href="#local-6989586621684525639"><span class="hs-identifier hs-var">fs</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-65"></span><span>  </span><span class="annot"><span class="annottext">Constr -&gt; [Match] -&gt; StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-var">MatchConstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Name] -&gt; Constr
+</span><a href="Language.Futhark.TypeChecker.Match.html#ConstrRecord"><span class="hs-identifier hs-var">ConstrRecord</span></a></span><span> </span><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684525638"><span class="hs-identifier hs-var">fnames</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Pat -&gt; Match) -&gt; [Pat] -&gt; [Match]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684525637"><span class="hs-identifier hs-var">ps</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Match) -&gt; StructType -&gt; Match
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><span class="annottext">Pat -&gt; StructType
+</span><a href="Language.Futhark.Prop.html#patternStructType"><span class="hs-identifier hs-var">patternStructType</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684525641"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-68"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684525638"><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684525638"><span class="hs-identifier hs-var">fnames</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684525637"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684525637"><span class="hs-identifier hs-var">ps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(Name, Pat)] -&gt; ([Name], [Pat])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">([(Name, Pat)] -&gt; ([Name], [Pat]))
+-&gt; [(Name, Pat)] -&gt; ([Name], [Pat])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name Pat -&gt; [(Name, Pat)]
+forall a. Map Name a -&gt; [(Name, a)]
+</span><a href="Language.Futhark.Prop.html#sortFields"><span class="hs-identifier hs-var">sortFields</span></a></span><span> </span><span class="annot"><span class="annottext">(Map Name Pat -&gt; [(Name, Pat)]) -&gt; Map Name Pat -&gt; [(Name, Pat)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(Name, Pat)] -&gt; Map Name Pat
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">[(Name, Pat)]
+</span><a href="#local-6989586621684525639"><span class="hs-identifier hs-var">fs</span></a></span><span>
+</span><span id="line-69"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatConstr"><span class="hs-identifier hs-type">PatConstr</span></a></span><span> </span><span id="local-6989586621684525631"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525631"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684525630"><span class="annot"><span class="annottext">PatType
+</span><a href="#local-6989586621684525630"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684525629"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684525629"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-70"></span><span>  </span><span class="annot"><span class="annottext">Constr -&gt; [Match] -&gt; StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-var">MatchConstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; Constr
+</span><a href="Language.Futhark.TypeChecker.Match.html#Constr"><span class="hs-identifier hs-var">Constr</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525631"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Pat -&gt; Match) -&gt; [Pat] -&gt; [Match]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684525629"><span class="hs-identifier hs-var">args</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Match) -&gt; StructType -&gt; Match
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PatType -&gt; StructType
+forall dim as. TypeBase dim as -&gt; TypeBase dim ()
+</span><a href="Language.Futhark.Prop.html#toStruct"><span class="hs-identifier hs-var">toStruct</span></a></span><span> </span><span class="annot"><span class="annottext">PatType
+</span><a href="#local-6989586621684525630"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-71"></span><span>
+</span><span id="line-72"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#isConstr"><span class="hs-identifier hs-type">isConstr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span>
+</span><span id="line-73"></span><span id="isConstr"><span class="annot"><span class="annottext">isConstr :: Match -&gt; Maybe Name
+</span><a href="Language.Futhark.TypeChecker.Match.html#isConstr"><span class="hs-identifier hs-var hs-var">isConstr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Constr"><span class="hs-identifier hs-type">Constr</span></a></span><span> </span><span id="local-6989586621684525627"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525627"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Name -&gt; Maybe Name
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525627"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-74"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#isConstr"><span class="hs-identifier hs-var">isConstr</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Name
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#complete"><span class="hs-identifier hs-type">complete</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-77"></span><span id="complete"><span class="annot"><span class="annottext">complete :: [Match] -&gt; Bool
+</span><a href="Language.Futhark.TypeChecker.Match.html#complete"><span class="hs-identifier hs-var hs-var">complete</span></a></span></span><span> </span><span id="local-6989586621684525625"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525625"><span class="hs-identifier hs-var">xs</span></a></span></span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684525624"><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525624"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; Maybe Match
+forall a. [a] -&gt; Maybe a
+</span><a href="Futhark.Util.html#maybeHead"><span class="hs-identifier hs-var">maybeHead</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525625"><span class="hs-identifier hs-var">xs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-79"></span><span>    </span><span class="annot"><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Sum"><span class="hs-identifier hs-type">Sum</span></a></span><span> </span><span id="local-6989586621684525621"><span class="annot"><span class="annottext">Map Name [StructType]
+</span><a href="#local-6989586621684525621"><span class="hs-identifier hs-var">all_cs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Match -&gt; StructType
+</span><a href="Language.Futhark.TypeChecker.Match.html#matchType"><span class="hs-identifier hs-var">matchType</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525624"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-80"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684525620"><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684525620"><span class="hs-identifier hs-var">xs_cs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Match -&gt; Maybe Name) -&gt; [Match] -&gt; Maybe [Name]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Match -&gt; Maybe Name
+</span><a href="Language.Futhark.TypeChecker.Match.html#isConstr"><span class="hs-identifier hs-var">isConstr</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525625"><span class="hs-identifier hs-var">xs</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-81"></span><span>    </span><span class="annot"><span class="annottext">(Name -&gt; Bool) -&gt; [Name] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; [Name] -&gt; Bool
+forall (t :: * -&gt; *) a. (Foldable t, Eq a) =&gt; a -&gt; t a -&gt; Bool
+</span><span class="hs-operator hs-var">`elem`</span></span><span> </span><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684525620"><span class="hs-identifier hs-var">xs_cs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map Name [StructType] -&gt; [Name]
+forall k a. Map k a -&gt; [k]
+</span><span class="hs-identifier hs-var">M.keys</span></span><span> </span><span class="annot"><span class="annottext">Map Name [StructType]
+</span><a href="#local-6989586621684525621"><span class="hs-identifier hs-var">all_cs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-83"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Match -&gt; Bool) -&gt; [Match] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">any</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Match -&gt; Bool
+</span><a href="#local-6989586621684525614"><span class="hs-identifier hs-var">isBool</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525625"><span class="hs-identifier hs-var">xs</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">(Match -&gt; Bool) -&gt; [Match] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">any</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Match -&gt; Bool
+</span><a href="#local-6989586621684525614"><span class="hs-identifier hs-var">isBool</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525625"><span class="hs-identifier hs-var">xs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-84"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">(Match -&gt; Bool) -&gt; [Match] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="annot"><span class="annottext">Match -&gt; Bool
+</span><a href="#local-6989586621684525612"><span class="hs-identifier hs-var">isRecord</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525625"><span class="hs-identifier hs-var">xs</span></a></span><span>
+</span><span id="line-85"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">(Match -&gt; Bool) -&gt; [Match] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="annot"><span class="annottext">Match -&gt; Bool
+</span><a href="#local-6989586621684525611"><span class="hs-identifier hs-var">isTuple</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525625"><span class="hs-identifier hs-var">xs</span></a></span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-87"></span><span>    </span><span id="local-6989586621684525614"><span class="annot"><span class="annottext">isBool :: Bool -&gt; Match -&gt; Bool
+</span><a href="#local-6989586621684525614"><span class="hs-identifier hs-var hs-var">isBool</span></a></span></span><span> </span><span id="local-6989586621684525608"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621684525608"><span class="hs-identifier hs-var">b1</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#ConstrLit"><span class="hs-identifier hs-type">ConstrLit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatLitPrim"><span class="hs-identifier hs-type">PatLitPrim</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#BoolValue"><span class="hs-identifier hs-type">BoolValue</span></a></span><span> </span><span id="local-6989586621684525605"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621684525605"><span class="hs-identifier hs-var">b2</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621684525608"><span class="hs-identifier hs-var">b1</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621684525605"><span class="hs-identifier hs-var">b2</span></a></span><span>
+</span><span id="line-88"></span><span>    </span><span class="annot"><a href="#local-6989586621684525614"><span class="hs-identifier hs-var">isBool</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Match
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-89"></span><span>    </span><span id="local-6989586621684525612"><span class="annot"><span class="annottext">isRecord :: Match -&gt; Bool
+</span><a href="#local-6989586621684525612"><span class="hs-identifier hs-var hs-var">isRecord</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#ConstrRecord"><span class="hs-identifier hs-type">ConstrRecord</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-90"></span><span>    </span><span class="annot"><a href="#local-6989586621684525612"><span class="hs-identifier hs-var">isRecord</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-91"></span><span>    </span><span id="local-6989586621684525611"><span class="annot"><span class="annottext">isTuple :: Match -&gt; Bool
+</span><a href="#local-6989586621684525611"><span class="hs-identifier hs-var hs-var">isTuple</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="annot"><span class="annottext">Constr
+</span><a href="Language.Futhark.TypeChecker.Match.html#ConstrTuple"><span class="hs-identifier hs-var">ConstrTuple</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-92"></span><span>    </span><span class="annot"><a href="#local-6989586621684525611"><span class="hs-identifier hs-var">isTuple</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#specialise"><span class="hs-identifier hs-type">specialise</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Syntax.html#StructType"><span class="hs-identifier hs-type">StructType</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span>
+</span><span id="line-95"></span><span id="specialise"><span class="annot"><span class="annottext">specialise :: [StructType] -&gt; Match -&gt; [[Match]] -&gt; [[Match]]
+</span><a href="Language.Futhark.TypeChecker.Match.html#specialise"><span class="hs-identifier hs-var hs-var">specialise</span></a></span></span><span> </span><span id="local-6989586621684525603"><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684525603"><span class="hs-identifier hs-var">ats</span></a></span></span><span> </span><span id="local-6989586621684525602"><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525602"><span class="hs-identifier hs-var">c1</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[[Match]] -&gt; [[Match]]
+</span><a href="#local-6989586621684525601"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-96"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-97"></span><span>    </span><span id="local-6989586621684525601"><span class="annot"><span class="annottext">go :: [[Match]] -&gt; [[Match]]
+</span><a href="#local-6989586621684525601"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684525600"><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525600"><span class="hs-identifier hs-var">c2</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684525599"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525599"><span class="hs-identifier hs-var">row</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684525598"><span class="annot"><span class="annottext">[[Match]]
+</span><a href="#local-6989586621684525598"><span class="hs-identifier hs-var">ps</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684525597"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525597"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Match -&gt; Match -&gt; Maybe [Match]
+</span><a href="#local-6989586621684525596"><span class="hs-identifier hs-var">match</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525602"><span class="hs-identifier hs-var">c1</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525600"><span class="hs-identifier hs-var">c2</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-99"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525597"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; [Match] -&gt; [Match]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525599"><span class="hs-identifier hs-var">row</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; [[Match]] -&gt; [[Match]]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[[Match]] -&gt; [[Match]]
+</span><a href="#local-6989586621684525601"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><a href="#local-6989586621684525598"><span class="hs-identifier hs-var">ps</span></a></span><span>
+</span><span id="line-100"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-101"></span><span>        </span><span class="annot"><span class="annottext">[[Match]] -&gt; [[Match]]
+</span><a href="#local-6989586621684525601"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><a href="#local-6989586621684525598"><span class="hs-identifier hs-var">ps</span></a></span><span>
+</span><span id="line-102"></span><span>    </span><span class="annot"><a href="#local-6989586621684525601"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-103"></span><span>
+</span><span id="line-104"></span><span>    </span><span id="local-6989586621684525596"><span class="annot"><span class="annottext">match :: Match -&gt; Match -&gt; Maybe [Match]
+</span><a href="#local-6989586621684525596"><span class="hs-identifier hs-var hs-var">match</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span id="local-6989586621684525594"><span class="annot"><span class="annottext">Constr
+</span><a href="#local-6989586621684525594"><span class="hs-identifier hs-var">c1'</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span id="local-6989586621684525593"><span class="annot"><span class="annottext">Constr
+</span><a href="#local-6989586621684525593"><span class="hs-identifier hs-var">c2'</span></a></span></span><span> </span><span id="local-6989586621684525592"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525592"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Constr
+</span><a href="#local-6989586621684525594"><span class="hs-identifier hs-var">c1'</span></a></span><span> </span><span class="annot"><span class="annottext">Constr -&gt; Constr -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Constr
+</span><a href="#local-6989586621684525593"><span class="hs-identifier hs-var">c2'</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-106"></span><span>        </span><span class="annot"><span class="annottext">[Match] -&gt; Maybe [Match]
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525592"><span class="hs-identifier hs-var">args</span></a></span><span>
+</span><span id="line-107"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-108"></span><span>        </span><span class="annot"><span class="annottext">Maybe [Match]
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-109"></span><span>    </span><span class="annot"><a href="#local-6989586621684525596"><span class="hs-identifier hs-var">match</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-type">MatchWild</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-110"></span><span>      </span><span class="annot"><span class="annottext">[Match] -&gt; Maybe [Match]
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">([Match] -&gt; Maybe [Match]) -&gt; [Match] -&gt; Maybe [Match]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(StructType -&gt; Match) -&gt; [StructType] -&gt; [Match]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-var">MatchWild</span></a></span><span> </span><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684525603"><span class="hs-identifier hs-var">ats</span></a></span><span>
+</span><span id="line-111"></span><span>    </span><span class="annot"><a href="#local-6989586621684525596"><span class="hs-identifier hs-var">match</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Match
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-112"></span><span>      </span><span class="annot"><span class="annottext">Maybe [Match]
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#defaultMat"><span class="hs-identifier hs-type">defaultMat</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span>
+</span><span id="line-115"></span><span id="defaultMat"><span class="annot"><span class="annottext">defaultMat :: [[Match]] -&gt; [[Match]]
+</span><a href="Language.Futhark.TypeChecker.Match.html#defaultMat"><span class="hs-identifier hs-var hs-var">defaultMat</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">([Match] -&gt; Maybe [Match]) -&gt; [[Match]] -&gt; [[Match]]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; Maybe [Match]
+</span><a href="#local-6989586621684525589"><span class="hs-identifier hs-var">onRow</span></a></span><span>
+</span><span id="line-116"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621684525589"><span class="annot"><span class="annottext">onRow :: [Match] -&gt; Maybe [Match]
+</span><a href="#local-6989586621684525589"><span class="hs-identifier hs-var hs-var">onRow</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe [Match]
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-118"></span><span>    </span><span class="annot"><a href="#local-6989586621684525589"><span class="hs-identifier hs-var">onRow</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-type">MatchWild</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684525588"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525588"><span class="hs-identifier hs-var">ps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; Maybe [Match]
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525588"><span class="hs-identifier hs-var">ps</span></a></span><span>
+</span><span id="line-119"></span><span>    </span><span class="annot"><a href="#local-6989586621684525589"><span class="hs-identifier hs-var">onRow</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe [Match]
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-comment">-- Should not happen.</span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#findUnmatched"><span class="hs-identifier hs-type">findUnmatched</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span>
+</span><span id="line-122"></span><span id="findUnmatched"><span class="annot"><span class="annottext">findUnmatched :: [[Match]] -&gt; Int -&gt; [[Match]]
+</span><a href="Language.Futhark.TypeChecker.Match.html#findUnmatched"><span class="hs-identifier hs-var hs-var">findUnmatched</span></a></span></span><span> </span><span id="local-6989586621684525586"><span class="annot"><span class="annottext">[[Match]]
+</span><a href="#local-6989586621684525586"><span class="hs-identifier hs-var">pmat</span></a></span></span><span> </span><span id="local-6989586621684525585"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684525585"><span class="hs-identifier hs-var">n</span></a></span></span><span>
+</span><span id="line-123"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684525584"><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525584"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><a href="#local-6989586621684525586"><span class="hs-identifier hs-var">pmat</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-124"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684525583"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525583"><span class="hs-identifier hs-var">heads</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">([Match] -&gt; Maybe Match) -&gt; [[Match]] -&gt; Maybe [Match]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; Maybe Match
+forall a. [a] -&gt; Maybe a
+</span><a href="Futhark.Util.html#maybeHead"><span class="hs-identifier hs-var">maybeHead</span></a></span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><a href="#local-6989586621684525586"><span class="hs-identifier hs-var">pmat</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-125"></span><span>    </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; Bool
+</span><a href="Language.Futhark.TypeChecker.Match.html#complete"><span class="hs-identifier hs-var">complete</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525583"><span class="hs-identifier hs-var">heads</span></a></span><span>
+</span><span id="line-126"></span><span>      </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; [[Match]]
+</span><a href="#local-6989586621684525582"><span class="hs-identifier hs-var">completeCase</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525583"><span class="hs-identifier hs-var">heads</span></a></span><span>
+</span><span id="line-127"></span><span>      </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">StructType -&gt; [Match] -&gt; [[Match]]
+</span><a href="#local-6989586621684525581"><span class="hs-identifier hs-var">incompleteCase</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Match -&gt; StructType
+</span><a href="Language.Futhark.TypeChecker.Match.html#matchType"><span class="hs-identifier hs-var">matchType</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525584"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525583"><span class="hs-identifier hs-var">heads</span></a></span><span>
+</span><span id="line-128"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-129"></span><span>    </span><span id="local-6989586621684525582"><span class="annot"><span class="annottext">completeCase :: [Match] -&gt; [[Match]]
+</span><a href="#local-6989586621684525582"><span class="hs-identifier hs-var hs-var">completeCase</span></a></span></span><span> </span><span id="local-6989586621684525572"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525572"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-130"></span><span>      </span><span id="local-6989586621684525571"><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525571"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525572"><span class="hs-identifier hs-var">cs</span></a></span><span>
+</span><span id="line-131"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684525570"><span class="annot"><span class="annottext">ats :: [StructType]
+</span><a href="#local-6989586621684525570"><span class="hs-identifier hs-var hs-var">ats</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525571"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-132"></span><span>            </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span class="annot"><span class="annottext">Constr
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684525569"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525569"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Match -&gt; StructType) -&gt; [Match] -&gt; [StructType]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Match -&gt; StructType
+</span><a href="Language.Futhark.TypeChecker.Match.html#matchType"><span class="hs-identifier hs-var">matchType</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525569"><span class="hs-identifier hs-var">args</span></a></span><span>
+</span><span id="line-133"></span><span>            </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-type">MatchWild</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-134"></span><span>          </span><span id="local-6989586621684525567"><span class="annot"><span class="annottext">a_k :: Int
+</span><a href="#local-6989586621684525567"><span class="hs-identifier hs-var hs-var">a_k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[StructType] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684525570"><span class="hs-identifier hs-var">ats</span></a></span><span>
+</span><span id="line-135"></span><span>          </span><span id="local-6989586621684525565"><span class="annot"><span class="annottext">pmat' :: [[Match]]
+</span><a href="#local-6989586621684525565"><span class="hs-identifier hs-var hs-var">pmat'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[StructType] -&gt; Match -&gt; [[Match]] -&gt; [[Match]]
+</span><a href="Language.Futhark.TypeChecker.Match.html#specialise"><span class="hs-identifier hs-var">specialise</span></a></span><span> </span><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684525570"><span class="hs-identifier hs-var">ats</span></a></span><span> </span><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525571"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><a href="#local-6989586621684525586"><span class="hs-identifier hs-var">pmat</span></a></span><span>
+</span><span id="line-136"></span><span>      </span><span id="local-6989586621684525564"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525564"><span class="hs-identifier hs-var">u</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[[Match]] -&gt; Int -&gt; [[Match]]
+</span><a href="Language.Futhark.TypeChecker.Match.html#findUnmatched"><span class="hs-identifier hs-var">findUnmatched</span></a></span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><a href="#local-6989586621684525565"><span class="hs-identifier hs-var">pmat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684525567"><span class="hs-identifier hs-var">a_k</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684525585"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-137"></span><span>      </span><span class="annot"><span class="annottext">[Match] -&gt; [[Match]]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">([Match] -&gt; [[Match]]) -&gt; [Match] -&gt; [[Match]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Match
+</span><a href="#local-6989586621684525571"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-138"></span><span>        </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-type">MatchConstr</span></a></span><span> </span><span id="local-6989586621684525562"><span class="annot"><span class="annottext">Constr
+</span><a href="#local-6989586621684525562"><span class="hs-identifier hs-var">c'</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684525561"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525561"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-139"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684525560"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525560"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684525559"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525559"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [Match] -&gt; ([Match], [Match])
+forall a. Int -&gt; [a] -&gt; ([a], [a])
+</span><span class="hs-identifier hs-var">splitAt</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684525567"><span class="hs-identifier hs-var">a_k</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525564"><span class="hs-identifier hs-var">u</span></a></span><span>
+</span><span id="line-140"></span><span>           </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Constr -&gt; [Match] -&gt; StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-var">MatchConstr</span></a></span><span> </span><span class="annot"><span class="annottext">Constr
+</span><a href="#local-6989586621684525562"><span class="hs-identifier hs-var">c'</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525560"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525561"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Match -&gt; [Match] -&gt; [Match]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525559"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-141"></span><span>        </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-type">MatchWild</span></a></span><span> </span><span id="local-6989586621684525557"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525557"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-142"></span><span>          </span><span class="annot"><span class="annottext">StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-var">MatchWild</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525557"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Match -&gt; [Match] -&gt; [Match]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525564"><span class="hs-identifier hs-var">u</span></a></span><span>
+</span><span id="line-143"></span><span>
+</span><span id="line-144"></span><span>    </span><span id="local-6989586621684525581"><span class="annot"><span class="annottext">incompleteCase :: StructType -&gt; [Match] -&gt; [[Match]]
+</span><a href="#local-6989586621684525581"><span class="hs-identifier hs-var hs-var">incompleteCase</span></a></span></span><span> </span><span id="local-6989586621684525548"><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525548"><span class="hs-identifier hs-var">pt</span></a></span></span><span> </span><span id="local-6989586621684525547"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525547"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-145"></span><span>      </span><span id="local-6989586621684525546"><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525546"><span class="hs-identifier hs-var">u</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[[Match]] -&gt; Int -&gt; [[Match]]
+</span><a href="Language.Futhark.TypeChecker.Match.html#findUnmatched"><span class="hs-identifier hs-var">findUnmatched</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[[Match]] -&gt; [[Match]]
+</span><a href="Language.Futhark.TypeChecker.Match.html#defaultMat"><span class="hs-identifier hs-var">defaultMat</span></a></span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><a href="#local-6989586621684525586"><span class="hs-identifier hs-var">pmat</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684525585"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-146"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">null</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525547"><span class="hs-identifier hs-var">cs</span></a></span><span>
+</span><span id="line-147"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; [[Match]]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">([Match] -&gt; [[Match]]) -&gt; [Match] -&gt; [[Match]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-var">MatchWild</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525548"><span class="hs-identifier hs-var">pt</span></a></span><span> </span><span class="annot"><span class="annottext">Match -&gt; [Match] -&gt; [Match]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525546"><span class="hs-identifier hs-var">u</span></a></span><span>
+</span><span id="line-148"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525548"><span class="hs-identifier hs-var">pt</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-149"></span><span>          </span><span class="annot"><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-type">Scalar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Sum"><span class="hs-identifier hs-type">Sum</span></a></span><span> </span><span id="local-6989586621684525545"><span class="annot"><span class="annottext">Map Name [StructType]
+</span><a href="#local-6989586621684525545"><span class="hs-identifier hs-var">all_cs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-150"></span><span>            </span><span class="hs-comment">-- Figure out which constructors are missing.</span><span>
+</span><span id="line-151"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684525544"><span class="annot"><span class="annottext">sigma :: [Name]
+</span><a href="#local-6989586621684525544"><span class="hs-identifier hs-var hs-var">sigma</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Match -&gt; Maybe Name) -&gt; [Match] -&gt; [Name]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="annot"><span class="annottext">Match -&gt; Maybe Name
+</span><a href="Language.Futhark.TypeChecker.Match.html#isConstr"><span class="hs-identifier hs-var">isConstr</span></a></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525547"><span class="hs-identifier hs-var">cs</span></a></span><span>
+</span><span id="line-152"></span><span>                </span><span id="local-6989586621684525541"><span class="annot"><span class="annottext">notCovered :: (Name, b) -&gt; Bool
+</span><a href="#local-6989586621684525541"><span class="hs-identifier hs-var hs-var">notCovered</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684525540"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525540"><span class="hs-identifier hs-var">k</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">b
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525540"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Name -&gt; [Name] -&gt; Bool
+forall (t :: * -&gt; *) a. (Foldable t, Eq a) =&gt; a -&gt; t a -&gt; Bool
+</span><span class="hs-operator hs-var">`notElem`</span></span><span> </span><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684525544"><span class="hs-identifier hs-var">sigma</span></a></span><span>
+</span><span id="line-153"></span><span>            </span><span class="hs-special">(</span><span id="local-6989586621684525538"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525538"><span class="hs-identifier hs-var">cname</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684525537"><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684525537"><span class="hs-identifier hs-var">ts</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">((Name, [StructType]) -&gt; Bool)
+-&gt; [(Name, [StructType])] -&gt; [(Name, [StructType])]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="annot"><span class="annottext">(Name, [StructType]) -&gt; Bool
+forall {b}. (Name, b) -&gt; Bool
+</span><a href="#local-6989586621684525541"><span class="hs-identifier hs-var">notCovered</span></a></span><span> </span><span class="annot"><span class="annottext">([(Name, [StructType])] -&gt; [(Name, [StructType])])
+-&gt; [(Name, [StructType])] -&gt; [(Name, [StructType])]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name [StructType] -&gt; [(Name, [StructType])]
+forall k a. Map k a -&gt; [(k, a)]
+</span><span class="hs-identifier hs-var">M.toList</span></span><span> </span><span class="annot"><span class="annottext">Map Name [StructType]
+</span><a href="#local-6989586621684525545"><span class="hs-identifier hs-var">all_cs</span></a></span><span>
+</span><span id="line-154"></span><span>            </span><span class="annot"><span class="annottext">[Match] -&gt; [[Match]]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">([Match] -&gt; [[Match]]) -&gt; [Match] -&gt; [[Match]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Constr -&gt; [Match] -&gt; StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchConstr"><span class="hs-identifier hs-var">MatchConstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; Constr
+</span><a href="Language.Futhark.TypeChecker.Match.html#Constr"><span class="hs-identifier hs-var">Constr</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684525538"><span class="hs-identifier hs-var">cname</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(StructType -&gt; Match) -&gt; [StructType] -&gt; [Match]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-var">MatchWild</span></a></span><span> </span><span class="annot"><span class="annottext">[StructType]
+</span><a href="#local-6989586621684525537"><span class="hs-identifier hs-var">ts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525548"><span class="hs-identifier hs-var">pt</span></a></span><span> </span><span class="annot"><span class="annottext">Match -&gt; [Match] -&gt; [Match]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525546"><span class="hs-identifier hs-var">u</span></a></span><span>
+</span><span id="line-155"></span><span>          </span><span class="annot"><span class="annottext">StructType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-156"></span><span>            </span><span class="hs-comment">-- This is where we could have enumerated missing match</span><span>
+</span><span id="line-157"></span><span>            </span><span class="hs-comment">-- values (e.g. for booleans), rather than just emitting a</span><span>
+</span><span id="line-158"></span><span>            </span><span class="hs-comment">-- wildcard.</span><span>
+</span><span id="line-159"></span><span>            </span><span class="annot"><span class="annottext">[Match] -&gt; [[Match]]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">([Match] -&gt; [[Match]]) -&gt; [Match] -&gt; [[Match]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">StructType -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#MatchWild"><span class="hs-identifier hs-var">MatchWild</span></a></span><span> </span><span class="annot"><span class="annottext">StructType
+</span><a href="#local-6989586621684525548"><span class="hs-identifier hs-var">pt</span></a></span><span> </span><span class="annot"><span class="annottext">Match -&gt; [Match] -&gt; [Match]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Match]
+</span><a href="#local-6989586621684525546"><span class="hs-identifier hs-var">u</span></a></span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="hs-comment">-- If we get here, then the number of columns must be zero.</span><span>
+</span><span id="line-162"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#findUnmatched"><span class="hs-identifier hs-var">findUnmatched</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">]</span><span>
+</span><span id="line-163"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#findUnmatched"><span class="hs-identifier hs-var">findUnmatched</span></a></span><span> </span><span class="annot"><span class="annottext">[[Match]]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#unmatched"><span class="hs-pragma hs-type">unmatched</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-166"></span><span>
+</span><span id="line-167"></span><span class="hs-comment">-- | Find the unmatched cases.</span><span>
+</span><span id="line-168"></span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#unmatched"><span class="hs-identifier hs-type">unmatched</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.TypeChecker.Match.html#Match"><span class="hs-identifier hs-type">Match</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-169"></span><span id="unmatched"><span class="annot"><span class="annottext">unmatched :: [Pat] -&gt; [Match]
+</span><a href="Language.Futhark.TypeChecker.Match.html#unmatched"><span class="hs-identifier hs-var hs-var">unmatched</span></a></span></span><span> </span><span id="local-6989586621684525535"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684525535"><span class="hs-identifier hs-var">orig_ps</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-170"></span><span>  </span><span class="hs-comment">-- The algorithm may find duplicate example, which we filter away</span><span>
+</span><span id="line-171"></span><span>  </span><span class="hs-comment">-- here.</span><span>
+</span><span id="line-172"></span><span>  </span><span class="annot"><span class="annottext">[Match] -&gt; [Match]
+forall a. Ord a =&gt; [a] -&gt; [a]
+</span><a href="Futhark.Util.html#nubOrd"><span class="hs-identifier hs-var">nubOrd</span></a></span><span> </span><span class="annot"><span class="annottext">([Match] -&gt; [Match]) -&gt; [Match] -&gt; [Match]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-173"></span><span>    </span><span class="annot"><span class="annottext">([Match] -&gt; Maybe Match) -&gt; [[Match]] -&gt; [Match]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="annot"><span class="annottext">[Match] -&gt; Maybe Match
+forall a. [a] -&gt; Maybe a
+</span><a href="Futhark.Util.html#maybeHead"><span class="hs-identifier hs-var">maybeHead</span></a></span><span> </span><span class="annot"><span class="annottext">([[Match]] -&gt; [Match]) -&gt; [[Match]] -&gt; [Match]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-174"></span><span>      </span><span class="annot"><span class="annottext">[[Match]] -&gt; Int -&gt; [[Match]]
+</span><a href="Language.Futhark.TypeChecker.Match.html#findUnmatched"><span class="hs-identifier hs-var">findUnmatched</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Pat -&gt; [Match]) -&gt; [Pat] -&gt; [[Match]]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Match -&gt; [Match] -&gt; [Match]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Match -&gt; [Match]) -&gt; (Pat -&gt; Match) -&gt; Pat -&gt; [Match]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; Match
+</span><a href="Language.Futhark.TypeChecker.Match.html#patternToMatch"><span class="hs-identifier hs-var">patternToMatch</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684525535"><span class="hs-identifier hs-var">orig_ps</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-175"></span></pre></body></html>

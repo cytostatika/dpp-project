@@ -1,0 +1,1224 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE QuasiQuotes #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE TupleSections #-}</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- | Code generation for C with OpenCL.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CodeGen.Backends.COpenCL</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#compileProg"><span class="hs-identifier">compileProg</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CParts"><span class="hs-identifier">GC.CParts</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#asLibrary"><span class="hs-identifier">GC.asLibrary</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#asExecutable"><span class="hs-identifier">GC.asExecutable</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#asServer"><span class="hs-identifier">GC.asServer</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">mapM</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">intercalate</span></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html"><span class="hs-identifier">Futhark.CodeGen.Backends.COpenCL.Boilerplate</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html"><span class="hs-identifier">Futhark.CodeGen.Backends.GenericC</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">GC</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Options.html"><span class="hs-identifier">Futhark.CodeGen.Backends.GenericC.Options</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.SimpleRep.html"><span class="hs-identifier">Futhark.CodeGen.Backends.SimpleRep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.Backends.SimpleRep.html#primStorageType"><span class="hs-identifier">primStorageType</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.SimpleRep.html#toStorage"><span class="hs-identifier">toStorage</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html"><span class="hs-identifier">Futhark.CodeGen.ImpCode.OpenCL</span></a></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.OpenCL.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen.OpenCL</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">ImpGen</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html"><span class="hs-identifier">Futhark.IR.GPUMem</span></a></span><span> </span><span class="hs-keyword">hiding</span><span>
+</span><span id="line-26"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#CmpSizeLe"><span class="hs-identifier">CmpSizeLe</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-27"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#GetSize"><span class="hs-identifier">GetSize</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-28"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#GetSizeMax"><span class="hs-identifier">GetSizeMax</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Language.C.Quote.OpenCL</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">C</span></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Language.C.Syntax</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">C</span></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">NeatInterpolation</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">untrimming</span></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- | Compile the program to C with calls to OpenCL.</span><span>
+</span><span id="line-36"></span><span id="local-6989586621684546742"><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#compileProg"><span class="hs-identifier hs-type">compileProg</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684546742"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">T.Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684546742"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Warnings.html#Warnings"><span class="hs-identifier hs-type">ImpGen.Warnings</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CParts"><span class="hs-identifier hs-type">GC.CParts</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-37"></span><span id="compileProg"><span class="annot"><span class="annottext">compileProg :: forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Text -&gt; Prog GPUMem -&gt; m (Warnings, CParts)
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#compileProg"><span class="hs-identifier hs-var hs-var">compileProg</span></a></span></span><span> </span><span id="local-6989586621684546370"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684546370"><span class="hs-identifier hs-var">version</span></a></span></span><span> </span><span id="local-6989586621684546369"><span class="annot"><span class="annottext">Prog GPUMem
+</span><a href="#local-6989586621684546369"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-38"></span><span>  </span><span class="hs-special">(</span><span> </span><span id="local-6989586621684546368"><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684546368"><span class="hs-identifier hs-var">ws</span></a></span></span><span class="hs-special">,</span><span>
+</span><span id="line-39"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#Program"><span class="hs-identifier hs-type">Program</span></a></span><span>
+</span><span id="line-40"></span><span>      </span><span id="local-6989586621684546366"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684546366"><span class="hs-identifier hs-var">opencl_code</span></a></span></span><span>
+</span><span id="line-41"></span><span>      </span><span id="local-6989586621684546365"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684546365"><span class="hs-identifier hs-var">opencl_prelude</span></a></span></span><span>
+</span><span id="line-42"></span><span>      </span><span id="local-6989586621684546364"><span class="annot"><span class="annottext">Map Name KernelSafety
+</span><a href="#local-6989586621684546364"><span class="hs-identifier hs-var">kernels</span></a></span></span><span>
+</span><span id="line-43"></span><span>      </span><span id="local-6989586621684546363"><span class="annot"><span class="annottext">[PrimType]
+</span><a href="#local-6989586621684546363"><span class="hs-identifier hs-var">types</span></a></span></span><span>
+</span><span id="line-44"></span><span>      </span><span id="local-6989586621684546362"><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684546362"><span class="hs-identifier hs-var">sizes</span></a></span></span><span>
+</span><span id="line-45"></span><span>      </span><span id="local-6989586621684546361"><span class="annot"><span class="annottext">[FailureMsg]
+</span><a href="#local-6989586621684546361"><span class="hs-identifier hs-var">failures</span></a></span></span><span>
+</span><span id="line-46"></span><span>      </span><span id="local-6989586621684546360"><span class="annot"><span class="annottext">Definitions OpenCL
+</span><a href="#local-6989586621684546360"><span class="hs-identifier hs-var">prog'</span></a></span></span><span>
+</span><span id="line-47"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-48"></span><span>    </span><span class="annot"><span class="annottext">Prog GPUMem -&gt; m (Warnings, Program)
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Prog GPUMem -&gt; m (Warnings, Program)
+</span><a href="Futhark.CodeGen.ImpGen.OpenCL.html#compileProg"><span class="hs-identifier hs-var">ImpGen.compileProg</span></a></span><span> </span><span class="annot"><span class="annottext">Prog GPUMem
+</span><a href="#local-6989586621684546369"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-49"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684546358"><span class="annot"><span class="annottext">cost_centres :: [Name]
+</span><a href="#local-6989586621684546358"><span class="hs-identifier hs-var hs-var">cost_centres</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-50"></span><span>        </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyDevToDev"><span class="hs-identifier hs-var">copyDevToDev</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-51"></span><span>          </span><span class="annot"><span class="annottext">Name
+</span><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyDevToHost"><span class="hs-identifier hs-var">copyDevToHost</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-52"></span><span>          </span><span class="annot"><span class="annottext">Name
+</span><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyHostToDev"><span class="hs-identifier hs-var">copyHostToDev</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-53"></span><span>          </span><span class="annot"><span class="annottext">Name
+</span><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyScalarToDev"><span class="hs-identifier hs-var">copyScalarToDev</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-54"></span><span>          </span><span class="annot"><span class="annottext">Name
+</span><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#copyScalarFromDev"><span class="hs-identifier hs-var">copyScalarFromDev</span></a></span><span>
+</span><span id="line-55"></span><span>        </span><span class="hs-special">]</span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Warnings
+</span><a href="#local-6989586621684546368"><span class="hs-identifier hs-var">ws</span></a></span><span class="hs-special">,</span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span>    </span><span class="annot"><span class="annottext">(CParts -&gt; (Warnings, CParts)) -&gt; m CParts -&gt; m (Warnings, CParts)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Text
+-&gt; Text
+-&gt; Operations OpenCL ()
+-&gt; CompilerM OpenCL () ()
+-&gt; Text
+-&gt; [Space]
+-&gt; [Option]
+-&gt; Definitions OpenCL
+-&gt; m CParts
+forall (m :: * -&gt; *) op.
+MonadFreshNames m =&gt;
+Text
+-&gt; Text
+-&gt; Operations op ()
+-&gt; CompilerM op () ()
+-&gt; Text
+-&gt; [Space]
+-&gt; [Option]
+-&gt; Definitions op
+-&gt; m CParts
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileProg"><span class="hs-identifier hs-var">GC.compileProg</span></a></span><span>
+</span><span id="line-58"></span><span>      </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;opencl&quot;</span></span><span>
+</span><span id="line-59"></span><span>      </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684546370"><span class="hs-identifier hs-var">version</span></a></span><span>
+</span><span id="line-60"></span><span>      </span><span class="annot"><span class="annottext">Operations OpenCL ()
+</span><a href="#local-6989586621684546350"><span class="hs-identifier hs-var">operations</span></a></span><span>
+</span><span id="line-61"></span><span>      </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Text
+-&gt; Text
+-&gt; [Name]
+-&gt; Map Name KernelSafety
+-&gt; [PrimType]
+-&gt; Map Name SizeClass
+-&gt; [FailureMsg]
+-&gt; CompilerM OpenCL () ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#generateBoilerplate"><span class="hs-identifier hs-var">generateBoilerplate</span></a></span><span>
+</span><span id="line-62"></span><span>          </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684546366"><span class="hs-identifier hs-var">opencl_code</span></a></span><span>
+</span><span id="line-63"></span><span>          </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684546365"><span class="hs-identifier hs-var">opencl_prelude</span></a></span><span>
+</span><span id="line-64"></span><span>          </span><span class="annot"><span class="annottext">[Name]
+</span><a href="#local-6989586621684546358"><span class="hs-identifier hs-var">cost_centres</span></a></span><span>
+</span><span id="line-65"></span><span>          </span><span class="annot"><span class="annottext">Map Name KernelSafety
+</span><a href="#local-6989586621684546364"><span class="hs-identifier hs-var">kernels</span></a></span><span>
+</span><span id="line-66"></span><span>          </span><span class="annot"><span class="annottext">[PrimType]
+</span><a href="#local-6989586621684546363"><span class="hs-identifier hs-var">types</span></a></span><span>
+</span><span id="line-67"></span><span>          </span><span class="annot"><span class="annottext">Map Name SizeClass
+</span><a href="#local-6989586621684546362"><span class="hs-identifier hs-var">sizes</span></a></span><span>
+</span><span id="line-68"></span><span>          </span><span class="annot"><span class="annottext">[FailureMsg]
+</span><a href="#local-6989586621684546361"><span class="hs-identifier hs-var">failures</span></a></span><span>
+</span><span id="line-69"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-70"></span><span>      </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621684546348"><span class="hs-identifier hs-var">include_opencl_h</span></a></span><span>
+</span><span id="line-71"></span><span>      </span><span class="hs-special">[</span><span class="annot"><span class="annottext">[Char] -&gt; Space
+</span><a href="Futhark.IR.Syntax.Core.html#Space"><span class="hs-identifier hs-var">Space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-72"></span><span>      </span><span class="annot"><span class="annottext">[Option]
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#cliOptions"><span class="hs-identifier hs-var">cliOptions</span></a></span><span>
+</span><span id="line-73"></span><span>      </span><span class="annot"><span class="annottext">Definitions OpenCL
+</span><a href="#local-6989586621684546360"><span class="hs-identifier hs-var">prog'</span></a></span><span>
+</span><span id="line-74"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-75"></span><span>    </span><span class="annot"><a href="#local-6989586621684546350"><span class="hs-identifier hs-type">operations</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#Operations"><span class="hs-identifier hs-type">GC.Operations</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span>    </span><span id="local-6989586621684546350"><span class="annot"><span class="annottext">operations :: Operations OpenCL ()
+</span><a href="#local-6989586621684546350"><span class="hs-identifier hs-var hs-var">operations</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-77"></span><span>      </span><span class="annot"><span class="annottext">Operations OpenCL ()
+forall op s. Operations op s
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#defaultOperations"><span class="hs-identifier hs-var">GC.defaultOperations</span></a></span><span>
+</span><span id="line-78"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">opsCompiler :: OpCompiler OpenCL ()
+</span><a href="#local-6989586621684546343"><span class="hs-identifier hs-var">GC.opsCompiler</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OpCompiler OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#callKernel"><span class="hs-identifier hs-var">callKernel</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-79"></span><span>          </span><span class="annot"><span class="annottext">opsWriteScalar :: WriteScalar OpenCL ()
+</span><a href="#local-6989586621684546341"><span class="hs-identifier hs-var">GC.opsWriteScalar</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">WriteScalar OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#writeOpenCLScalar"><span class="hs-identifier hs-var">writeOpenCLScalar</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-80"></span><span>          </span><span class="annot"><span class="annottext">opsReadScalar :: ReadScalar OpenCL ()
+</span><a href="#local-6989586621684546339"><span class="hs-identifier hs-var">GC.opsReadScalar</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ReadScalar OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#readOpenCLScalar"><span class="hs-identifier hs-var">readOpenCLScalar</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-81"></span><span>          </span><span class="annot"><span class="annottext">opsAllocate :: Allocate OpenCL ()
+</span><a href="#local-6989586621684546337"><span class="hs-identifier hs-var">GC.opsAllocate</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Allocate OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#allocateOpenCLBuffer"><span class="hs-identifier hs-var">allocateOpenCLBuffer</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-82"></span><span>          </span><span class="annot"><span class="annottext">opsDeallocate :: Deallocate OpenCL ()
+</span><a href="#local-6989586621684546335"><span class="hs-identifier hs-var">GC.opsDeallocate</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Deallocate OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#deallocateOpenCLBuffer"><span class="hs-identifier hs-var">deallocateOpenCLBuffer</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-83"></span><span>          </span><span class="annot"><span class="annottext">opsCopy :: Copy OpenCL ()
+</span><a href="#local-6989586621684546333"><span class="hs-identifier hs-var">GC.opsCopy</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Copy OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#copyOpenCLMemory"><span class="hs-identifier hs-var">copyOpenCLMemory</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-84"></span><span>          </span><span class="annot"><span class="annottext">opsStaticArray :: StaticArray OpenCL ()
+</span><a href="#local-6989586621684546331"><span class="hs-identifier hs-var">GC.opsStaticArray</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StaticArray OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#staticOpenCLArray"><span class="hs-identifier hs-var">staticOpenCLArray</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-85"></span><span>          </span><span class="annot"><span class="annottext">opsMemoryType :: MemoryType OpenCL ()
+</span><a href="#local-6989586621684546329"><span class="hs-identifier hs-var">GC.opsMemoryType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MemoryType OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#openclMemoryType"><span class="hs-identifier hs-var">openclMemoryType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-86"></span><span>          </span><span class="annot"><span class="annottext">opsFatMemory :: Bool
+</span><a href="#local-6989586621684546327"><span class="hs-identifier hs-var">GC.opsFatMemory</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-87"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-88"></span><span>    </span><span id="local-6989586621684546348"><span class="annot"><span class="annottext">include_opencl_h :: Text
+</span><a href="#local-6989586621684546348"><span class="hs-identifier hs-var hs-var">include_opencl_h</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-89"></span><span>      </span><span class="annot"><span class="">[untrimming|
+       #define CL_TARGET_OPENCL_VERSION 120
+       #define CL_USE_DEPRECATED_OPENCL_1_2_APIS
+       #ifdef __APPLE__
+       #define CL_SILENCE_DEPRECATION
+       #include &lt;OpenCL/cl.h&gt;
+       #else
+       #include &lt;CL/cl.h&gt;
+       #endif
+       |]</span></span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#cliOptions"><span class="hs-identifier hs-type">cliOptions</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-101"></span><span id="cliOptions"><span class="annot"><span class="annottext">cliOptions :: [Option]
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#cliOptions"><span class="hs-identifier hs-var hs-var">cliOptions</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-102"></span><span>  </span><span class="annot"><span class="annottext">[Option]
+</span><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#commonOptions"><span class="hs-identifier hs-var">commonOptions</span></a></span><span>
+</span><span id="line-103"></span><span>    </span><span class="annot"><span class="annottext">[Option] -&gt; [Option] -&gt; [Option]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Option :: [Char] -&gt; Maybe Char -&gt; OptionArgument -&gt; [Char] -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-104"></span><span>           </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;platform&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-105"></span><span>             </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Maybe Char
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'p'</span></span><span class="hs-special">,</span><span>
+</span><span id="line-106"></span><span>             </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#RequiredArgument"><span class="hs-identifier hs-var">RequiredArgument</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;NAME&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-107"></span><span>             </span><span class="annot"><span class="annottext">optionDescription :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Use the first OpenCL platform whose name contains the given string.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-108"></span><span>             </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cstm|futhark_context_config_set_platform(cfg, optarg);|]</span></span><span>
+</span><span id="line-109"></span><span>           </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-110"></span><span>         </span><span class="annot"><span class="annottext">Option :: [Char] -&gt; Maybe Char -&gt; OptionArgument -&gt; [Char] -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-111"></span><span>           </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;dump-opencl&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-112"></span><span>             </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Char
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-113"></span><span>             </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#RequiredArgument"><span class="hs-identifier hs-var">RequiredArgument</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;FILE&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-114"></span><span>             </span><span class="annot"><span class="annottext">optionDescription :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Dump the embedded OpenCL program to the indicated file.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-115"></span><span>             </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-116"></span><span>               </span><span class="annot"><span class="">[C.cstm|{futhark_context_config_dump_program_to(cfg, optarg);
+                                     entry_point = NULL;}|]</span></span><span>
+</span><span id="line-118"></span><span>           </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-119"></span><span>         </span><span class="annot"><span class="annottext">Option :: [Char] -&gt; Maybe Char -&gt; OptionArgument -&gt; [Char] -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-120"></span><span>           </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;load-opencl&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-121"></span><span>             </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Char
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-122"></span><span>             </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#RequiredArgument"><span class="hs-identifier hs-var">RequiredArgument</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;FILE&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-123"></span><span>             </span><span class="annot"><span class="annottext">optionDescription :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Instead of using the embedded OpenCL program, load it from the indicated file.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-124"></span><span>             </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cstm|futhark_context_config_load_program_from(cfg, optarg);|]</span></span><span>
+</span><span id="line-125"></span><span>           </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-126"></span><span>         </span><span class="annot"><span class="annottext">Option :: [Char] -&gt; Maybe Char -&gt; OptionArgument -&gt; [Char] -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-127"></span><span>           </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;dump-opencl-binary&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-128"></span><span>             </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Char
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-129"></span><span>             </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#RequiredArgument"><span class="hs-identifier hs-var">RequiredArgument</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;FILE&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-130"></span><span>             </span><span class="annot"><span class="annottext">optionDescription :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Dump the compiled version of the embedded OpenCL program to the indicated file.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-131"></span><span>             </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-132"></span><span>               </span><span class="annot"><span class="">[C.cstm|{futhark_context_config_dump_binary_to(cfg, optarg);
+                                     entry_point = NULL;}|]</span></span><span>
+</span><span id="line-134"></span><span>           </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-135"></span><span>         </span><span class="annot"><span class="annottext">Option :: [Char] -&gt; Maybe Char -&gt; OptionArgument -&gt; [Char] -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-136"></span><span>           </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;load-opencl-binary&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-137"></span><span>             </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Char
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-138"></span><span>             </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#RequiredArgument"><span class="hs-identifier hs-var">RequiredArgument</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;FILE&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-139"></span><span>             </span><span class="annot"><span class="annottext">optionDescription :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Load an OpenCL binary from the indicated file.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-140"></span><span>             </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cstm|futhark_context_config_load_binary_from(cfg, optarg);|]</span></span><span>
+</span><span id="line-141"></span><span>           </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-142"></span><span>         </span><span class="annot"><span class="annottext">Option :: [Char] -&gt; Maybe Char -&gt; OptionArgument -&gt; [Char] -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-143"></span><span>           </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;build-option&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-144"></span><span>             </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Char
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-145"></span><span>             </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#RequiredArgument"><span class="hs-identifier hs-var">RequiredArgument</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;OPT&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-146"></span><span>             </span><span class="annot"><span class="annottext">optionDescription :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Add an additional build option to the string passed to clBuildProgram().&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-147"></span><span>             </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cstm|futhark_context_config_add_build_option(cfg, optarg);|]</span></span><span>
+</span><span id="line-148"></span><span>           </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-149"></span><span>         </span><span class="annot"><span class="annottext">Option :: [Char] -&gt; Maybe Char -&gt; OptionArgument -&gt; [Char] -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-150"></span><span>           </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;profile&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-151"></span><span>             </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Maybe Char
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'P'</span></span><span class="hs-special">,</span><span>
+</span><span id="line-152"></span><span>             </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#NoArgument"><span class="hs-identifier hs-var">NoArgument</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-153"></span><span>             </span><span class="annot"><span class="annottext">optionDescription :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Gather profiling data while executing and print out a summary at the end.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-154"></span><span>             </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cstm|futhark_context_config_set_profiling(cfg, 1);|]</span></span><span>
+</span><span id="line-155"></span><span>           </span><span class="hs-special">}</span><span class="hs-special">,</span><span>
+</span><span id="line-156"></span><span>         </span><span class="annot"><span class="annottext">Option :: [Char] -&gt; Maybe Char -&gt; OptionArgument -&gt; [Char] -&gt; Stm -&gt; Option
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#Option"><span class="hs-identifier hs-type">Option</span></a></span><span>
+</span><span id="line-157"></span><span>           </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">optionLongName :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionLongName"><span class="hs-identifier hs-var">optionLongName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;list-devices&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-158"></span><span>             </span><span class="annot"><span class="annottext">optionShortName :: Maybe Char
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionShortName"><span class="hs-identifier hs-var">optionShortName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Char
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span>
+</span><span id="line-159"></span><span>             </span><span class="annot"><span class="annottext">optionArgument :: OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionArgument"><span class="hs-identifier hs-var">optionArgument</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OptionArgument
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#NoArgument"><span class="hs-identifier hs-var">NoArgument</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-160"></span><span>             </span><span class="annot"><span class="annottext">optionDescription :: [Char]
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionDescription"><span class="hs-identifier hs-var">optionDescription</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;List all OpenCL devices and platforms available on the system.&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-161"></span><span>             </span><span class="annot"><span class="annottext">optionAction :: Stm
+</span><a href="Futhark.CodeGen.Backends.GenericC.Options.html#optionAction"><span class="hs-identifier hs-var">optionAction</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-162"></span><span>               </span><span class="annot"><span class="">[C.cstm|{futhark_context_config_list_devices(cfg);
+                        entry_point = NULL;}|]</span></span><span>
+</span><span id="line-164"></span><span>           </span><span class="hs-special">}</span><span>
+</span><span id="line-165"></span><span>       </span><span class="hs-special">]</span><span>
+</span><span id="line-166"></span><span>
+</span><span id="line-167"></span><span class="hs-comment">-- We detect the special case of writing a constant and turn it into a</span><span>
+</span><span id="line-168"></span><span class="hs-comment">-- non-blocking write.  This may be slightly faster, as it prevents</span><span>
+</span><span id="line-169"></span><span class="hs-comment">-- unnecessary synchronisation of the OpenCL command queue, and</span><span>
+</span><span id="line-170"></span><span class="hs-comment">-- writing a constant is fairly common.  This is only possible because</span><span>
+</span><span id="line-171"></span><span class="hs-comment">-- we can give the constant infinite lifetime (with 'static'), which</span><span>
+</span><span id="line-172"></span><span class="hs-comment">-- is not the case for ordinary variables.</span><span>
+</span><span id="line-173"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#writeOpenCLScalar"><span class="hs-identifier hs-type">writeOpenCLScalar</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#WriteScalar"><span class="hs-identifier hs-type">GC.WriteScalar</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-174"></span><span id="writeOpenCLScalar"><span class="annot"><span class="annottext">writeOpenCLScalar :: WriteScalar OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#writeOpenCLScalar"><span class="hs-identifier hs-var hs-var">writeOpenCLScalar</span></a></span></span><span> </span><span id="local-6989586621684546299"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546299"><span class="hs-identifier hs-var">mem</span></a></span></span><span> </span><span id="local-6989586621684546298"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546298"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684546297"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684546297"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span> </span><span class="annot"><span class="annottext">Volatility
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684546296"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546296"><span class="hs-identifier hs-var">val</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-175"></span><span>  </span><span id="local-6989586621684546295"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546295"><span class="hs-identifier hs-var">val'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM OpenCL () VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;write_tmp&quot;</span></span><span>
+</span><span id="line-176"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684546289"><span class="annot"><span class="annottext">BlockItem
+</span><a href="#local-6989586621684546289"><span class="hs-identifier hs-var">decl</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684546288"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546288"><span class="hs-identifier hs-var">blocking</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-177"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546296"><span class="hs-identifier hs-var">val</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-178"></span><span>          </span><span class="annot"><span class="hs-identifier hs-type">C.Const</span></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="">[C.citem|static $ty:t $id:val' = $exp:val;|]</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="">[C.cexp|CL_FALSE|]</span></span><span class="hs-special">)</span><span>
+</span><span id="line-179"></span><span>          </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="">[C.citem|$ty:t $id:val' = $exp:val;|]</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="">[C.cexp|CL_TRUE|]</span></span><span class="hs-special">)</span><span>
+</span><span id="line-180"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-181"></span><span>    </span><span class="annot"><span class="">[C.cstm|{$item:decl
+                  OPENCL_SUCCEED_OR_RETURN(
+                    clEnqueueWriteBuffer(ctx-&gt;opencl.queue, $exp:mem, $exp:blocking,
+                                         $exp:i * sizeof($ty:t), sizeof($ty:t),
+                                         &amp;$id:val',
+                                         0, NULL, $exp:(profilingEvent copyScalarToDev)));
+                }|]</span></span><span>
+</span><span id="line-188"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#writeOpenCLScalar"><span class="hs-identifier hs-var">writeOpenCLScalar</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Type
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684546259"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546259"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="annot"><span class="annottext">Volatility
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-189"></span><span>  </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM OpenCL () ()
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; CompilerM OpenCL () ())
+-&gt; [Char] -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Cannot write to '&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546259"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;' memory space.&quot;</span></span><span>
+</span><span id="line-190"></span><span>
+</span><span id="line-191"></span><span class="hs-comment">-- It is often faster to do a blocking clEnqueueReadBuffer() than to</span><span>
+</span><span id="line-192"></span><span class="hs-comment">-- do an async clEnqueueReadBuffer() followed by a clFinish(), even</span><span>
+</span><span id="line-193"></span><span class="hs-comment">-- with an in-order command queue.  This is safe if and only if there</span><span>
+</span><span id="line-194"></span><span class="hs-comment">-- are no possible outstanding failures.</span><span>
+</span><span id="line-195"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#readOpenCLScalar"><span class="hs-identifier hs-type">readOpenCLScalar</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#ReadScalar"><span class="hs-identifier hs-type">GC.ReadScalar</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-196"></span><span id="readOpenCLScalar"><span class="annot"><span class="annottext">readOpenCLScalar :: ReadScalar OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#readOpenCLScalar"><span class="hs-identifier hs-var hs-var">readOpenCLScalar</span></a></span></span><span> </span><span id="local-6989586621684546257"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546257"><span class="hs-identifier hs-var">mem</span></a></span></span><span> </span><span id="local-6989586621684546256"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546256"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684546255"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684546255"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span> </span><span class="annot"><span class="annottext">Volatility
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-197"></span><span>  </span><span id="local-6989586621684546254"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546254"><span class="hs-identifier hs-var">val</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM OpenCL () VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;read_res&quot;</span></span><span>
+</span><span id="line-198"></span><span>  </span><span class="annot"><span class="annottext">InitGroup -&gt; CompilerM OpenCL () ()
+forall op s. InitGroup -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#decl"><span class="hs-identifier hs-var">GC.decl</span></a></span><span> </span><span class="annot"><span class="">[C.cdecl|$ty:t $id:val;|]</span></span><span>
+</span><span id="line-199"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-200"></span><span>    </span><span class="annot"><span class="">[C.cstm|OPENCL_SUCCEED_OR_RETURN(
+                   clEnqueueReadBuffer(ctx-&gt;opencl.queue, $exp:mem,
+                                       ctx-&gt;failure_is_an_option ? CL_FALSE : CL_TRUE,
+                                       $exp:i * sizeof($ty:t), sizeof($ty:t),
+                                       &amp;$id:val,
+                                       0, NULL, $exp:(profilingEvent copyScalarFromDev)));
+              |]</span></span><span>
+</span><span id="line-207"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-208"></span><span>    </span><span class="annot"><span class="">[C.cstm|if (ctx-&gt;failure_is_an_option &amp;&amp;
+                     futhark_context_sync(ctx) != 0) { return 1; }|]</span></span><span>
+</span><span id="line-210"></span><span>  </span><span class="annot"><span class="annottext">Exp -&gt; CompilerM OpenCL () Exp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="">[C.cexp|$id:val|]</span></span><span>
+</span><span id="line-211"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#readOpenCLScalar"><span class="hs-identifier hs-var">readOpenCLScalar</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Type
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684546242"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546242"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="annot"><span class="annottext">Volatility
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-212"></span><span>  </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM OpenCL () Exp
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; CompilerM OpenCL () Exp)
+-&gt; [Char] -&gt; CompilerM OpenCL () Exp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Cannot read from '&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546242"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;' memory space.&quot;</span></span><span>
+</span><span id="line-213"></span><span>
+</span><span id="line-214"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#allocateOpenCLBuffer"><span class="hs-identifier hs-type">allocateOpenCLBuffer</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#Allocate"><span class="hs-identifier hs-type">GC.Allocate</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-215"></span><span id="allocateOpenCLBuffer"><span class="annot"><span class="annottext">allocateOpenCLBuffer :: Allocate OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#allocateOpenCLBuffer"><span class="hs-identifier hs-var hs-var">allocateOpenCLBuffer</span></a></span></span><span> </span><span id="local-6989586621684546241"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546241"><span class="hs-identifier hs-var">mem</span></a></span></span><span> </span><span id="local-6989586621684546240"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546240"><span class="hs-identifier hs-var">size</span></a></span></span><span> </span><span id="local-6989586621684546239"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546239"><span class="hs-identifier hs-var">tag</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-216"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span> </span><span class="annot"><span class="">[C.cstm|OPENCL_SUCCEED_OR_RETURN(opencl_alloc(&amp;ctx-&gt;opencl, (size_t)$exp:size, $exp:tag, &amp;$exp:mem));|]</span></span><span>
+</span><span id="line-217"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#allocateOpenCLBuffer"><span class="hs-identifier hs-var">allocateOpenCLBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684546235"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546235"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-218"></span><span>  </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM OpenCL () ()
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; CompilerM OpenCL () ())
+-&gt; [Char] -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Cannot allocate in '&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546235"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;' space.&quot;</span></span><span>
+</span><span id="line-219"></span><span>
+</span><span id="line-220"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#deallocateOpenCLBuffer"><span class="hs-identifier hs-type">deallocateOpenCLBuffer</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#Deallocate"><span class="hs-identifier hs-type">GC.Deallocate</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-221"></span><span id="deallocateOpenCLBuffer"><span class="annot"><span class="annottext">deallocateOpenCLBuffer :: Deallocate OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#deallocateOpenCLBuffer"><span class="hs-identifier hs-var hs-var">deallocateOpenCLBuffer</span></a></span></span><span> </span><span id="local-6989586621684546234"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546234"><span class="hs-identifier hs-var">mem</span></a></span></span><span> </span><span id="local-6989586621684546233"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546233"><span class="hs-identifier hs-var">tag</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-222"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span> </span><span class="annot"><span class="">[C.cstm|OPENCL_SUCCEED_OR_RETURN(opencl_free(&amp;ctx-&gt;opencl, $exp:mem, $exp:tag));|]</span></span><span>
+</span><span id="line-223"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#deallocateOpenCLBuffer"><span class="hs-identifier hs-var">deallocateOpenCLBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684546232"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546232"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-224"></span><span>  </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM OpenCL () ()
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; CompilerM OpenCL () ())
+-&gt; [Char] -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Cannot deallocate in '&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546232"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;' space&quot;</span></span><span>
+</span><span id="line-225"></span><span>
+</span><span id="line-226"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#copyOpenCLMemory"><span class="hs-identifier hs-type">copyOpenCLMemory</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#Copy"><span class="hs-identifier hs-type">GC.Copy</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-227"></span><span class="hs-comment">-- The read/write/copy-buffer functions fail if the given offset is</span><span>
+</span><span id="line-228"></span><span class="hs-comment">-- out of bounds, even if asked to read zero bytes.  We protect with a</span><span>
+</span><span id="line-229"></span><span class="hs-comment">-- branch to avoid this.</span><span>
+</span><span id="line-230"></span><span id="copyOpenCLMemory"><span class="annot"><span class="annottext">copyOpenCLMemory :: Copy OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#copyOpenCLMemory"><span class="hs-identifier hs-var hs-var">copyOpenCLMemory</span></a></span></span><span> </span><span id="local-6989586621684546231"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546231"><span class="hs-identifier hs-var">destmem</span></a></span></span><span> </span><span id="local-6989586621684546230"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546230"><span class="hs-identifier hs-var">destidx</span></a></span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span> </span><span id="local-6989586621684546229"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546229"><span class="hs-identifier hs-var">srcmem</span></a></span></span><span> </span><span id="local-6989586621684546228"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546228"><span class="hs-identifier hs-var">srcidx</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Space"><span class="hs-identifier hs-type">Space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684546227"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546227"><span class="hs-identifier hs-var">nbytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-231"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-232"></span><span>    </span><span class="annot"><span class="">[C.cstm|
+    if ($exp:nbytes &gt; 0) {
+      OPENCL_SUCCEED_OR_RETURN(
+        clEnqueueReadBuffer(ctx-&gt;opencl.queue, $exp:srcmem,
+                            ctx-&gt;failure_is_an_option ? CL_FALSE : CL_TRUE,
+                            (size_t)$exp:srcidx, (size_t)$exp:nbytes,
+                            $exp:destmem + $exp:destidx,
+                            0, NULL, $exp:(profilingEvent copyHostToDev)));
+      if (ctx-&gt;failure_is_an_option &amp;&amp;
+          futhark_context_sync(ctx) != 0) { return 1; }
+   }
+  |]</span></span><span>
+</span><span id="line-244"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#copyOpenCLMemory"><span class="hs-identifier hs-var">copyOpenCLMemory</span></a></span><span> </span><span id="local-6989586621684546224"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546224"><span class="hs-identifier hs-var">destmem</span></a></span></span><span> </span><span id="local-6989586621684546223"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546223"><span class="hs-identifier hs-var">destidx</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Space"><span class="hs-identifier hs-type">Space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684546222"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546222"><span class="hs-identifier hs-var">srcmem</span></a></span></span><span> </span><span id="local-6989586621684546221"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546221"><span class="hs-identifier hs-var">srcidx</span></a></span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span> </span><span id="local-6989586621684546220"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546220"><span class="hs-identifier hs-var">nbytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-245"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-246"></span><span>    </span><span class="annot"><span class="">[C.cstm|
+    if ($exp:nbytes &gt; 0) {
+      OPENCL_SUCCEED_OR_RETURN(
+        clEnqueueWriteBuffer(ctx-&gt;opencl.queue, $exp:destmem, CL_TRUE,
+                             (size_t)$exp:destidx, (size_t)$exp:nbytes,
+                             $exp:srcmem + $exp:srcidx,
+                             0, NULL, $exp:(profilingEvent copyDevToHost)));
+    }
+  |]</span></span><span>
+</span><span id="line-255"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#copyOpenCLMemory"><span class="hs-identifier hs-var">copyOpenCLMemory</span></a></span><span> </span><span id="local-6989586621684546219"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546219"><span class="hs-identifier hs-var">destmem</span></a></span></span><span> </span><span id="local-6989586621684546218"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546218"><span class="hs-identifier hs-var">destidx</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Space"><span class="hs-identifier hs-type">Space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684546217"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546217"><span class="hs-identifier hs-var">srcmem</span></a></span></span><span> </span><span id="local-6989586621684546216"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546216"><span class="hs-identifier hs-var">srcidx</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Space"><span class="hs-identifier hs-type">Space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684546215"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546215"><span class="hs-identifier hs-var">nbytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-256"></span><span>  </span><span class="hs-comment">-- Be aware that OpenCL swaps the usual order of operands for</span><span>
+</span><span id="line-257"></span><span>  </span><span class="hs-comment">-- memcpy()-like functions.  The order below is not a typo.</span><span>
+</span><span id="line-258"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-259"></span><span>    </span><span class="annot"><span class="">[C.cstm|{
+    if ($exp:nbytes &gt; 0) {
+      OPENCL_SUCCEED_OR_RETURN(
+        clEnqueueCopyBuffer(ctx-&gt;opencl.queue,
+                            $exp:srcmem, $exp:destmem,
+                            (size_t)$exp:srcidx, (size_t)$exp:destidx,
+                            (size_t)$exp:nbytes,
+                            0, NULL, $exp:(profilingEvent copyDevToDev)));
+      if (ctx-&gt;debugging) {
+        OPENCL_SUCCEED_FATAL(clFinish(ctx-&gt;opencl.queue));
+      }
+    }
+  }|]</span></span><span>
+</span><span id="line-272"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#copyOpenCLMemory"><span class="hs-identifier hs-var">copyOpenCLMemory</span></a></span><span> </span><span id="local-6989586621684546214"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546214"><span class="hs-identifier hs-var">destmem</span></a></span></span><span> </span><span id="local-6989586621684546213"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546213"><span class="hs-identifier hs-var">destidx</span></a></span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span> </span><span id="local-6989586621684546212"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546212"><span class="hs-identifier hs-var">srcmem</span></a></span></span><span> </span><span id="local-6989586621684546211"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546211"><span class="hs-identifier hs-var">srcidx</span></a></span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="Futhark.IR.Syntax.Core.html#DefaultSpace"><span class="hs-identifier hs-var">DefaultSpace</span></a></span><span> </span><span id="local-6989586621684546210"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546210"><span class="hs-identifier hs-var">nbytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-273"></span><span>  </span><span class="annot"><span class="annottext">Exp -&gt; Exp -&gt; Exp -&gt; Exp -&gt; Exp -&gt; CompilerM OpenCL () ()
+forall op s. Exp -&gt; Exp -&gt; Exp -&gt; Exp -&gt; Exp -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#copyMemoryDefaultSpace"><span class="hs-identifier hs-var">GC.copyMemoryDefaultSpace</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546214"><span class="hs-identifier hs-var">destmem</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546213"><span class="hs-identifier hs-var">destidx</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546212"><span class="hs-identifier hs-var">srcmem</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546211"><span class="hs-identifier hs-var">srcidx</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546210"><span class="hs-identifier hs-var">nbytes</span></a></span><span>
+</span><span id="line-274"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#copyOpenCLMemory"><span class="hs-identifier hs-var">copyOpenCLMemory</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684546208"><span class="annot"><span class="annottext">Space
+</span><a href="#local-6989586621684546208"><span class="hs-identifier hs-var">destspace</span></a></span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684546207"><span class="annot"><span class="annottext">Space
+</span><a href="#local-6989586621684546207"><span class="hs-identifier hs-var">srcspace</span></a></span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-275"></span><span>  </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM OpenCL () ()
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; CompilerM OpenCL () ())
+-&gt; [Char] -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Cannot copy to &quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Space -&gt; [Char]
+forall a. Show a =&gt; a -&gt; [Char]
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="#local-6989586621684546208"><span class="hs-identifier hs-var">destspace</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot; from &quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Space -&gt; [Char]
+forall a. Show a =&gt; a -&gt; [Char]
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="#local-6989586621684546207"><span class="hs-identifier hs-var">srcspace</span></a></span><span>
+</span><span id="line-276"></span><span>
+</span><span id="line-277"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#openclMemoryType"><span class="hs-identifier hs-type">openclMemoryType</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#MemoryType"><span class="hs-identifier hs-type">GC.MemoryType</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-278"></span><span id="openclMemoryType"><span class="annot"><span class="annottext">openclMemoryType :: MemoryType OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#openclMemoryType"><span class="hs-identifier hs-var hs-var">openclMemoryType</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Type -&gt; CompilerM OpenCL () Type
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="">[C.cty|typename cl_mem|]</span></span><span>
+</span><span id="line-279"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#openclMemoryType"><span class="hs-identifier hs-var">openclMemoryType</span></a></span><span> </span><span id="local-6989586621684546205"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546205"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-280"></span><span>  </span><span class="annot"><span class="annottext">MemoryType OpenCL ()
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">MemoryType OpenCL () -&gt; MemoryType OpenCL ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;OpenCL backend does not support '&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546205"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;' memory space.&quot;</span></span><span>
+</span><span id="line-281"></span><span>
+</span><span id="line-282"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#staticOpenCLArray"><span class="hs-identifier hs-type">staticOpenCLArray</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#StaticArray"><span class="hs-identifier hs-type">GC.StaticArray</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-283"></span><span id="staticOpenCLArray"><span class="annot"><span class="annottext">staticOpenCLArray :: StaticArray OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#staticOpenCLArray"><span class="hs-identifier hs-var hs-var">staticOpenCLArray</span></a></span></span><span> </span><span id="local-6989586621684546204"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546204"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;device&quot;</span></span><span> </span><span id="local-6989586621684546203"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684546203"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621684546202"><span class="annot"><span class="annottext">ArrayContents
+</span><a href="#local-6989586621684546202"><span class="hs-identifier hs-var">vs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-284"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684546201"><span class="annot"><span class="annottext">ct :: Type
+</span><a href="#local-6989586621684546201"><span class="hs-identifier hs-var hs-var">ct</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; Type
+</span><a href="Futhark.CodeGen.Backends.SimpleRep.html#primTypeToCType"><span class="hs-identifier hs-var">GC.primTypeToCType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684546203"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-285"></span><span>  </span><span id="local-6989586621684546199"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546199"><span class="hs-identifier hs-var">name_realtype</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM OpenCL () VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; CompilerM OpenCL () VName)
+-&gt; [Char] -&gt; CompilerM OpenCL () VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; [Char]
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546204"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;_realtype&quot;</span></span><span>
+</span><span id="line-286"></span><span>  </span><span id="local-6989586621684546197"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684546197"><span class="hs-identifier hs-var">num_elems</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ArrayContents
+</span><a href="#local-6989586621684546202"><span class="hs-identifier hs-var">vs</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-287"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.html#ArrayValues"><span class="hs-identifier hs-type">ArrayValues</span></a></span><span> </span><span id="local-6989586621684546195"><span class="annot"><span class="annottext">[PrimValue]
+</span><a href="#local-6989586621684546195"><span class="hs-identifier hs-var">vs'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-288"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684546192"><span class="annot"><span class="annottext">vs'' :: [Initializer]
+</span><a href="#local-6989586621684546192"><span class="hs-identifier hs-var hs-var">vs''</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="">[C.cinit|$exp:v|]</span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="local-6989586621684546191"><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684546191"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[PrimValue]
+</span><a href="#local-6989586621684546195"><span class="hs-identifier hs-var">vs'</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-289"></span><span>      </span><span class="annot"><span class="annottext">Definition -&gt; CompilerM OpenCL () ()
+forall op s. Definition -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#earlyDecl"><span class="hs-identifier hs-var">GC.earlyDecl</span></a></span><span> </span><span class="annot"><span class="">[C.cedecl|static $ty:ct $id:name_realtype[$int:(length vs'')] = {$inits:vs''};|]</span></span><span>
+</span><span id="line-290"></span><span>      </span><span class="annot"><span class="annottext">Int -&gt; CompilerM OpenCL () Int
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; CompilerM OpenCL () Int) -&gt; Int -&gt; CompilerM OpenCL () Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Initializer] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[Initializer]
+</span><a href="#local-6989586621684546192"><span class="hs-identifier hs-var">vs''</span></a></span><span>
+</span><span id="line-291"></span><span>    </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.html#ArrayZeros"><span class="hs-identifier hs-type">ArrayZeros</span></a></span><span> </span><span id="local-6989586621684546177"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684546177"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-292"></span><span>      </span><span class="annot"><span class="annottext">Definition -&gt; CompilerM OpenCL () ()
+forall op s. Definition -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#earlyDecl"><span class="hs-identifier hs-var">GC.earlyDecl</span></a></span><span> </span><span class="annot"><span class="">[C.cedecl|static $ty:ct $id:name_realtype[$int:n];|]</span></span><span>
+</span><span id="line-293"></span><span>      </span><span class="annot"><span class="annottext">Int -&gt; CompilerM OpenCL () Int
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684546177"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-294"></span><span>  </span><span class="hs-comment">-- Fake a memory block.</span><span>
+</span><span id="line-295"></span><span>  </span><span class="annot"><span class="annottext">Id -&gt; Type -&gt; Maybe Exp -&gt; CompilerM OpenCL () ()
+forall op s. Id -&gt; Type -&gt; Maybe Exp -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#contextField"><span class="hs-identifier hs-var">GC.contextField</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; SrcLoc -&gt; Id
+forall a. ToIdent a =&gt; a -&gt; SrcLoc -&gt; Id
+</span><span class="hs-identifier hs-var">C.toIdent</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546204"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="">[C.cty|struct memblock_device|]</span></span><span> </span><span class="annot"><span class="annottext">Maybe Exp
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-296"></span><span>  </span><span class="hs-comment">-- During startup, copy the data to where we need it.</span><span>
+</span><span id="line-297"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#atInit"><span class="hs-identifier hs-var">GC.atInit</span></a></span><span>
+</span><span id="line-298"></span><span>    </span><span class="annot"><span class="">[C.cstm|{
+    typename cl_int success;
+    ctx-&gt;$id:name.references = NULL;
+    ctx-&gt;$id:name.size = 0;
+    ctx-&gt;$id:name.mem =
+      clCreateBuffer(ctx-&gt;opencl.ctx, CL_MEM_READ_WRITE,
+                     ($int:num_elems &gt; 0 ? $int:num_elems : 1)*sizeof($ty:ct), NULL,
+                     &amp;success);
+    OPENCL_SUCCEED_OR_RETURN(success);
+    if ($int:num_elems &gt; 0) {
+      OPENCL_SUCCEED_OR_RETURN(
+        clEnqueueWriteBuffer(ctx-&gt;opencl.queue, ctx-&gt;$id:name.mem, CL_TRUE,
+                             0, $int:num_elems*sizeof($ty:ct),
+                             $id:name_realtype,
+                             0, NULL, NULL));
+    }
+  }|]</span></span><span>
+</span><span id="line-315"></span><span>  </span><span class="annot"><span class="annottext">BlockItem -&gt; CompilerM OpenCL () ()
+forall op s. BlockItem -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#item"><span class="hs-identifier hs-var">GC.item</span></a></span><span> </span><span class="annot"><span class="">[C.citem|struct memblock_device $id:name = ctx-&gt;$id:name;|]</span></span><span>
+</span><span id="line-316"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#staticOpenCLArray"><span class="hs-identifier hs-var">staticOpenCLArray</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684546167"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546167"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">ArrayContents
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-317"></span><span>  </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM OpenCL () ()
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; CompilerM OpenCL () ())
+-&gt; [Char] -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;OpenCL backend cannot create static array in memory space '&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684546167"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;'&quot;</span></span><span>
+</span><span id="line-318"></span><span>
+</span><span id="line-319"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#callKernel"><span class="hs-identifier hs-type">callKernel</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#OpCompiler"><span class="hs-identifier hs-type">GC.OpCompiler</span></a></span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#OpenCL"><span class="hs-identifier hs-type">OpenCL</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-320"></span><span id="callKernel"><span class="annot"><span class="annottext">callKernel :: OpCompiler OpenCL ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#callKernel"><span class="hs-identifier hs-var hs-var">callKernel</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#GetSize"><span class="hs-identifier hs-type">GetSize</span></a></span><span> </span><span id="local-6989586621684546165"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546165"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684546164"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684546164"><span class="hs-identifier hs-var">key</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-321"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span> </span><span class="annot"><span class="">[C.cstm|$id:v = *ctx-&gt;tuning_params.$id:key;|]</span></span><span>
+</span><span id="line-322"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#callKernel"><span class="hs-identifier hs-var">callKernel</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#CmpSizeLe"><span class="hs-identifier hs-type">CmpSizeLe</span></a></span><span> </span><span id="local-6989586621684546161"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546161"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684546160"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684546160"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span id="local-6989586621684546159"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546159"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-323"></span><span>  </span><span id="local-6989586621684546158"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546158"><span class="hs-identifier hs-var">x'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; CompilerM OpenCL () Exp
+forall op s. Exp -&gt; CompilerM op s Exp
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileExp"><span class="hs-identifier hs-var">GC.compileExp</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546159"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-324"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span> </span><span class="annot"><span class="">[C.cstm|$id:v = *ctx-&gt;tuning_params.$id:key &lt;= $exp:x';|]</span></span><span>
+</span><span id="line-325"></span><span>  </span><span class="annot"><span class="annottext">VName -&gt; Name -&gt; Exp -&gt; CompilerM OpenCL () ()
+forall op. VName -&gt; Name -&gt; Exp -&gt; CompilerM op () ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.Boilerplate.html#sizeLoggingCode"><span class="hs-identifier hs-var">sizeLoggingCode</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546161"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684546160"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546158"><span class="hs-identifier hs-var">x'</span></a></span><span>
+</span><span id="line-326"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#callKernel"><span class="hs-identifier hs-var">callKernel</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#GetSizeMax"><span class="hs-identifier hs-type">GetSizeMax</span></a></span><span> </span><span id="local-6989586621684546153"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546153"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684546152"><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684546152"><span class="hs-identifier hs-var">size_class</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-327"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684546147"><span class="annot"><span class="annottext">field :: [Char]
+</span><a href="#local-6989586621684546147"><span class="hs-identifier hs-var hs-var">field</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;max_&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">SizeClass -&gt; [Char]
+forall a. Pretty a =&gt; a -&gt; [Char]
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684546152"><span class="hs-identifier hs-var">size_class</span></a></span><span>
+</span><span id="line-328"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span> </span><span class="annot"><span class="">[C.cstm|$id:v = ctx-&gt;opencl.$id:field;|]</span></span><span>
+</span><span id="line-329"></span><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#callKernel"><span class="hs-identifier hs-var">callKernel</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#LaunchKernel"><span class="hs-identifier hs-type">LaunchKernel</span></a></span><span> </span><span id="local-6989586621684546144"><span class="annot"><span class="annottext">KernelSafety
+</span><a href="#local-6989586621684546144"><span class="hs-identifier hs-var">safety</span></a></span></span><span> </span><span id="local-6989586621684546143"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684546143"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621684546142"><span class="annot"><span class="annottext">[KernelArg]
+</span><a href="#local-6989586621684546142"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span id="local-6989586621684546141"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684546141"><span class="hs-identifier hs-var">num_workgroups</span></a></span></span><span> </span><span id="local-6989586621684546140"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684546140"><span class="hs-identifier hs-var">workgroup_size</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-330"></span><span>  </span><span class="hs-comment">-- The other failure args are set automatically when the kernel is</span><span>
+</span><span id="line-331"></span><span>  </span><span class="hs-comment">-- first created.</span><span>
+</span><span id="line-332"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; CompilerM OpenCL () () -&gt; CompilerM OpenCL () ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelSafety
+</span><a href="#local-6989586621684546144"><span class="hs-identifier hs-var">safety</span></a></span><span> </span><span class="annot"><span class="annottext">KernelSafety -&gt; KernelSafety -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">KernelSafety
+</span><a href="Futhark.CodeGen.ImpCode.OpenCL.html#SafetyFull"><span class="hs-identifier hs-var">SafetyFull</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(CompilerM OpenCL () () -&gt; CompilerM OpenCL () ())
+-&gt; CompilerM OpenCL () () -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-333"></span><span>    </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-334"></span><span>      </span><span class="annot"><span class="">[C.cstm|
+      OPENCL_SUCCEED_OR_RETURN(clSetKernelArg(ctx-&gt;$id:name, 1,
+                                              sizeof(ctx-&gt;failure_is_an_option),
+                                              &amp;ctx-&gt;failure_is_an_option));
+    |]</span></span><span>
+</span><span id="line-339"></span><span>
+</span><span id="line-340"></span><span>  </span><span class="annot"><span class="annottext">(Int -&gt; KernelArg -&gt; CompilerM OpenCL () ())
+-&gt; [Int] -&gt; [KernelArg] -&gt; CompilerM OpenCL () ()
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m ()
+</span><span class="hs-identifier hs-var">zipWithM_</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; KernelArg -&gt; CompilerM OpenCL () ()
+forall {a} {op} {s}.
+(Show a, Integral a) =&gt;
+a -&gt; KernelArg -&gt; CompilerM op s ()
+</span><a href="#local-6989586621684546135"><span class="hs-identifier hs-var">setKernelArg</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">KernelSafety -&gt; Int
+</span><a href="Futhark.CodeGen.ImpCode.OpenCL.html#numFailureParams"><span class="hs-identifier hs-var">numFailureParams</span></a></span><span> </span><span class="annot"><span class="annottext">KernelSafety
+</span><a href="#local-6989586621684546144"><span class="hs-identifier hs-var">safety</span></a></span><span> </span><span class="hs-glyph">..</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[KernelArg]
+</span><a href="#local-6989586621684546142"><span class="hs-identifier hs-var">args</span></a></span><span>
+</span><span id="line-341"></span><span>  </span><span id="local-6989586621684546133"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684546133"><span class="hs-identifier hs-var">num_workgroups'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; CompilerM OpenCL () Exp)
+-&gt; [Exp] -&gt; CompilerM OpenCL () [Exp]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; CompilerM OpenCL () Exp
+forall op s. Exp -&gt; CompilerM op s Exp
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileExp"><span class="hs-identifier hs-var">GC.compileExp</span></a></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684546141"><span class="hs-identifier hs-var">num_workgroups</span></a></span><span>
+</span><span id="line-342"></span><span>  </span><span id="local-6989586621684546132"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684546132"><span class="hs-identifier hs-var">workgroup_size'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; CompilerM OpenCL () Exp)
+-&gt; [Exp] -&gt; CompilerM OpenCL () [Exp]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; CompilerM OpenCL () Exp
+forall op s. Exp -&gt; CompilerM op s Exp
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileExp"><span class="hs-identifier hs-var">GC.compileExp</span></a></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684546140"><span class="hs-identifier hs-var">workgroup_size</span></a></span><span>
+</span><span id="line-343"></span><span>  </span><span id="local-6989586621684546131"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546131"><span class="hs-identifier hs-var">local_bytes</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; KernelArg -&gt; CompilerM OpenCL () Exp)
+-&gt; Exp -&gt; [KernelArg] -&gt; CompilerM OpenCL () Exp
+forall (t :: * -&gt; *) (m :: * -&gt; *) b a.
+(Foldable t, Monad m) =&gt;
+(b -&gt; a -&gt; m b) -&gt; b -&gt; t a -&gt; m b
+</span><span class="hs-identifier hs-var">foldM</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; KernelArg -&gt; CompilerM OpenCL () Exp
+forall {op} {s}. Exp -&gt; KernelArg -&gt; CompilerM op s Exp
+</span><a href="#local-6989586621684546129"><span class="hs-identifier hs-var">localBytes</span></a></span><span> </span><span class="annot"><span class="">[C.cexp|0|]</span></span><span> </span><span class="annot"><span class="annottext">[KernelArg]
+</span><a href="#local-6989586621684546142"><span class="hs-identifier hs-var">args</span></a></span><span>
+</span><span id="line-344"></span><span>
+</span><span id="line-345"></span><span>  </span><span class="annot"><span class="annottext">Name -&gt; [Exp] -&gt; [Exp] -&gt; Exp -&gt; CompilerM OpenCL () ()
+forall a op s.
+ToExp a =&gt;
+Name -&gt; [a] -&gt; [a] -&gt; a -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#launchKernel"><span class="hs-identifier hs-var">launchKernel</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684546143"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684546133"><span class="hs-identifier hs-var">num_workgroups'</span></a></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684546132"><span class="hs-identifier hs-var">workgroup_size'</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546131"><span class="hs-identifier hs-var">local_bytes</span></a></span><span>
+</span><span id="line-346"></span><span>
+</span><span id="line-347"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; CompilerM OpenCL () () -&gt; CompilerM OpenCL () ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelSafety
+</span><a href="#local-6989586621684546144"><span class="hs-identifier hs-var">safety</span></a></span><span> </span><span class="annot"><span class="annottext">KernelSafety -&gt; KernelSafety -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">KernelSafety
+</span><a href="Futhark.CodeGen.ImpCode.OpenCL.html#SafetyFull"><span class="hs-identifier hs-var">SafetyFull</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(CompilerM OpenCL () () -&gt; CompilerM OpenCL () ())
+-&gt; CompilerM OpenCL () () -&gt; CompilerM OpenCL () ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-348"></span><span>    </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM OpenCL () ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span> </span><span class="annot"><span class="">[C.cstm|ctx-&gt;failure_is_an_option = 1;|]</span></span><span>
+</span><span id="line-349"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-350"></span><span>    </span><span id="local-6989586621684546135"><span class="annot"><span class="annottext">setKernelArg :: a -&gt; KernelArg -&gt; CompilerM op s ()
+</span><a href="#local-6989586621684546135"><span class="hs-identifier hs-var hs-var">setKernelArg</span></a></span></span><span> </span><span id="local-6989586621684546096"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684546096"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#ValueKArg"><span class="hs-identifier hs-type">ValueKArg</span></a></span><span> </span><span id="local-6989586621684546094"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546094"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621684546093"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684546093"><span class="hs-identifier hs-var">pt</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-351"></span><span>      </span><span id="local-6989586621684546092"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546092"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684546093"><span class="hs-identifier hs-var">pt</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-352"></span><span>        </span><span class="hs-comment">-- We always transfer f16 values to the kernel as 16 bits, but</span><span>
+</span><span id="line-353"></span><span>        </span><span class="hs-comment">-- the actual host type may be typedef'd to a 32-bit float.</span><span>
+</span><span id="line-354"></span><span>        </span><span class="hs-comment">-- This requires some care.</span><span>
+</span><span id="line-355"></span><span>        </span><span class="annot"><a href="Futhark.IR.Primitive.html#FloatType"><span class="hs-identifier hs-type">FloatType</span></a></span><span> </span><span class="annot"><span class="annottext">FloatType
+</span><a href="Futhark.IR.Primitive.html#Float16"><span class="hs-identifier hs-var">Float16</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-356"></span><span>          </span><span id="local-6989586621684546089"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546089"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM op s VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;kernel_arg&quot;</span></span><span>
+</span><span id="line-357"></span><span>          </span><span id="local-6989586621684546088"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546088"><span class="hs-identifier hs-var">e'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; Exp -&gt; Exp
+</span><a href="Futhark.CodeGen.Backends.SimpleRep.html#toStorage"><span class="hs-identifier hs-var">toStorage</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684546093"><span class="hs-identifier hs-var">pt</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; Exp) -&gt; CompilerM op s Exp -&gt; CompilerM op s Exp
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; CompilerM op s Exp
+forall op s. Exp -&gt; CompilerM op s Exp
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileExp"><span class="hs-identifier hs-var">GC.compileExp</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546094"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-358"></span><span>          </span><span class="annot"><span class="annottext">InitGroup -&gt; CompilerM op s ()
+forall op s. InitGroup -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#decl"><span class="hs-identifier hs-var">GC.decl</span></a></span><span> </span><span class="annot"><span class="">[C.cdecl|$ty:(primStorageType pt) $id:v = $e';|]</span></span><span>
+</span><span id="line-359"></span><span>          </span><span class="annot"><span class="annottext">VName -&gt; CompilerM op s VName
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546089"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-360"></span><span>        </span><span class="annot"><span class="annottext">PrimType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; PrimType -&gt; Exp -&gt; CompilerM op s VName
+forall op s. [Char] -&gt; PrimType -&gt; Exp -&gt; CompilerM op s VName
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileExpToName"><span class="hs-identifier hs-var">GC.compileExpToName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;kernel_arg&quot;</span></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684546093"><span class="hs-identifier hs-var">pt</span></a></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546094"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-361"></span><span>      </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM op s ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-362"></span><span>        </span><span class="annot"><span class="">[C.cstm|
+            OPENCL_SUCCEED_OR_RETURN(clSetKernelArg(ctx-&gt;$id:name, $int:i, sizeof($id:v), &amp;$id:v));
+          |]</span></span><span>
+</span><span id="line-365"></span><span>    </span><span class="annot"><a href="#local-6989586621684546135"><span class="hs-identifier hs-var">setKernelArg</span></a></span><span> </span><span id="local-6989586621684546081"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684546081"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#MemKArg"><span class="hs-identifier hs-type">MemKArg</span></a></span><span> </span><span id="local-6989586621684546079"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546079"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-366"></span><span>      </span><span id="local-6989586621684546078"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546078"><span class="hs-identifier hs-var">v'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; CompilerM op s Exp
+forall op s. VName -&gt; CompilerM op s Exp
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#rawMem"><span class="hs-identifier hs-var">GC.rawMem</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684546079"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-367"></span><span>      </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM op s ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-368"></span><span>        </span><span class="annot"><span class="">[C.cstm|
+            OPENCL_SUCCEED_OR_RETURN(clSetKernelArg(ctx-&gt;$id:name, $int:i, sizeof($exp:v'), &amp;$exp:v'));
+          |]</span></span><span>
+</span><span id="line-371"></span><span>    </span><span class="annot"><a href="#local-6989586621684546135"><span class="hs-identifier hs-var">setKernelArg</span></a></span><span> </span><span id="local-6989586621684546076"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684546076"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#SharedMemoryKArg"><span class="hs-identifier hs-type">SharedMemoryKArg</span></a></span><span> </span><span id="local-6989586621684546074"><span class="annot"><span class="annottext">Count Bytes Exp
+</span><a href="#local-6989586621684546074"><span class="hs-identifier hs-var">num_bytes</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-372"></span><span>      </span><span id="local-6989586621684546073"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546073"><span class="hs-identifier hs-var">num_bytes'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; CompilerM op s Exp
+forall op s. Exp -&gt; CompilerM op s Exp
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileExp"><span class="hs-identifier hs-var">GC.compileExp</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; CompilerM op s Exp) -&gt; Exp -&gt; CompilerM op s Exp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Count Bytes Exp -&gt; Exp
+forall u e. Count u e -&gt; e
+</span><a href="Futhark.IR.GPU.Sizes.html#unCount"><span class="hs-identifier hs-var hs-var">unCount</span></a></span><span> </span><span class="annot"><span class="annottext">Count Bytes Exp
+</span><a href="#local-6989586621684546074"><span class="hs-identifier hs-var">num_bytes</span></a></span><span>
+</span><span id="line-373"></span><span>      </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM op s ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-374"></span><span>        </span><span class="annot"><span class="">[C.cstm|
+            OPENCL_SUCCEED_OR_RETURN(clSetKernelArg(ctx-&gt;$id:name, $int:i, (size_t)$exp:num_bytes', NULL));
+            |]</span></span><span>
+</span><span id="line-377"></span><span>
+</span><span id="line-378"></span><span>    </span><span id="local-6989586621684546129"><span class="annot"><span class="annottext">localBytes :: Exp -&gt; KernelArg -&gt; CompilerM op s Exp
+</span><a href="#local-6989586621684546129"><span class="hs-identifier hs-var hs-var">localBytes</span></a></span></span><span> </span><span id="local-6989586621684546066"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546066"><span class="hs-identifier hs-var">cur</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#SharedMemoryKArg"><span class="hs-identifier hs-type">SharedMemoryKArg</span></a></span><span> </span><span id="local-6989586621684546065"><span class="annot"><span class="annottext">Count Bytes Exp
+</span><a href="#local-6989586621684546065"><span class="hs-identifier hs-var">num_bytes</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-379"></span><span>      </span><span id="local-6989586621684546064"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546064"><span class="hs-identifier hs-var">num_bytes'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; CompilerM op s Exp
+forall op s. Exp -&gt; CompilerM op s Exp
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#compileExp"><span class="hs-identifier hs-var">GC.compileExp</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; CompilerM op s Exp) -&gt; Exp -&gt; CompilerM op s Exp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Count Bytes Exp -&gt; Exp
+forall u e. Count u e -&gt; e
+</span><a href="Futhark.IR.GPU.Sizes.html#unCount"><span class="hs-identifier hs-var hs-var">unCount</span></a></span><span> </span><span class="annot"><span class="annottext">Count Bytes Exp
+</span><a href="#local-6989586621684546065"><span class="hs-identifier hs-var">num_bytes</span></a></span><span>
+</span><span id="line-380"></span><span>      </span><span class="annot"><span class="annottext">Exp -&gt; CompilerM op s Exp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="">[C.cexp|$exp:cur + $exp:num_bytes'|]</span></span><span>
+</span><span id="line-381"></span><span>    </span><span class="annot"><a href="#local-6989586621684546129"><span class="hs-identifier hs-var">localBytes</span></a></span><span> </span><span id="local-6989586621684546063"><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546063"><span class="hs-identifier hs-var">cur</span></a></span></span><span> </span><span class="annot"><span class="annottext">KernelArg
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Exp -&gt; CompilerM op s Exp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Exp
+</span><a href="#local-6989586621684546063"><span class="hs-identifier hs-var">cur</span></a></span><span>
+</span><span id="line-382"></span><span>
+</span><span id="line-383"></span><span id="local-6989586621684546621"><span id="local-6989586621684546622"><span id="local-6989586621684546623"><span class="annot"><a href="Futhark.CodeGen.Backends.COpenCL.html#launchKernel"><span class="hs-identifier hs-type">launchKernel</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-384"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">C.ToExp</span></span><span> </span><span class="annot"><a href="#local-6989586621684546623"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-385"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.OpenCL.html#KernelName"><span class="hs-identifier hs-type">KernelName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-386"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684546623"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-387"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684546623"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-388"></span><span>  </span><span class="annot"><a href="#local-6989586621684546623"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-389"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.Backends.GenericC.html#CompilerM"><span class="hs-identifier hs-type">GC.CompilerM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684546622"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684546621"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-390"></span><span id="launchKernel"><span class="annot"><span class="annottext">launchKernel :: forall a op s.
+ToExp a =&gt;
+Name -&gt; [a] -&gt; [a] -&gt; a -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.COpenCL.html#launchKernel"><span class="hs-identifier hs-var hs-var">launchKernel</span></a></span></span><span> </span><span id="local-6989586621684545994"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684545994"><span class="hs-identifier hs-var">kernel_name</span></a></span></span><span> </span><span id="local-6989586621684545993"><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684545993"><span class="hs-identifier hs-var">num_workgroups</span></a></span></span><span> </span><span id="local-6989586621684545992"><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684545992"><span class="hs-identifier hs-var">workgroup_dims</span></a></span></span><span> </span><span id="local-6989586621684545991"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684545991"><span class="hs-identifier hs-var">local_bytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-391"></span><span>  </span><span id="local-6989586621684545990"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545990"><span class="hs-identifier hs-var">global_work_size</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM op s VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;global_work_size&quot;</span></span><span>
+</span><span id="line-392"></span><span>  </span><span id="local-6989586621684545989"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545989"><span class="hs-identifier hs-var">time_start</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM op s VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;time_start&quot;</span></span><span>
+</span><span id="line-393"></span><span>  </span><span id="local-6989586621684545988"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545988"><span class="hs-identifier hs-var">time_end</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM op s VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;time_end&quot;</span></span><span>
+</span><span id="line-394"></span><span>  </span><span id="local-6989586621684545987"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545987"><span class="hs-identifier hs-var">time_diff</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM op s VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;time_diff&quot;</span></span><span>
+</span><span id="line-395"></span><span>  </span><span id="local-6989586621684545986"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545986"><span class="hs-identifier hs-var">local_work_size</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; CompilerM op s VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;local_work_size&quot;</span></span><span>
+</span><span id="line-396"></span><span>
+</span><span id="line-397"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684545985"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684545985"><span class="hs-identifier hs-var">debug_str</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684545984"><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684545984"><span class="hs-identifier hs-var">debug_args</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; VName -&gt; ([Char], [Exp])
+</span><a href="#local-6989586621684545983"><span class="hs-identifier hs-var">debugPrint</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545990"><span class="hs-identifier hs-var">global_work_size</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545986"><span class="hs-identifier hs-var">local_work_size</span></a></span><span>
+</span><span id="line-398"></span><span>
+</span><span id="line-399"></span><span>  </span><span class="annot"><span class="annottext">Stm -&gt; CompilerM op s ()
+forall op s. Stm -&gt; CompilerM op s ()
+</span><a href="Futhark.CodeGen.Backends.GenericC.html#stm"><span class="hs-identifier hs-var">GC.stm</span></a></span><span>
+</span><span id="line-400"></span><span>    </span><span class="annot"><span class="">[C.cstm|
+    if ($exp:total_elements != 0) {
+      const size_t $id:global_work_size[$int:kernel_rank] = {$inits:kernel_dims'};
+      const size_t $id:local_work_size[$int:kernel_rank] = {$inits:workgroup_dims'};
+      typename int64_t $id:time_start = 0, $id:time_end = 0;
+      if (ctx-&gt;debugging) {
+        fprintf(ctx-&gt;log, $string:debug_str, $args:debug_args);
+        $id:time_start = get_wall_time();
+      }
+      OPENCL_SUCCEED_OR_RETURN(
+        clEnqueueNDRangeKernel(ctx-&gt;opencl.queue, ctx-&gt;$id:kernel_name, $int:kernel_rank, NULL,
+                               $id:global_work_size, $id:local_work_size,
+                               0, NULL, $exp:(profilingEvent kernel_name)));
+      if (ctx-&gt;debugging) {
+        OPENCL_SUCCEED_FATAL(clFinish(ctx-&gt;opencl.queue));
+        $id:time_end = get_wall_time();
+        long int $id:time_diff = $id:time_end - $id:time_start;
+        fprintf(ctx-&gt;log, &quot;kernel %s runtime: %ldus\n&quot;,
+                $string:(pretty kernel_name), $id:time_diff);
+      }
+    }|]</span></span><span>
+</span><span id="line-421"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-422"></span><span>    </span><span id="local-6989586621684545982"><span class="annot"><span class="annottext">kernel_rank :: Int
+</span><a href="#local-6989586621684545982"><span class="hs-identifier hs-var hs-var">kernel_rank</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Exp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684545970"><span class="hs-identifier hs-var">kernel_dims</span></a></span><span>
+</span><span id="line-423"></span><span>    </span><span id="local-6989586621684545970"><span class="annot"><span class="annottext">kernel_dims :: [Exp]
+</span><a href="#local-6989586621684545970"><span class="hs-identifier hs-var hs-var">kernel_dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; Exp -&gt; Exp) -&gt; [Exp] -&gt; [Exp] -&gt; [Exp]
+forall a b c. (a -&gt; b -&gt; c) -&gt; [a] -&gt; [b] -&gt; [c]
+</span><span class="hs-identifier hs-var">zipWith</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; Exp -&gt; Exp
+forall {a} {a}. (ToExp a, ToExp a) =&gt; a -&gt; a -&gt; Exp
+</span><a href="#local-6989586621684545964"><span class="hs-identifier hs-var">multExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; Exp) -&gt; [a] -&gt; [Exp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Exp
+forall {a}. ToExp a =&gt; a -&gt; Exp
+</span><a href="#local-6989586621684545963"><span class="hs-identifier hs-var">toSize</span></a></span><span> </span><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684545993"><span class="hs-identifier hs-var">num_workgroups</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; Exp) -&gt; [a] -&gt; [Exp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Exp
+forall {a}. ToExp a =&gt; a -&gt; Exp
+</span><a href="#local-6989586621684545963"><span class="hs-identifier hs-var">toSize</span></a></span><span> </span><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684545992"><span class="hs-identifier hs-var">workgroup_dims</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-424"></span><span>    </span><span id="local-6989586621684545981"><span class="annot"><span class="annottext">kernel_dims' :: [Initializer]
+</span><a href="#local-6989586621684545981"><span class="hs-identifier hs-var hs-var">kernel_dims'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; Initializer) -&gt; [Exp] -&gt; [Initializer]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; Initializer
+forall {a}. ToExp a =&gt; a -&gt; Initializer
+</span><a href="#local-6989586621684545961"><span class="hs-identifier hs-var">toInit</span></a></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684545970"><span class="hs-identifier hs-var">kernel_dims</span></a></span><span>
+</span><span id="line-425"></span><span>    </span><span id="local-6989586621684545980"><span class="annot"><span class="annottext">workgroup_dims' :: [Initializer]
+</span><a href="#local-6989586621684545980"><span class="hs-identifier hs-var hs-var">workgroup_dims'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a -&gt; Initializer) -&gt; [a] -&gt; [Initializer]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Exp -&gt; Initializer
+forall {a}. ToExp a =&gt; a -&gt; Initializer
+</span><a href="#local-6989586621684545961"><span class="hs-identifier hs-var">toInit</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; Initializer) -&gt; (a -&gt; Exp) -&gt; a -&gt; Initializer
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Exp
+forall {a}. ToExp a =&gt; a -&gt; Exp
+</span><a href="#local-6989586621684545963"><span class="hs-identifier hs-var">toSize</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684545992"><span class="hs-identifier hs-var">workgroup_dims</span></a></span><span>
+</span><span id="line-426"></span><span>    </span><span id="local-6989586621684545979"><span class="annot"><span class="annottext">total_elements :: Exp
+</span><a href="#local-6989586621684545979"><span class="hs-identifier hs-var hs-var">total_elements</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Exp -&gt; Exp -&gt; Exp) -&gt; Exp -&gt; [Exp] -&gt; Exp
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; Exp -&gt; Exp
+forall {a} {a}. (ToExp a, ToExp a) =&gt; a -&gt; a -&gt; Exp
+</span><a href="#local-6989586621684545964"><span class="hs-identifier hs-var">multExp</span></a></span><span> </span><span class="annot"><span class="">[C.cexp|1|]</span></span><span> </span><span class="annot"><span class="annottext">[Exp]
+</span><a href="#local-6989586621684545970"><span class="hs-identifier hs-var">kernel_dims</span></a></span><span>
+</span><span id="line-427"></span><span>
+</span><span id="line-428"></span><span>    </span><span id="local-6989586621684545961"><span class="annot"><span class="annottext">toInit :: a -&gt; Initializer
+</span><a href="#local-6989586621684545961"><span class="hs-identifier hs-var hs-var">toInit</span></a></span></span><span> </span><span id="local-6989586621684545951"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684545951"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cinit|$exp:e|]</span></span><span>
+</span><span id="line-429"></span><span>    </span><span id="local-6989586621684545964"><span class="annot"><span class="annottext">multExp :: a -&gt; a -&gt; Exp
+</span><a href="#local-6989586621684545964"><span class="hs-identifier hs-var hs-var">multExp</span></a></span></span><span> </span><span id="local-6989586621684545946"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684545946"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684545945"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684545945"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cexp|$exp:x * $exp:y|]</span></span><span>
+</span><span id="line-430"></span><span>    </span><span id="local-6989586621684545963"><span class="annot"><span class="annottext">toSize :: a -&gt; Exp
+</span><a href="#local-6989586621684545963"><span class="hs-identifier hs-var hs-var">toSize</span></a></span></span><span> </span><span id="local-6989586621684545942"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684545942"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cexp|(size_t)$exp:e|]</span></span><span>
+</span><span id="line-431"></span><span>
+</span><span id="line-432"></span><span>    </span><span class="annot"><a href="#local-6989586621684545983"><span class="hs-identifier hs-type">debugPrint</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">C.Exp</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-433"></span><span>    </span><span id="local-6989586621684545983"><span class="annot"><span class="annottext">debugPrint :: VName -&gt; VName -&gt; ([Char], [Exp])
+</span><a href="#local-6989586621684545983"><span class="hs-identifier hs-var hs-var">debugPrint</span></a></span></span><span> </span><span id="local-6989586621684545941"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545941"><span class="hs-identifier hs-var">global_work_size</span></a></span></span><span> </span><span id="local-6989586621684545940"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545940"><span class="hs-identifier hs-var">local_work_size</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-434"></span><span>      </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Launching %s with global work size &quot;</span></span><span>
+</span><span id="line-435"></span><span>          </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684545939"><span class="hs-identifier hs-var">dims</span></a></span><span>
+</span><span id="line-436"></span><span>          </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot; and local work size &quot;</span></span><span>
+</span><span id="line-437"></span><span>          </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684545939"><span class="hs-identifier hs-var">dims</span></a></span><span>
+</span><span id="line-438"></span><span>          </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;; local memory: %d bytes.\n&quot;</span></span><span class="hs-special">,</span><span>
+</span><span id="line-439"></span><span>        </span><span class="annot"><span class="">[C.cexp|$string:(pretty kernel_name)|]</span></span><span> </span><span class="annot"><span class="annottext">Exp -&gt; [Exp] -&gt; [Exp]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span>
+</span><span id="line-440"></span><span>        </span><span class="annot"><span class="annottext">(Int -&gt; Exp) -&gt; [Int] -&gt; [Exp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Int -&gt; Exp
+forall {a} {a}. (ToIdent a, Show a, Integral a) =&gt; a -&gt; a -&gt; Exp
+</span><a href="#local-6989586621684545938"><span class="hs-identifier hs-var">kernelDim</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545941"><span class="hs-identifier hs-var">global_work_size</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684545982"><span class="hs-identifier hs-var">kernel_rank</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span>
+</span><span id="line-441"></span><span>          </span><span class="annot"><span class="annottext">[Exp] -&gt; [Exp] -&gt; [Exp]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Exp) -&gt; [Int] -&gt; [Exp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Int -&gt; Exp
+forall {a} {a}. (ToIdent a, Show a, Integral a) =&gt; a -&gt; a -&gt; Exp
+</span><a href="#local-6989586621684545938"><span class="hs-identifier hs-var">kernelDim</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684545940"><span class="hs-identifier hs-var">local_work_size</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684545982"><span class="hs-identifier hs-var">kernel_rank</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span>
+</span><span id="line-442"></span><span>          </span><span class="annot"><span class="annottext">[Exp] -&gt; [Exp] -&gt; [Exp]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="">[C.cexp|(int)$exp:local_bytes|]</span></span><span class="hs-special">]</span><span>
+</span><span id="line-443"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-444"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-445"></span><span>        </span><span id="local-6989586621684545939"><span class="annot"><span class="annottext">dims :: [Char]
+</span><a href="#local-6989586621684545939"><span class="hs-identifier hs-var hs-var">dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;[&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [[Char]] -&gt; [Char]
+forall a. [a] -&gt; [[a]] -&gt; [a]
+</span><span class="hs-identifier hs-var">intercalate</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;, &quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; [Char] -&gt; [[Char]]
+forall a. Int -&gt; a -&gt; [a]
+</span><span class="hs-identifier hs-var">replicate</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684545982"><span class="hs-identifier hs-var">kernel_rank</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;%zu&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;]&quot;</span></span><span>
+</span><span id="line-446"></span><span>        </span><span id="local-6989586621684545938"><span class="annot"><span class="annottext">kernelDim :: a -&gt; a -&gt; Exp
+</span><a href="#local-6989586621684545938"><span class="hs-identifier hs-var hs-var">kernelDim</span></a></span></span><span> </span><span id="local-6989586621684545922"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684545922"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span id="local-6989586621684545921"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684545921"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="">[C.cexp|$id:arr[$int:i]|]</span></span><span>
+</span><span id="line-447"></span></pre></body></html>

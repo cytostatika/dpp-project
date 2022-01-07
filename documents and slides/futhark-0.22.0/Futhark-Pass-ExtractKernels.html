@@ -1,0 +1,76 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Futhark.Pass.ExtractKernels</title><link href="linuwial.css" rel="stylesheet" type="text/css" title="Linuwial" /><link rel="stylesheet" type="text/css" href="quick-jump.css" /><link rel="stylesheet" type="text/css" href="https://fonts.googleapis.com/css?family=PT+Sans:400,400i,700" /><script src="haddock-bundle.min.js" async="async" type="text/javascript"></script><script type="text/x-mathjax-config">MathJax.Hub.Config({ tex2jax: { processClass: "mathjax", ignoreClass: ".*" } });</script><script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/MathJax.js?config=TeX-AMS-MML_HTMLorMML" type="text/javascript"></script></head><body><div id="package-header"><span class="caption">futhark-0.22.0: An optimising compiler for a functional, array-oriented language.</span><ul class="links" id="page-menu"><li><a href="src/Futhark.Pass.ExtractKernels.html">Source</a></li><li><a href="index.html">Contents</a></li><li><a href="doc-index.html">Index</a></li></ul></div><div id="content"><div id="module-header"><table class="info"><tr><th>Safe Haskell</th><td>None</td></tr><tr><th>Language</th><td>Haskell2010</td></tr></table><p class="caption">Futhark.Pass.ExtractKernels</p></div><div id="description"><p class="caption">Description</p><div class="doc"><p>Kernel extraction.</p><p>In the following, I will use the term &quot;width&quot; to denote the amount
+ of immediate parallelism in a map - that is, the outer size of the
+ array(s) being used as input.</p><h1>Basic Idea</h1><p>If we have:</p><pre>  map
+    map(f)
+    stms_a...
+    map(g)
+</pre><p>Then we want to distribute to:</p><pre>  map
+    map(f)
+  map
+    stms_a
+  map
+    map(g)
+</pre><p>But for now only if</p><ol><li>it can be done without creating irregular arrays.
+      Specifically, the size of the arrays created by <code>map(f)</code>, by
+      <code>map(g)</code> and whatever is created by <code>stms_a</code> that is also used
+      in <code>map(g)</code>, must be invariant to the outermost loop.</li><li>the maps are _balanced_.  That is, the functions <code>f</code> and <code>g</code>
+      must do the same amount of work for every iteration.</li></ol><p>The advantage is that the map-nests containing <code>map(f)</code> and
+ <code>map(g)</code> can now be trivially flattened at no cost, thus exposing
+ more parallelism.  Note that the <code>stms_a</code> map constitutes array
+ expansion, which requires additional storage.</p><h1>Distributing Sequential Loops</h1><p>As a starting point, sequential loops are treated like scalar
+ expressions.  That is, not distributed.  However, sometimes it can
+ be worthwhile to distribute if they contain a map:</p><pre>  map
+    loop
+      map
+    map
+</pre><p>If we distribute the loop and interchange the outer map into the
+ loop, we get this:</p><pre>  loop
+    map
+      map
+  map
+    map
+</pre><p>Now more parallelism may be available.</p><h1>Unbalanced Maps</h1><p>Unbalanced maps will as a rule be sequentialised, but sometimes,
+ there is another way.  Assume we find this:</p><pre>  map
+    map(f)
+      map(g)
+    map
+</pre><p>Presume that <code>map(f)</code> is unbalanced.  By the simple rule above, we
+ would then fully sequentialise it, resulting in this:</p><pre>  map
+    loop
+  map
+    map
+</pre><h2>Balancing by Loop Interchange</h2><p>The above is not ideal, as we cannot flatten the <code>map-loop</code> nest,
+ and we are thus limited in the amount of parallelism available.</p><p>But assume now that the width of <code>map(g)</code> is invariant to the outer
+ loop.  Then if possible, we can interchange <code>map(f)</code> and <code>map(g)</code>,
+ sequentialise <code>map(f)</code> and distribute, interchanging the outer
+ parallel loop into the sequential loop:</p><pre>  loop(f)
+    map
+      map(g)
+  map
+    map
+</pre><p>After flattening the two nests we can obtain more parallelism.</p><p>When distributing a map, we also need to distribute everything that
+ the map depends on - possibly as its own map.  When distributing a
+ set of scalar bindings, we will need to know which of the binding
+ results are used afterwards.  Hence, we will need to compute usage
+ information.</p><h1>Redomap</h1><p>Redomap can be handled much like map.  Distributed loops are
+ distributed as maps, with the parameters corresponding to the
+ neutral elements added to their bodies.  The remaining loop will
+ remain a redomap.  Example:</p><pre>redomap(op,
+        fn (v) =&gt;
+          map(f)
+          map(g),
+        e,a)
+</pre><p>distributes to</p><pre>let b = map(fn v =&gt;
+              let acc = e
+              map(f),
+              a)
+redomap(op,
+        fn (v,dist) =&gt;
+          map(g),
+        e,a,b)
+</pre><p>Note that there may be further kernel extraction opportunities
+ inside the <code>map(f)</code>.  The downside of this approach is that the
+ intermediate array (<code>b</code> above) must be written to main memory.  An
+ often better approach is to just turn the entire <code>redomap</code> into a
+ single kernel.</p></div></div><div id="synopsis"><details id="syn"><summary>Synopsis</summary><ul class="details-toggle" data-details-id="syn"><li class="src short"><a href="#v:extractKernels">extractKernels</a> :: <a href="Futhark-Pass.html#t:Pass" title="Futhark.Pass">Pass</a> <a href="Futhark-IR-SOACS.html#t:SOACS" title="Futhark.IR.SOACS">SOACS</a> <a href="Futhark-IR-GPU.html#t:GPU" title="Futhark.IR.GPU">GPU</a></li></ul></details></div><div id="interface"><h1>Documentation</h1><div class="top"><p class="src"><a id="v:extractKernels" class="def">extractKernels</a> :: <a href="Futhark-Pass.html#t:Pass" title="Futhark.Pass">Pass</a> <a href="Futhark-IR-SOACS.html#t:SOACS" title="Futhark.IR.SOACS">SOACS</a> <a href="Futhark-IR-GPU.html#t:GPU" title="Futhark.IR.GPU">GPU</a> <a href="src/Futhark.Pass.ExtractKernels.html#extractKernels" class="link">Source</a> <a href="#v:extractKernels" class="selflink">#</a></p><div class="doc"><p>Transform a program using SOACs to a program using explicit
+ kernels, using the kernel extraction transformation.</p></div></div></div></div><div id="footer"><p>Produced by <a href="http://www.haskell.org/haddock/">Haddock</a> version 2.24.0</p></div></body></html>

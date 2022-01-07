@@ -1,0 +1,427 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span id="local-6989586621684343084"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE Trustworthy #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- | In the context of this module, a &quot;size&quot; is any kind of tunable</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- (run-time) constant.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.IR.GPU.Sizes</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeClass"><span class="hs-identifier">SizeClass</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#sizeDefault"><span class="hs-identifier">sizeDefault</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#KernelPath"><span class="hs-identifier">KernelPath</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier">Count</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#NumGroups"><span class="hs-identifier">NumGroups</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#GroupSize"><span class="hs-identifier">GroupSize</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#NumThreads"><span class="hs-identifier">NumThreads</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Int</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Int64</span></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Traversable</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Names.html"><span class="hs-identifier">Futhark.IR.Prop.Names</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Names.html#FreeIn"><span class="hs-identifier">FreeIn</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Transform.Substitute.html"><span class="hs-identifier">Futhark.Transform.Substitute</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.IntegralExp.html"><span class="hs-identifier">Futhark.Util.IntegralExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.IntegralExp.html#IntegralExp"><span class="hs-identifier">IntegralExp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Pretty.html"><span class="hs-identifier">Futhark.Util.Pretty</span></a></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html"><span class="hs-identifier">Language.Futhark.Core</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier">Name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">id</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-operator">(.)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- | An indication of which comparisons have been performed to get to</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- this point, as well as the result of each comparison.</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">type</span><span> </span><span id="KernelPath"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#KernelPath"><span class="hs-identifier hs-var">KernelPath</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- | The class of some kind of configurable size.  Each class may</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- impose constraints on the valid values.</span><span>
+</span><span id="line-33"></span><span class="hs-keyword">data</span><span> </span><span id="SizeClass"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeClass"><span class="hs-identifier hs-var">SizeClass</span></a></span></span><span>
+</span><span id="line-34"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-comment">-- | A threshold with an optional default.</span><span>
+</span><span id="line-35"></span><span>    </span><span id="SizeThreshold"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeThreshold"><span class="hs-identifier hs-var">SizeThreshold</span></a></span></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#KernelPath"><span class="hs-identifier hs-type">KernelPath</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="SizeGroup"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeGroup"><span class="hs-identifier hs-var">SizeGroup</span></a></span></span><span>
+</span><span id="line-37"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="SizeNumGroups"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeNumGroups"><span class="hs-identifier hs-var">SizeNumGroups</span></a></span></span><span>
+</span><span id="line-38"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="SizeTile"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeTile"><span class="hs-identifier hs-var">SizeTile</span></a></span></span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="SizeRegTile"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeRegTile"><span class="hs-identifier hs-var">SizeRegTile</span></a></span></span><span>
+</span><span id="line-40"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-comment">-- | Likely not useful on its own, but querying the</span><span>
+</span><span id="line-41"></span><span>    </span><span class="hs-comment">-- maximum can be handy.</span><span>
+</span><span id="line-42"></span><span>    </span><span id="SizeLocalMemory"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeLocalMemory"><span class="hs-identifier hs-var">SizeLocalMemory</span></a></span></span><span>
+</span><span id="line-43"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-comment">-- | A bespoke size with a default.</span><span>
+</span><span id="line-44"></span><span>    </span><span id="SizeBespoke"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeBespoke"><span class="hs-identifier hs-var">SizeBespoke</span></a></span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#Name"><span class="hs-identifier hs-type">Name</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684343058"><span id="local-6989586621684343069"><span class="annot"><span class="annottext">SizeClass -&gt; SizeClass -&gt; Bool
+(SizeClass -&gt; SizeClass -&gt; Bool)
+-&gt; (SizeClass -&gt; SizeClass -&gt; Bool) -&gt; Eq SizeClass
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+/= :: SizeClass -&gt; SizeClass -&gt; Bool
+$c/= :: SizeClass -&gt; SizeClass -&gt; Bool
+== :: SizeClass -&gt; SizeClass -&gt; Bool
+$c== :: SizeClass -&gt; SizeClass -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684343027"><span id="local-6989586621684343029"><span id="local-6989586621684343031"><span id="local-6989586621684343033"><span id="local-6989586621684343035"><span id="local-6989586621684343037"><span id="local-6989586621684343048"><span class="annot"><span class="annottext">Eq SizeClass
+Eq SizeClass
+-&gt; (SizeClass -&gt; SizeClass -&gt; Ordering)
+-&gt; (SizeClass -&gt; SizeClass -&gt; Bool)
+-&gt; (SizeClass -&gt; SizeClass -&gt; Bool)
+-&gt; (SizeClass -&gt; SizeClass -&gt; Bool)
+-&gt; (SizeClass -&gt; SizeClass -&gt; Bool)
+-&gt; (SizeClass -&gt; SizeClass -&gt; SizeClass)
+-&gt; (SizeClass -&gt; SizeClass -&gt; SizeClass)
+-&gt; Ord SizeClass
+SizeClass -&gt; SizeClass -&gt; Bool
+SizeClass -&gt; SizeClass -&gt; Ordering
+SizeClass -&gt; SizeClass -&gt; SizeClass
+forall a.
+Eq a
+-&gt; (a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+min :: SizeClass -&gt; SizeClass -&gt; SizeClass
+$cmin :: SizeClass -&gt; SizeClass -&gt; SizeClass
+max :: SizeClass -&gt; SizeClass -&gt; SizeClass
+$cmax :: SizeClass -&gt; SizeClass -&gt; SizeClass
+&gt;= :: SizeClass -&gt; SizeClass -&gt; Bool
+$c&gt;= :: SizeClass -&gt; SizeClass -&gt; Bool
+&gt; :: SizeClass -&gt; SizeClass -&gt; Bool
+$c&gt; :: SizeClass -&gt; SizeClass -&gt; Bool
+&lt;= :: SizeClass -&gt; SizeClass -&gt; Bool
+$c&lt;= :: SizeClass -&gt; SizeClass -&gt; Bool
+&lt; :: SizeClass -&gt; SizeClass -&gt; Bool
+$c&lt; :: SizeClass -&gt; SizeClass -&gt; Bool
+compare :: SizeClass -&gt; SizeClass -&gt; Ordering
+$ccompare :: SizeClass -&gt; SizeClass -&gt; Ordering
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684343003"><span id="local-6989586621684343005"><span id="local-6989586621684343019"><span class="annot"><span class="annottext">Int -&gt; SizeClass -&gt; ShowS
+[SizeClass] -&gt; ShowS
+SizeClass -&gt; String
+(Int -&gt; SizeClass -&gt; ShowS)
+-&gt; (SizeClass -&gt; String)
+-&gt; ([SizeClass] -&gt; ShowS)
+-&gt; Show SizeClass
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [SizeClass] -&gt; ShowS
+$cshowList :: [SizeClass] -&gt; ShowS
+show :: SizeClass -&gt; String
+$cshow :: SizeClass -&gt; String
+showsPrec :: Int -&gt; SizeClass -&gt; ShowS
+$cshowsPrec :: Int -&gt; SizeClass -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684342992"><span id="local-6989586621684342994"><span class="annot"><span class="hs-identifier hs-type">Pretty</span></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeClass"><span class="hs-identifier hs-type">SizeClass</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-48"></span><span>  </span><span id="local-6989586621684342978"><span class="annot"><span class="annottext">ppr :: SizeClass -&gt; Doc
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">ppr</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeThreshold"><span class="hs-identifier hs-type">SizeThreshold</span></a></span><span> </span><span id="local-6989586621684342976"><span class="annot"><span class="annottext">KernelPath
+</span><a href="#local-6989586621684342976"><span class="hs-identifier hs-var">path</span></a></span></span><span> </span><span id="local-6989586621684342975"><span class="annot"><span class="annottext">Maybe Int64
+</span><a href="#local-6989586621684342975"><span class="hs-identifier hs-var">def</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-49"></span><span>    </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot;threshold&quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc
+</span><span class="hs-identifier hs-var">parens</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Doc
+</span><a href="#local-6989586621684342973"><span class="hs-identifier hs-var">def'</span></a></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-identifier hs-var">comma</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;+&gt;</span></span><span> </span><span class="annot"><span class="annottext">[Doc] -&gt; Doc
+</span><span class="hs-identifier hs-var">spread</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((Name, Bool) -&gt; Doc) -&gt; KernelPath -&gt; [Doc]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(Name, Bool) -&gt; Doc
+forall {a}. Pretty a =&gt; (a, Bool) -&gt; Doc
+</span><a href="#local-6989586621684342969"><span class="hs-identifier hs-var">pStep</span></a></span><span> </span><span class="annot"><span class="annottext">KernelPath
+</span><a href="#local-6989586621684342976"><span class="hs-identifier hs-var">path</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-51"></span><span>      </span><span id="local-6989586621684342969"><span class="annot"><span class="annottext">pStep :: (a, Bool) -&gt; Doc
+</span><a href="#local-6989586621684342969"><span class="hs-identifier hs-var hs-var">pStep</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684342963"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684342963"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684342963"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-52"></span><span>      </span><span class="annot"><a href="#local-6989586621684342969"><span class="hs-identifier hs-var">pStep</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684342962"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684342962"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot;!&quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684342962"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-53"></span><span>      </span><span id="local-6989586621684342973"><span class="annot"><span class="annottext">def' :: Doc
+</span><a href="#local-6989586621684342973"><span class="hs-identifier hs-var hs-var">def'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Doc -&gt; (Int64 -&gt; Doc) -&gt; Maybe Int64 -&gt; Doc
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-string">&quot;def&quot;</span></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">Maybe Int64
+</span><a href="#local-6989586621684342975"><span class="hs-identifier hs-var">def</span></a></span><span>
+</span><span id="line-54"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="Futhark.IR.GPU.Sizes.html#SizeGroup"><span class="hs-identifier hs-var">SizeGroup</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Doc
+</span><span class="hs-identifier hs-var">text</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;group_size&quot;</span></span><span>
+</span><span id="line-55"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="Futhark.IR.GPU.Sizes.html#SizeNumGroups"><span class="hs-identifier hs-var">SizeNumGroups</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Doc
+</span><span class="hs-identifier hs-var">text</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;num_groups&quot;</span></span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="Futhark.IR.GPU.Sizes.html#SizeTile"><span class="hs-identifier hs-var">SizeTile</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Doc
+</span><span class="hs-identifier hs-var">text</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;tile_size&quot;</span></span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="Futhark.IR.GPU.Sizes.html#SizeRegTile"><span class="hs-identifier hs-var">SizeRegTile</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Doc
+</span><span class="hs-identifier hs-var">text</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;reg_tile_size&quot;</span></span><span>
+</span><span id="line-58"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="Futhark.IR.GPU.Sizes.html#SizeLocalMemory"><span class="hs-identifier hs-var">SizeLocalMemory</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Doc
+</span><span class="hs-identifier hs-var">text</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;local_memory&quot;</span></span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeBespoke"><span class="hs-identifier hs-type">SizeBespoke</span></a></span><span> </span><span id="local-6989586621684342957"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684342957"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span id="local-6989586621684342956"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621684342956"><span class="hs-identifier hs-var">def</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-60"></span><span>    </span><span class="annot"><span class="annottext">String -&gt; Doc
+</span><span class="hs-identifier hs-var">text</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;bespoke&quot;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc
+</span><span class="hs-identifier hs-var">parens</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684342957"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Doc
+</span><span class="hs-identifier hs-var">comma</span></span><span> </span><span class="annot"><span class="annottext">Doc -&gt; Doc -&gt; Doc
+</span><span class="hs-operator hs-var">&lt;+&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621684342956"><span class="hs-identifier hs-var">def</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span class="hs-comment">-- | The default value for the size.  If 'Nothing', that means the backend gets to decide.</span><span>
+</span><span id="line-63"></span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#sizeDefault"><span class="hs-identifier hs-type">sizeDefault</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeClass"><span class="hs-identifier hs-type">SizeClass</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span>
+</span><span id="line-64"></span><span id="sizeDefault"><span class="annot"><span class="annottext">sizeDefault :: SizeClass -&gt; Maybe Int64
+</span><a href="Futhark.IR.GPU.Sizes.html#sizeDefault"><span class="hs-identifier hs-var hs-var">sizeDefault</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeThreshold"><span class="hs-identifier hs-type">SizeThreshold</span></a></span><span> </span><span class="annot"><span class="annottext">KernelPath
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684342955"><span class="annot"><span class="annottext">Maybe Int64
+</span><a href="#local-6989586621684342955"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Int64
+</span><a href="#local-6989586621684342955"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-65"></span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#sizeDefault"><span class="hs-identifier hs-var">sizeDefault</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeBespoke"><span class="hs-identifier hs-type">SizeBespoke</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684342954"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621684342954"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Maybe Int64
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621684342954"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-66"></span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#sizeDefault"><span class="hs-identifier hs-var">sizeDefault</span></a></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Int64
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- | A wrapper supporting a phantom type for indicating what we are counting.</span><span>
+</span><span id="line-69"></span><span class="hs-keyword">newtype</span><span> </span><span id="Count"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier hs-var">Count</span></a></span></span><span> </span><span id="local-6989586621684343225"><span class="annot"><a href="#local-6989586621684343225"><span class="hs-identifier hs-type">u</span></a></span></span><span> </span><span id="local-6989586621684343224"><span class="annot"><a href="#local-6989586621684343224"><span class="hs-identifier hs-type">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Count"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier hs-var">Count</span></a></span></span><span> </span><span class="hs-special">{</span><span id="unCount"><span class="annot"><span class="annottext">forall u e. Count u e -&gt; e
+</span><a href="Futhark.IR.GPU.Sizes.html#unCount"><span class="hs-identifier hs-var hs-var">unCount</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621684343224"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-70"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684342945"><span id="local-6989586621684342949"><span class="annot"><span class="annottext">Count u e -&gt; Count u e -&gt; Bool
+(Count u e -&gt; Count u e -&gt; Bool)
+-&gt; (Count u e -&gt; Count u e -&gt; Bool) -&gt; Eq (Count u e)
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+forall u e. Eq e =&gt; Count u e -&gt; Count u e -&gt; Bool
+/= :: Count u e -&gt; Count u e -&gt; Bool
+$c/= :: forall u e. Eq e =&gt; Count u e -&gt; Count u e -&gt; Bool
+== :: Count u e -&gt; Count u e -&gt; Bool
+$c== :: forall u e. Eq e =&gt; Count u e -&gt; Count u e -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684342912"><span id="local-6989586621684342916"><span id="local-6989586621684342920"><span id="local-6989586621684342924"><span id="local-6989586621684342928"><span id="local-6989586621684342932"><span id="local-6989586621684342936"><span class="annot"><span class="annottext">Eq (Count u e)
+Eq (Count u e)
+-&gt; (Count u e -&gt; Count u e -&gt; Ordering)
+-&gt; (Count u e -&gt; Count u e -&gt; Bool)
+-&gt; (Count u e -&gt; Count u e -&gt; Bool)
+-&gt; (Count u e -&gt; Count u e -&gt; Bool)
+-&gt; (Count u e -&gt; Count u e -&gt; Bool)
+-&gt; (Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; Ord (Count u e)
+Count u e -&gt; Count u e -&gt; Bool
+Count u e -&gt; Count u e -&gt; Ordering
+Count u e -&gt; Count u e -&gt; Count u e
+forall a.
+Eq a
+-&gt; (a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+forall {u} {e}. Ord e =&gt; Eq (Count u e)
+forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Bool
+forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Ordering
+forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+min :: Count u e -&gt; Count u e -&gt; Count u e
+$cmin :: forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+max :: Count u e -&gt; Count u e -&gt; Count u e
+$cmax :: forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+&gt;= :: Count u e -&gt; Count u e -&gt; Bool
+$c&gt;= :: forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Bool
+&gt; :: Count u e -&gt; Count u e -&gt; Bool
+$c&gt; :: forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Bool
+&lt;= :: Count u e -&gt; Count u e -&gt; Bool
+$c&lt;= :: forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Bool
+&lt; :: Count u e -&gt; Count u e -&gt; Bool
+$c&lt; :: forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Bool
+compare :: Count u e -&gt; Count u e -&gt; Ordering
+$ccompare :: forall u e. Ord e =&gt; Count u e -&gt; Count u e -&gt; Ordering
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684342900"><span id="local-6989586621684342902"><span id="local-6989586621684342906"><span class="annot"><span class="annottext">Int -&gt; Count u e -&gt; ShowS
+[Count u e] -&gt; ShowS
+Count u e -&gt; String
+(Int -&gt; Count u e -&gt; ShowS)
+-&gt; (Count u e -&gt; String)
+-&gt; ([Count u e] -&gt; ShowS)
+-&gt; Show (Count u e)
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+forall u e. Show e =&gt; Int -&gt; Count u e -&gt; ShowS
+forall u e. Show e =&gt; [Count u e] -&gt; ShowS
+forall u e. Show e =&gt; Count u e -&gt; String
+showList :: [Count u e] -&gt; ShowS
+$cshowList :: forall u e. Show e =&gt; [Count u e] -&gt; ShowS
+show :: Count u e -&gt; String
+$cshow :: forall u e. Show e =&gt; Count u e -&gt; String
+showsPrec :: Int -&gt; Count u e -&gt; ShowS
+$cshowsPrec :: forall u e. Show e =&gt; Int -&gt; Count u e -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684342873"><span id="local-6989586621684342877"><span id="local-6989586621684342881"><span id="local-6989586621684342885"><span id="local-6989586621684342889"><span id="local-6989586621684342893"><span id="local-6989586621684342897"><span class="annot"><span class="annottext">Integer -&gt; Count u e
+Count u e -&gt; Count u e
+Count u e -&gt; Count u e -&gt; Count u e
+(Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Count u e)
+-&gt; (Integer -&gt; Count u e)
+-&gt; Num (Count u e)
+forall a.
+(a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a)
+-&gt; (a -&gt; a)
+-&gt; (a -&gt; a)
+-&gt; (Integer -&gt; a)
+-&gt; Num a
+forall u e. Num e =&gt; Integer -&gt; Count u e
+forall u e. Num e =&gt; Count u e -&gt; Count u e
+forall u e. Num e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+fromInteger :: Integer -&gt; Count u e
+$cfromInteger :: forall u e. Num e =&gt; Integer -&gt; Count u e
+signum :: Count u e -&gt; Count u e
+$csignum :: forall u e. Num e =&gt; Count u e -&gt; Count u e
+abs :: Count u e -&gt; Count u e
+$cabs :: forall u e. Num e =&gt; Count u e -&gt; Count u e
+negate :: Count u e -&gt; Count u e
+$cnegate :: forall u e. Num e =&gt; Count u e -&gt; Count u e
+* :: Count u e -&gt; Count u e -&gt; Count u e
+$c* :: forall u e. Num e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+- :: Count u e -&gt; Count u e -&gt; Count u e
+$c- :: forall u e. Num e =&gt; Count u e -&gt; Count u e -&gt; Count u e
++ :: Count u e -&gt; Count u e -&gt; Count u e
+$c+ :: forall u e. Num e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Num</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684342843"><span id="local-6989586621684342847"><span id="local-6989586621684342851"><span id="local-6989586621684342855"><span id="local-6989586621684342859"><span id="local-6989586621684342863"><span class="annot"><span class="annottext">Num (Count u e)
+Num (Count u e)
+-&gt; (Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; (Count u e -&gt; Maybe Int)
+-&gt; (Count u e -&gt; Count u e -&gt; Count u e)
+-&gt; IntegralExp (Count u e)
+Count u e -&gt; Maybe Int
+Count u e -&gt; Count u e -&gt; Count u e
+forall e.
+Num e
+-&gt; (e -&gt; e -&gt; e)
+-&gt; (e -&gt; e -&gt; e)
+-&gt; (e -&gt; e -&gt; e)
+-&gt; (e -&gt; e -&gt; e)
+-&gt; (e -&gt; Maybe Int)
+-&gt; (e -&gt; e -&gt; e)
+-&gt; IntegralExp e
+forall {u} {e}. IntegralExp e =&gt; Num (Count u e)
+forall u e. IntegralExp e =&gt; Count u e -&gt; Maybe Int
+forall u e. IntegralExp e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+divUp :: Count u e -&gt; Count u e -&gt; Count u e
+$cdivUp :: forall u e. IntegralExp e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+sgn :: Count u e -&gt; Maybe Int
+$csgn :: forall u e. IntegralExp e =&gt; Count u e -&gt; Maybe Int
+mod :: Count u e -&gt; Count u e -&gt; Count u e
+$cmod :: forall u e. IntegralExp e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+div :: Count u e -&gt; Count u e -&gt; Count u e
+$cdiv :: forall u e. IntegralExp e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+rem :: Count u e -&gt; Count u e -&gt; Count u e
+$crem :: forall u e. IntegralExp e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+quot :: Count u e -&gt; Count u e -&gt; Count u e
+$cquot :: forall u e. IntegralExp e =&gt; Count u e -&gt; Count u e -&gt; Count u e
+</span><a href="Futhark.Util.IntegralExp.html#C%3AIntegralExp"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">IntegralExp</span></a></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684342835"><span class="annot"><span class="annottext">Count u e -&gt; FV
+(Count u e -&gt; FV) -&gt; FreeIn (Count u e)
+forall a. (a -&gt; FV) -&gt; FreeIn a
+forall u e. FreeIn e =&gt; Count u e -&gt; FV
+freeIn' :: Count u e -&gt; FV
+$cfreeIn' :: forall u e. FreeIn e =&gt; Count u e -&gt; FV
+</span><a href="Futhark.IR.Prop.Names.html#C%3AFreeIn"><span class="hs-identifier hs-var hs-var hs-var hs-var">FreeIn</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684342820"><span id="local-6989586621684342824"><span id="local-6989586621684342828"><span class="annot"><span class="annottext">Int -&gt; Count u e -&gt; Doc
+[Count u e] -&gt; Doc
+Count u e -&gt; Doc
+(Count u e -&gt; Doc)
+-&gt; (Int -&gt; Count u e -&gt; Doc)
+-&gt; ([Count u e] -&gt; Doc)
+-&gt; Pretty (Count u e)
+forall a.
+(a -&gt; Doc) -&gt; (Int -&gt; a -&gt; Doc) -&gt; ([a] -&gt; Doc) -&gt; Pretty a
+forall u e. Pretty e =&gt; Int -&gt; Count u e -&gt; Doc
+forall u e. Pretty e =&gt; [Count u e] -&gt; Doc
+forall u e. Pretty e =&gt; Count u e -&gt; Doc
+pprList :: [Count u e] -&gt; Doc
+$cpprList :: forall u e. Pretty e =&gt; [Count u e] -&gt; Doc
+pprPrec :: Int -&gt; Count u e -&gt; Doc
+$cpprPrec :: forall u e. Pretty e =&gt; Int -&gt; Count u e -&gt; Doc
+ppr :: Count u e -&gt; Doc
+$cppr :: forall u e. Pretty e =&gt; Count u e -&gt; Doc
+</span><a href="#local-6989586621684342820"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Pretty</span></a></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684342814"><span class="annot"><span class="annottext">Map VName VName -&gt; Count u e -&gt; Count u e
+(Map VName VName -&gt; Count u e -&gt; Count u e)
+-&gt; Substitute (Count u e)
+forall a. (Map VName VName -&gt; a -&gt; a) -&gt; Substitute a
+forall u e.
+Substitute e =&gt;
+Map VName VName -&gt; Count u e -&gt; Count u e
+substituteNames :: Map VName VName -&gt; Count u e -&gt; Count u e
+$csubstituteNames :: forall u e.
+Substitute e =&gt;
+Map VName VName -&gt; Count u e -&gt; Count u e
+</span><a href="Futhark.Transform.Substitute.html#C%3ASubstitute"><span class="hs-identifier hs-var hs-var hs-var hs-var">Substitute</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-71"></span><span>
+</span><span id="line-72"></span><span id="local-6989586621684343192"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684342807"><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier hs-type">Count</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684343192"><span class="hs-identifier hs-type">u</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-73"></span><span>  </span><span id="local-6989586621684342804"><span class="annot"><span class="annottext">fmap :: forall a b. (a -&gt; b) -&gt; Count u a -&gt; Count u b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">fmap</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; Count u a -&gt; Count u b
+forall (t :: * -&gt; *) a b. Traversable t =&gt; (a -&gt; b) -&gt; t a -&gt; t b
+</span><span class="hs-identifier hs-var">fmapDefault</span></span></span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span id="local-6989586621684343170"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684342770"><span id="local-6989586621684342772"><span id="local-6989586621684342774"><span id="local-6989586621684342776"><span id="local-6989586621684342778"><span id="local-6989586621684342780"><span id="local-6989586621684342782"><span id="local-6989586621684342784"><span id="local-6989586621684342786"><span id="local-6989586621684342788"><span id="local-6989586621684342790"><span id="local-6989586621684342792"><span id="local-6989586621684342794"><span id="local-6989586621684342796"><span id="local-6989586621684342798"><span id="local-6989586621684342801"><span class="annot"><span class="hs-identifier hs-type">Foldable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier hs-type">Count</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684343170"><span class="hs-identifier hs-type">u</span></a></span><span class="hs-special">)</span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-76"></span><span>  </span><span id="local-6989586621684342765"><span class="annot"><span class="annottext">foldMap :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; Count u a -&gt; m
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">foldMap</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a -&gt; m) -&gt; Count u a -&gt; m
+forall (t :: * -&gt; *) m a.
+(Traversable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMapDefault</span></span></span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span id="local-6989586621684343191"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684342752"><span id="local-6989586621684342754"><span id="local-6989586621684342756"><span class="annot"><span class="hs-identifier hs-type">Traversable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier hs-type">Count</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684343191"><span class="hs-identifier hs-type">u</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-79"></span><span>  </span><span id="local-6989586621684342746"><span class="annot"><span class="annottext">traverse :: forall (f :: * -&gt; *) a b.
+Applicative f =&gt;
+(a -&gt; f b) -&gt; Count u a -&gt; f (Count u b)
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">traverse</span></span></span><span> </span><span id="local-6989586621684342744"><span class="annot"><span class="annottext">a -&gt; f b
+</span><a href="#local-6989586621684342744"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier hs-type">Count</span></a></span><span> </span><span id="local-6989586621684342743"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684342743"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">b -&gt; Count u b
+forall u e. e -&gt; Count u e
+</span><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier hs-var">Count</span></a></span><span> </span><span class="annot"><span class="annottext">(b -&gt; Count u b) -&gt; f b -&gt; f (Count u b)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; f b
+</span><a href="#local-6989586621684342744"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684342743"><span class="hs-identifier hs-var">x</span></a></span></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span class="hs-comment">-- | Phantom type for the number of groups of some kernel.</span><span>
+</span><span id="line-82"></span><span class="hs-keyword">data</span><span> </span><span id="NumGroups"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#NumGroups"><span class="hs-identifier hs-var">NumGroups</span></a></span></span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- | Phantom type for the group size of some kernel.</span><span>
+</span><span id="line-85"></span><span class="hs-keyword">data</span><span> </span><span id="GroupSize"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#GroupSize"><span class="hs-identifier hs-var">GroupSize</span></a></span></span><span>
+</span><span id="line-86"></span><span>
+</span><span id="line-87"></span><span class="hs-comment">-- | Phantom type for number of threads.</span><span>
+</span><span id="line-88"></span><span class="hs-keyword">data</span><span> </span><span id="NumThreads"><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#NumThreads"><span class="hs-identifier hs-var">NumThreads</span></a></span></span><span>
+</span><span id="line-89"></span></pre></body></html>

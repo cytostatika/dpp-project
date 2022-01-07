@@ -1,0 +1,1011 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | Turn certain uses of accumulators into SegHists.</span><span>
+</span><span id="line-4"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Optimise.HistAccs</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#histAccsGPU"><span class="hs-identifier">histAccsGPU</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State</span></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html"><span class="hs-identifier">Futhark.IR.GPU</span></a></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pass.html"><span class="hs-identifier">Futhark.Pass</span></a></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Tools.html"><span class="hs-identifier">Futhark.Tools</span></a></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Transform.Rename.html"><span class="hs-identifier">Futhark.Transform.Rename</span></a></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">quot</span></span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- | A mapping from accumulator variables to their source.</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">type</span><span> </span><span id="Accs"><span class="annot"><a href="Futhark.Optimise.HistAccs.html#Accs"><span class="hs-identifier hs-var">Accs</span></a></span></span><span> </span><span id="local-6989586621684429392"><span class="annot"><a href="#local-6989586621684429392"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#WithAccInput"><span class="hs-identifier hs-type">WithAccInput</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429392"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">type</span><span> </span><span id="OptM"><span class="annot"><a href="Futhark.Optimise.HistAccs.html#OptM"><span class="hs-identifier hs-var">OptM</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ReaderT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">State</span></span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#optimiseBody"><span class="hs-identifier hs-type">optimiseBody</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#Accs"><span class="hs-identifier hs-type">Accs</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#OptM"><span class="hs-identifier hs-type">OptM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span id="optimiseBody"><span class="annot"><span class="annottext">optimiseBody :: Map VName (WithAccInput GPU) -&gt; Body GPU -&gt; OptM (Body GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseBody"><span class="hs-identifier hs-var hs-var">optimiseBody</span></a></span></span><span> </span><span id="local-6989586621684429390"><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429390"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span id="local-6989586621684429389"><span class="annot"><span class="annottext">Body GPU
+</span><a href="#local-6989586621684429389"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stms GPU -&gt; Result -&gt; Body GPU
+forall rep. Buildable rep =&gt; Stms rep -&gt; Result -&gt; Body rep
+</span><a href="Futhark.Builder.Class.html#mkBody"><span class="hs-identifier hs-var">mkBody</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms GPU -&gt; Result -&gt; Body GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Result -&gt; Body GPU)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+-&gt; Stms GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseStms"><span class="hs-identifier hs-var">optimiseStms</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429390"><span class="hs-identifier hs-var">accs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Body GPU -&gt; Stms GPU
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">Body GPU
+</span><a href="#local-6989586621684429389"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ReaderT (Scope GPU) (State VNameSource) (Result -&gt; Body GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) Result
+-&gt; OptM (Body GPU)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">Result -&gt; ReaderT (Scope GPU) (State VNameSource) Result
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Body GPU -&gt; Result
+forall rep. BodyT rep -&gt; Result
+</span><a href="Futhark.IR.Syntax.html#bodyResult"><span class="hs-identifier hs-var hs-var">bodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">Body GPU
+</span><a href="#local-6989586621684429389"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#optimiseExp"><span class="hs-identifier hs-type">optimiseExp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#Accs"><span class="hs-identifier hs-type">Accs</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#OptM"><span class="hs-identifier hs-type">OptM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span id="optimiseExp"><span class="annot"><span class="annottext">optimiseExp :: Map VName (WithAccInput GPU) -&gt; Exp GPU -&gt; OptM (Exp GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseExp"><span class="hs-identifier hs-var hs-var">optimiseExp</span></a></span></span><span> </span><span id="local-6989586621684429382"><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429382"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Mapper GPU GPU (ReaderT (Scope GPU) (State VNameSource))
+-&gt; Exp GPU -&gt; OptM (Exp GPU)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+Mapper frep trep m -&gt; Exp frep -&gt; m (Exp trep)
+</span><a href="Futhark.IR.Traversals.html#mapExpM"><span class="hs-identifier hs-var">mapExpM</span></a></span><span> </span><span class="annot"><span class="annottext">Mapper GPU GPU (ReaderT (Scope GPU) (State VNameSource))
+</span><a href="#local-6989586621684429380"><span class="hs-identifier hs-var">mapper</span></a></span><span>
+</span><span id="line-26"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-27"></span><span>    </span><span id="local-6989586621684429380"><span class="annot"><span class="annottext">mapper :: Mapper GPU GPU (ReaderT (Scope GPU) (State VNameSource))
+</span><a href="#local-6989586621684429380"><span class="hs-identifier hs-var hs-var">mapper</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-28"></span><span>      </span><span class="annot"><span class="annottext">Mapper GPU GPU (ReaderT (Scope GPU) (State VNameSource))
+forall (m :: * -&gt; *) rep. Monad m =&gt; Mapper rep rep m
+</span><a href="Futhark.IR.Traversals.html#identityMapper"><span class="hs-identifier hs-var">identityMapper</span></a></span><span>
+</span><span id="line-29"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnBody :: Scope GPU -&gt; Body GPU -&gt; OptM (Body GPU)
+</span><a href="Futhark.IR.Traversals.html#mapOnBody"><span class="hs-identifier hs-var">mapOnBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684429377"><span class="annot"><span class="annottext">Scope GPU
+</span><a href="#local-6989586621684429377"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span id="local-6989586621684429376"><span class="annot"><span class="annottext">Body GPU
+</span><a href="#local-6989586621684429376"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Scope GPU -&gt; OptM (Body GPU) -&gt; OptM (Body GPU)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="annot"><span class="annottext">Scope GPU
+</span><a href="#local-6989586621684429377"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">(OptM (Body GPU) -&gt; OptM (Body GPU))
+-&gt; OptM (Body GPU) -&gt; OptM (Body GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU) -&gt; Body GPU -&gt; OptM (Body GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseBody"><span class="hs-identifier hs-var">optimiseBody</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429382"><span class="hs-identifier hs-var">accs</span></a></span><span> </span><span class="annot"><span class="annottext">Body GPU
+</span><a href="#local-6989586621684429376"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-30"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span id="local-6989586621684429674"><span class="annot"><a href="Futhark.Optimise.HistAccs.html#extractUpdate"><span class="hs-identifier hs-type">extractUpdate</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-33"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#Accs"><span class="hs-identifier hs-type">Accs</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429674"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-34"></span><span>  </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-35"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429674"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-36"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#WithAccInput"><span class="hs-identifier hs-type">WithAccInput</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429674"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429674"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-37"></span><span id="extractUpdate"><span class="annot"><span class="annottext">extractUpdate :: forall rep.
+Accs rep
+-&gt; VName
+-&gt; Stms rep
+-&gt; Maybe ((WithAccInput rep, VName, [SubExp], [SubExp]), Stms rep)
+</span><a href="Futhark.Optimise.HistAccs.html#extractUpdate"><span class="hs-identifier hs-var hs-var">extractUpdate</span></a></span></span><span> </span><span id="local-6989586621684429365"><span class="annot"><span class="annottext">Accs rep
+</span><a href="#local-6989586621684429365"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span id="local-6989586621684429364"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429364"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684429363"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684429363"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-38"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684429362"><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684429362"><span class="hs-identifier hs-var">stm</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429361"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684429361"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; Maybe (Stm rep, Stms rep)
+forall rep. Stms rep -&gt; Maybe (Stm rep, Stms rep)
+</span><a href="Futhark.IR.Syntax.html#stmsHead"><span class="hs-identifier hs-var">stmsHead</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684429363"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684429362"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-40"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#PatElem"><span class="hs-identifier hs-type">PatElem</span></a></span><span> </span><span id="local-6989586621684429356"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429356"><span class="hs-identifier hs-var">pe_v</span></a></span></span><span> </span><span class="annot"><span class="annottext">LetDec rep
+</span><span class="hs-identifier">_</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#UpdateAcc"><span class="hs-identifier hs-type">UpdateAcc</span></a></span><span> </span><span id="local-6989586621684429353"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429353"><span class="hs-identifier hs-var">acc</span></a></span></span><span> </span><span id="local-6989586621684429352"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429352"><span class="hs-identifier hs-var">is</span></a></span></span><span> </span><span id="local-6989586621684429351"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429351"><span class="hs-identifier hs-var">vs</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429356"><span class="hs-identifier hs-var">pe_v</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; VName -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429364"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-42"></span><span>        </span><span id="local-6989586621684429350"><span class="annot"><span class="annottext">WithAccInput rep
+</span><a href="#local-6989586621684429350"><span class="hs-identifier hs-var">acc_input</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Accs rep -&gt; Maybe (WithAccInput rep)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429353"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="annot"><span class="annottext">Accs rep
+</span><a href="#local-6989586621684429365"><span class="hs-identifier hs-var">accs</span></a></span><span>
+</span><span id="line-43"></span><span>        </span><span class="annot"><span class="annottext">((WithAccInput rep, VName, [SubExp], [SubExp]), Stms rep)
+-&gt; Maybe ((WithAccInput rep, VName, [SubExp], [SubExp]), Stms rep)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">WithAccInput rep
+</span><a href="#local-6989586621684429350"><span class="hs-identifier hs-var">acc_input</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429353"><span class="hs-identifier hs-var">acc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429352"><span class="hs-identifier hs-var">is</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429351"><span class="hs-identifier hs-var">vs</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684429361"><span class="hs-identifier hs-var">stms'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span>    </span><span class="annot"><span class="annottext">Stm rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-45"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684429348"><span class="annot"><span class="annottext">(WithAccInput rep, VName, [SubExp], [SubExp])
+</span><a href="#local-6989586621684429348"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429347"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684429347"><span class="hs-identifier hs-var">stms''</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Accs rep
+-&gt; VName
+-&gt; Stms rep
+-&gt; Maybe ((WithAccInput rep, VName, [SubExp], [SubExp]), Stms rep)
+forall rep.
+Accs rep
+-&gt; VName
+-&gt; Stms rep
+-&gt; Maybe ((WithAccInput rep, VName, [SubExp], [SubExp]), Stms rep)
+</span><a href="Futhark.Optimise.HistAccs.html#extractUpdate"><span class="hs-identifier hs-var">extractUpdate</span></a></span><span> </span><span class="annot"><span class="annottext">Accs rep
+</span><a href="#local-6989586621684429365"><span class="hs-identifier hs-var">accs</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429364"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684429361"><span class="hs-identifier hs-var">stms'</span></a></span><span>
+</span><span id="line-46"></span><span>      </span><span class="annot"><span class="annottext">((WithAccInput rep, VName, [SubExp], [SubExp]), Stms rep)
+-&gt; Maybe ((WithAccInput rep, VName, [SubExp], [SubExp]), Stms rep)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(WithAccInput rep, VName, [SubExp], [SubExp])
+</span><a href="#local-6989586621684429348"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Stms rep
+forall rep. Stm rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#oneStm"><span class="hs-identifier hs-var">oneStm</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684429362"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; Stms rep -&gt; Stms rep
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684429347"><span class="hs-identifier hs-var">stms''</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#mkHistBody"><span class="hs-identifier hs-type">mkHistBody</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#Accs"><span class="hs-identifier hs-type">Accs</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#WithAccInput"><span class="hs-identifier hs-type">WithAccInput</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span id="mkHistBody"><span class="annot"><span class="annottext">mkHistBody :: Map VName (WithAccInput GPU)
+-&gt; KernelBody GPU
+-&gt; Maybe (KernelBody GPU, WithAccInput GPU, VName)
+</span><a href="Futhark.Optimise.HistAccs.html#mkHistBody"><span class="hs-identifier hs-var hs-var">mkHistBody</span></a></span></span><span> </span><span id="local-6989586621684429344"><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429344"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span id="local-6989586621684429342"><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429342"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SegOp.html#Returns"><span class="hs-identifier hs-type">Returns</span></a></span><span> </span><span id="local-6989586621684429340"><span class="annot"><span class="annottext">ResultManifest
+</span><a href="#local-6989586621684429340"><span class="hs-identifier hs-var">rm</span></a></span></span><span> </span><span id="local-6989586621684429339"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684429339"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684429337"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429337"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-50"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684429336"><span class="annot"><span class="annottext">WithAccInput GPU
+</span><a href="#local-6989586621684429336"><span class="hs-identifier hs-var">acc_input</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429335"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429335"><span class="hs-identifier hs-var">acc</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429334"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429334"><span class="hs-identifier hs-var">is</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429333"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429333"><span class="hs-identifier hs-var">vs</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429332"><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429332"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+-&gt; VName
+-&gt; Stms GPU
+-&gt; Maybe ((WithAccInput GPU, VName, [SubExp], [SubExp]), Stms GPU)
+forall rep.
+Accs rep
+-&gt; VName
+-&gt; Stms rep
+-&gt; Maybe ((WithAccInput rep, VName, [SubExp], [SubExp]), Stms rep)
+</span><a href="Futhark.Optimise.HistAccs.html#extractUpdate"><span class="hs-identifier hs-var">extractUpdate</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429344"><span class="hs-identifier hs-var">accs</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429337"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429342"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-51"></span><span>  </span><span class="annot"><span class="annottext">(KernelBody GPU, WithAccInput GPU, VName)
+-&gt; Maybe (KernelBody GPU, WithAccInput GPU, VName)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span>
+</span><span id="line-52"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">BodyDec GPU -&gt; Stms GPU -&gt; [KernelResult] -&gt; KernelBody GPU
+forall rep.
+BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+</span><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-var">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429332"><span class="hs-identifier hs-var">stms'</span></a></span><span> </span><span class="annot"><span class="annottext">([KernelResult] -&gt; KernelBody GPU)
+-&gt; [KernelResult] -&gt; KernelBody GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; KernelResult) -&gt; [SubExp] -&gt; [KernelResult]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ResultManifest -&gt; Certs -&gt; SubExp -&gt; KernelResult
+</span><a href="Futhark.IR.SegOp.html#Returns"><span class="hs-identifier hs-var">Returns</span></a></span><span> </span><span class="annot"><span class="annottext">ResultManifest
+</span><a href="#local-6989586621684429340"><span class="hs-identifier hs-var">rm</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684429339"><span class="hs-identifier hs-var">cs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429334"><span class="hs-identifier hs-var">is</span></a></span><span> </span><span class="annot"><span class="annottext">[KernelResult] -&gt; [KernelResult] -&gt; [KernelResult]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; KernelResult) -&gt; [SubExp] -&gt; [KernelResult]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ResultManifest -&gt; Certs -&gt; SubExp -&gt; KernelResult
+</span><a href="Futhark.IR.SegOp.html#Returns"><span class="hs-identifier hs-var">Returns</span></a></span><span> </span><span class="annot"><span class="annottext">ResultManifest
+</span><a href="#local-6989586621684429340"><span class="hs-identifier hs-var">rm</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684429339"><span class="hs-identifier hs-var">cs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429333"><span class="hs-identifier hs-var">vs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-53"></span><span>      </span><span class="annot"><span class="annottext">WithAccInput GPU
+</span><a href="#local-6989586621684429336"><span class="hs-identifier hs-var">acc_input</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-54"></span><span>      </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429335"><span class="hs-identifier hs-var">acc</span></a></span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#mkHistBody"><span class="hs-identifier hs-var">mkHistBody</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPU
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (KernelBody GPU, WithAccInput GPU, VName)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span id="local-6989586621684429646"><span class="annot"><a href="Futhark.Optimise.HistAccs.html#withAccLamToHistLam"><span class="hs-identifier hs-type">withAccLamToHistLam</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429646"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684429646"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-59"></span><span id="withAccLamToHistLam"><span class="annot"><span class="annottext">withAccLamToHistLam :: forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Shape -&gt; Lambda GPU -&gt; m (Lambda GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#withAccLamToHistLam"><span class="hs-identifier hs-var hs-var">withAccLamToHistLam</span></a></span></span><span> </span><span id="local-6989586621684429305"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429305"><span class="hs-identifier hs-var">shape</span></a></span></span><span> </span><span id="local-6989586621684429304"><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429304"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-60"></span><span>  </span><span class="annot"><span class="annottext">Lambda GPU -&gt; m (Lambda GPU)
+forall rep (m :: * -&gt; *).
+(Renameable rep, MonadFreshNames m) =&gt;
+Lambda rep -&gt; m (Lambda rep)
+</span><a href="Futhark.Transform.Rename.html#renameLambda"><span class="hs-identifier hs-var">renameLambda</span></a></span><span> </span><span class="annot"><span class="annottext">(Lambda GPU -&gt; m (Lambda GPU)) -&gt; Lambda GPU -&gt; m (Lambda GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429304"><span class="hs-identifier hs-var">lam</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">lambdaParams :: [LParam GPU]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var">lambdaParams</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [Param Type] -&gt; [Param Type]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">drop</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape -&gt; Int
+forall a. ArrayShape a =&gt; a -&gt; Int
+</span><a href="Futhark.IR.Syntax.Core.html#shapeRank"><span class="hs-identifier hs-var">shapeRank</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429305"><span class="hs-identifier hs-var">shape</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda GPU -&gt; [LParam GPU]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429304"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span class="hs-special">}</span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span id="local-6989586621684429623"><span class="annot"><a href="Futhark.Optimise.HistAccs.html#addArrsToAcc"><span class="hs-identifier hs-type">addArrsToAcc</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429623"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429623"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-64"></span><span>  </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-65"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-67"></span><span>  </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><a href="#local-6989586621684429623"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-69"></span><span id="addArrsToAcc"><span class="annot"><span class="annottext">addArrsToAcc :: forall (m :: * -&gt; *).
+(MonadBuilder m, Rep m ~ GPU) =&gt;
+SegLevel -&gt; Shape -&gt; [VName] -&gt; VName -&gt; m (Exp GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#addArrsToAcc"><span class="hs-identifier hs-var hs-var">addArrsToAcc</span></a></span></span><span> </span><span id="local-6989586621684429257"><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684429257"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684429256"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429256"><span class="hs-identifier hs-var">shape</span></a></span></span><span> </span><span id="local-6989586621684429255"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429255"><span class="hs-identifier hs-var">arrs</span></a></span></span><span> </span><span id="local-6989586621684429254"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429254"><span class="hs-identifier hs-var">acc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-70"></span><span>  </span><span id="local-6989586621684429253"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429253"><span class="hs-identifier hs-var">flat</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; m VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;phys_tid&quot;</span></span><span>
+</span><span id="line-71"></span><span>  </span><span id="local-6989586621684429251"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429251"><span class="hs-identifier hs-var">gtids</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; m VName -&gt; m [VName]
+forall (m :: * -&gt; *) a. Applicative m =&gt; Int -&gt; m a -&gt; m [a]
+</span><span class="hs-identifier hs-var">replicateM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape -&gt; Int
+forall a. ArrayShape a =&gt; a -&gt; Int
+</span><a href="Futhark.IR.Syntax.Core.html#shapeRank"><span class="hs-identifier hs-var">shapeRank</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429256"><span class="hs-identifier hs-var">shape</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; m VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;gtid&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684429249"><span class="annot"><span class="annottext">space :: SegSpace
+</span><a href="#local-6989586621684429249"><span class="hs-identifier hs-var hs-var">space</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; [(VName, SubExp)] -&gt; SegSpace
+</span><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-var">SegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429253"><span class="hs-identifier hs-var">flat</span></a></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; SegSpace) -&gt; [(VName, SubExp)] -&gt; SegSpace
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; [SubExp] -&gt; [(VName, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429251"><span class="hs-identifier hs-var">gtids</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; [(VName, SubExp)]) -&gt; [SubExp] -&gt; [(VName, SubExp)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Shape -&gt; [SubExp]
+forall d. ShapeBase d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#shapeDims"><span class="hs-identifier hs-var hs-var">shapeDims</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429256"><span class="hs-identifier hs-var">shape</span></a></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684429246"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429246"><span class="hs-identifier hs-var">acc'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429245"><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429245"><span class="hs-identifier hs-var">stms</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Scope GPU -&gt; m (VName, Stms GPU) -&gt; m (VName, Stms GPU)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; Scope GPU
+forall rep. SegSpace -&gt; Scope rep
+</span><a href="Futhark.IR.SegOp.html#scopeOfSegSpace"><span class="hs-identifier hs-var">scopeOfSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429249"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(m (VName, Stms GPU) -&gt; m (VName, Stms GPU))
+-&gt; (m VName -&gt; m (VName, Stms GPU))
+-&gt; m VName
+-&gt; m (VName, Stms GPU)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">m VName -&gt; m (VName, Stms GPU)
+forall (m :: * -&gt; *) a.
+MonadBuilder m =&gt;
+m a -&gt; m (a, Stms (Rep m))
+</span><a href="Futhark.Builder.Class.html#collectStms"><span class="hs-identifier hs-var">collectStms</span></a></span><span> </span><span class="annot"><span class="annottext">(m VName -&gt; m (VName, Stms GPU)) -&gt; m VName -&gt; m (VName, Stms GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-75"></span><span>    </span><span id="local-6989586621684429241"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429241"><span class="hs-identifier hs-var">vs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; (VName -&gt; m SubExp) -&gt; m [SubExp]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m (t b)
+</span><span class="hs-identifier hs-var">forM</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429255"><span class="hs-identifier hs-var">arrs</span></a></span><span> </span><span class="annot"><span class="annottext">((VName -&gt; m SubExp) -&gt; m [SubExp])
+-&gt; (VName -&gt; m SubExp) -&gt; m [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684429239"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429239"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-76"></span><span>      </span><span id="local-6989586621684429238"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684429238"><span class="hs-identifier hs-var">arr_t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429239"><span class="hs-identifier hs-var">arr</span></a></span><span>
+</span><span id="line-77"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; Exp (Rep m) -&gt; m SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m SubExp
+</span><a href="Futhark.Construct.html#letSubExp"><span class="hs-identifier hs-var">letSubExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429239"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_elem&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m SubExp) -&gt; Exp (Rep m) -&gt; m SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-78"></span><span>        </span><span class="annot"><span class="annottext">BasicOp -&gt; Exp GPU
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; Exp GPU) -&gt; BasicOp -&gt; Exp GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Slice SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Index"><span class="hs-identifier hs-var">Index</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429239"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">(Slice SubExp -&gt; BasicOp) -&gt; Slice SubExp -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [DimIndex SubExp] -&gt; Slice SubExp
+</span><a href="Futhark.Construct.html#fullSlice"><span class="hs-identifier hs-var">fullSlice</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684429238"><span class="hs-identifier hs-var">arr_t</span></a></span><span> </span><span class="annot"><span class="annottext">([DimIndex SubExp] -&gt; Slice SubExp)
+-&gt; [DimIndex SubExp] -&gt; Slice SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; DimIndex SubExp) -&gt; [VName] -&gt; [DimIndex SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; DimIndex SubExp
+forall d. d -&gt; DimIndex d
+</span><a href="Futhark.IR.Syntax.Core.html#DimFix"><span class="hs-identifier hs-var">DimFix</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; DimIndex SubExp)
+-&gt; (VName -&gt; SubExp) -&gt; VName -&gt; DimIndex SubExp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429251"><span class="hs-identifier hs-var">gtids</span></a></span><span>
+</span><span id="line-79"></span><span>    </span><span class="annot"><span class="annottext">String -&gt; Exp (Rep m) -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429254"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_upd&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m VName) -&gt; Exp (Rep m) -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-80"></span><span>      </span><span class="annot"><span class="annottext">BasicOp -&gt; Exp GPU
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; Exp GPU) -&gt; BasicOp -&gt; Exp GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; [SubExp] -&gt; [SubExp] -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#UpdateAcc"><span class="hs-identifier hs-var">UpdateAcc</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429254"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; [VName] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429251"><span class="hs-identifier hs-var">gtids</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429241"><span class="hs-identifier hs-var">vs</span></a></span><span>
+</span><span id="line-81"></span><span>
+</span><span id="line-82"></span><span>  </span><span id="local-6989586621684429230"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684429230"><span class="hs-identifier hs-var">acc_t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429254"><span class="hs-identifier hs-var">acc</span></a></span><span>
+</span><span id="line-83"></span><span>  </span><span class="annot"><span class="annottext">Exp GPU -&gt; m (Exp GPU)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Exp GPU -&gt; m (Exp GPU))
+-&gt; (KernelBody GPU -&gt; Exp GPU) -&gt; KernelBody GPU -&gt; m (Exp GPU)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">HostOp GPU (SOAC GPU) -&gt; Exp GPU
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(HostOp GPU (SOAC GPU) -&gt; Exp GPU)
+-&gt; (KernelBody GPU -&gt; HostOp GPU (SOAC GPU))
+-&gt; KernelBody GPU
+-&gt; Exp GPU
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU -&gt; HostOp GPU (SOAC GPU)
+forall rep op. SegOp SegLevel rep -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-var">SegOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPU -&gt; HostOp GPU (SOAC GPU))
+-&gt; (KernelBody GPU -&gt; SegOp SegLevel GPU)
+-&gt; KernelBody GPU
+-&gt; HostOp GPU (SOAC GPU)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SegLevel
+-&gt; SegSpace -&gt; [Type] -&gt; KernelBody GPU -&gt; SegOp SegLevel GPU
+forall lvl rep.
+lvl -&gt; SegSpace -&gt; [Type] -&gt; KernelBody rep -&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-var">SegMap</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684429257"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429249"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684429230"><span class="hs-identifier hs-var">acc_t</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">(KernelBody GPU -&gt; m (Exp GPU)) -&gt; KernelBody GPU -&gt; m (Exp GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-84"></span><span>    </span><span class="annot"><span class="annottext">BodyDec GPU -&gt; Stms GPU -&gt; [KernelResult] -&gt; KernelBody GPU
+forall rep.
+BodyDec rep -&gt; Stms rep -&gt; [KernelResult] -&gt; KernelBody rep
+</span><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-var">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429245"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">ResultManifest -&gt; Certs -&gt; SubExp -&gt; KernelResult
+</span><a href="Futhark.IR.SegOp.html#Returns"><span class="hs-identifier hs-var">Returns</span></a></span><span> </span><span class="annot"><span class="annottext">ResultManifest
+</span><a href="Futhark.IR.SegOp.html#ResultMaySimplify"><span class="hs-identifier hs-var">ResultMaySimplify</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429246"><span class="hs-identifier hs-var">acc'</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span id="local-6989586621684429587"><span class="annot"><a href="Futhark.Optimise.HistAccs.html#flatKernelBody"><span class="hs-identifier hs-type">flatKernelBody</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-87"></span><span>  </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429587"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-88"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429587"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-90"></span><span>  </span><span class="annot"><a href="#local-6989586621684429587"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684429587"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span><span>
+</span><span id="line-91"></span><span id="flatKernelBody"><span class="annot"><span class="annottext">flatKernelBody :: forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+SegSpace -&gt; KernelBody (Rep m) -&gt; m (SegSpace, KernelBody (Rep m))
+</span><a href="Futhark.Optimise.HistAccs.html#flatKernelBody"><span class="hs-identifier hs-var hs-var">flatKernelBody</span></a></span></span><span> </span><span id="local-6989586621684429187"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429187"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684429186"><span class="annot"><span class="annottext">KernelBody (Rep m)
+</span><a href="#local-6989586621684429186"><span class="hs-identifier hs-var">kbody</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-92"></span><span>  </span><span id="local-6989586621684429185"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429185"><span class="hs-identifier hs-var">gtid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; m VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;gtid&quot;</span></span><span>
+</span><span id="line-93"></span><span>  </span><span id="local-6989586621684429184"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684429184"><span class="hs-identifier hs-var">dims_prod</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-94"></span><span>    </span><span class="annot"><span class="annottext">String -&gt; ExpT (Rep m) -&gt; m SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m SubExp
+</span><a href="Futhark.Construct.html#letSubExp"><span class="hs-identifier hs-var">letSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;dims_prod&quot;</span></span><span>
+</span><span id="line-95"></span><span>      </span><span class="annot"><span class="annottext">(ExpT (Rep m) -&gt; m SubExp) -&gt; m (ExpT (Rep m)) -&gt; m SubExp
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">BinOp -&gt; SubExp -&gt; [SubExp] -&gt; m (ExpT (Rep m))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+BinOp -&gt; SubExp -&gt; [SubExp] -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#foldBinOp"><span class="hs-identifier hs-var">foldBinOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; Overflow -&gt; BinOp
+</span><a href="Futhark.IR.Primitive.html#Mul"><span class="hs-identifier hs-var">Mul</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">Overflow
+</span><a href="Futhark.IR.Primitive.html#OverflowUndef"><span class="hs-identifier hs-var">OverflowUndef</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; [SubExp]
+</span><a href="Futhark.IR.SegOp.html#segSpaceDims"><span class="hs-identifier hs-var">segSpaceDims</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429187"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684429176"><span class="annot"><span class="annottext">space' :: SegSpace
+</span><a href="#local-6989586621684429176"><span class="hs-identifier hs-var hs-var">space'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; [(VName, SubExp)] -&gt; SegSpace
+</span><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-var">SegSpace</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; VName
+</span><a href="Futhark.IR.SegOp.html#segFlat"><span class="hs-identifier hs-var hs-var">segFlat</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429187"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429185"><span class="hs-identifier hs-var">gtid</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684429184"><span class="hs-identifier hs-var">dims_prod</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span>  </span><span id="local-6989586621684429174"><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684429174"><span class="hs-identifier hs-var">kbody_stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Scope (Rep m) -&gt; m (Stms (Rep m)) -&gt; m (Stms (Rep m))
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; Scope (Rep m)
+forall rep. SegSpace -&gt; Scope rep
+</span><a href="Futhark.IR.SegOp.html#scopeOfSegSpace"><span class="hs-identifier hs-var">scopeOfSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429176"><span class="hs-identifier hs-var">space'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(m (Stms (Rep m)) -&gt; m (Stms (Rep m)))
+-&gt; (m () -&gt; m (Stms (Rep m))) -&gt; m () -&gt; m (Stms (Rep m))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">m () -&gt; m (Stms (Rep m))
+forall (m :: * -&gt; *) a. MonadBuilder m =&gt; m a -&gt; m (Stms (Rep m))
+</span><a href="Futhark.Builder.Class.html#collectStms_"><span class="hs-identifier hs-var">collectStms_</span></a></span><span> </span><span class="annot"><span class="annottext">(m () -&gt; m (Stms (Rep m))) -&gt; m () -&gt; m (Stms (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-100"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684429172"><span class="annot"><span class="annottext">new_inds :: [TPrimExp Int64 VName]
+</span><a href="#local-6989586621684429172"><span class="hs-identifier hs-var hs-var">new_inds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-101"></span><span>          </span><span class="annot"><span class="annottext">[TPrimExp Int64 VName]
+-&gt; TPrimExp Int64 VName -&gt; [TPrimExp Int64 VName]
+forall num. IntegralExp num =&gt; [num] -&gt; num -&gt; [num]
+</span><a href="Futhark.IR.Prop.Reshape.html#unflattenIndex"><span class="hs-identifier hs-var">unflattenIndex</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SubExp -&gt; TPrimExp Int64 VName)
+-&gt; [SubExp] -&gt; [TPrimExp Int64 VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; [SubExp]
+</span><a href="Futhark.IR.SegOp.html#segSpaceDims"><span class="hs-identifier hs-var">segSpaceDims</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429187"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TPrimExp Int64 VName) -&gt; SubExp -&gt; TPrimExp Int64 VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429185"><span class="hs-identifier hs-var">gtid</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>    </span><span class="annot"><span class="annottext">([VName] -&gt; ExpT (Rep m) -&gt; m ())
+-&gt; [[VName]] -&gt; [ExpT (Rep m)] -&gt; m ()
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m ()
+</span><span class="hs-identifier hs-var">zipWithM_</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; ExpT (Rep m) -&gt; m ()
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#letBindNames"><span class="hs-identifier hs-var">letBindNames</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((VName, SubExp) -&gt; [VName]) -&gt; [(VName, SubExp)] -&gt; [[VName]]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; [VName]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; [VName])
+-&gt; ((VName, SubExp) -&gt; VName) -&gt; (VName, SubExp) -&gt; [VName]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(VName, SubExp) -&gt; VName
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; [(VName, SubExp)]
+</span><a href="Futhark.IR.SegOp.html#unSegSpace"><span class="hs-identifier hs-var hs-var">unSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429187"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-103"></span><span>      </span><span class="annot"><span class="annottext">([ExpT (Rep m)] -&gt; m ()) -&gt; m [ExpT (Rep m)] -&gt; m ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">(TPrimExp Int64 VName -&gt; m (ExpT (Rep m)))
+-&gt; [TPrimExp Int64 VName] -&gt; m [ExpT (Rep m)]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int64 VName -&gt; m (ExpT (Rep m))
+forall a (m :: * -&gt; *).
+(ToExp a, MonadBuilder m) =&gt;
+a -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var">toExp</span></a></span><span> </span><span class="annot"><span class="annottext">[TPrimExp Int64 VName]
+</span><a href="#local-6989586621684429172"><span class="hs-identifier hs-var">new_inds</span></a></span><span>
+</span><span id="line-104"></span><span>    </span><span class="annot"><span class="annottext">Stms (Rep m) -&gt; m ()
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Stms (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#addStms"><span class="hs-identifier hs-var">addStms</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms (Rep m) -&gt; m ()) -&gt; Stms (Rep m) -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody (Rep m) -&gt; Stms (Rep m)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody (Rep m)
+</span><a href="#local-6989586621684429186"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span>  </span><span class="annot"><span class="annottext">(SegSpace, KernelBody (Rep m)) -&gt; m (SegSpace, KernelBody (Rep m))
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429176"><span class="hs-identifier hs-var">space'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">KernelBody (Rep m)
+</span><a href="#local-6989586621684429186"><span class="hs-identifier hs-var">kbody</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Stms (Rep m)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684429174"><span class="hs-identifier hs-var">kbody_stms</span></a></span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#optimiseStm"><span class="hs-identifier hs-type">optimiseStm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#Accs"><span class="hs-identifier hs-type">Accs</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#OptM"><span class="hs-identifier hs-type">OptM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span class="hs-comment">-- TODO: this is very restricted currently, but shows the idea.</span><span>
+</span><span id="line-110"></span><span id="optimiseStm"><span class="annot"><span class="annottext">optimiseStm :: Map VName (WithAccInput GPU)
+-&gt; Stm GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseStm"><span class="hs-identifier hs-var hs-var">optimiseStm</span></a></span></span><span> </span><span id="local-6989586621684429161"><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429161"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684429160"><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684429160"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684429159"><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684429159"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#WithAcc"><span class="hs-identifier hs-type">WithAcc</span></a></span><span> </span><span id="local-6989586621684429157"><span class="annot"><span class="annottext">[WithAccInput GPU]
+</span><a href="#local-6989586621684429157"><span class="hs-identifier hs-var">inputs</span></a></span></span><span> </span><span id="local-6989586621684429156"><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429156"><span class="hs-identifier hs-var">lam</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-111"></span><span>  </span><span class="annot"><span class="annottext">Scope GPU
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param Type] -&gt; Scope GPU
+forall rep dec. (LParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-var">scopeOfLParams</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda GPU -&gt; [LParam GPU]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429156"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+ -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU))
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-112"></span><span>    </span><span id="local-6989586621684429154"><span class="annot"><span class="annottext">Body GPU
+</span><a href="#local-6989586621684429154"><span class="hs-identifier hs-var">body'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU) -&gt; Body GPU -&gt; OptM (Body GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseBody"><span class="hs-identifier hs-var">optimiseBody</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429153"><span class="hs-identifier hs-var">accs'</span></a></span><span> </span><span class="annot"><span class="annottext">(Body GPU -&gt; OptM (Body GPU)) -&gt; Body GPU -&gt; OptM (Body GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPU -&gt; Body GPU
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429156"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-113"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684429151"><span class="annot"><span class="annottext">lam' :: Lambda GPU
+</span><a href="#local-6989586621684429151"><span class="hs-identifier hs-var hs-var">lam'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429156"><span class="hs-identifier hs-var">lam</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">lambdaBody :: Body GPU
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var">lambdaBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body GPU
+</span><a href="#local-6989586621684429154"><span class="hs-identifier hs-var">body'</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-114"></span><span>    </span><span class="annot"><span class="annottext">Stms GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Stms GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU))
+-&gt; Stms GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stm GPU -&gt; Stms GPU
+forall rep. Stm rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#oneStm"><span class="hs-identifier hs-var">oneStm</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPU -&gt; Stms GPU) -&gt; Stm GPU -&gt; Stms GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Pat GPU -&gt; StmAux (ExpDec GPU) -&gt; Exp GPU -&gt; Stm GPU
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684429160"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684429159"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp GPU -&gt; Stm GPU) -&gt; Exp GPU -&gt; Stm GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[WithAccInput GPU] -&gt; Lambda GPU -&gt; Exp GPU
+forall rep. [WithAccInput rep] -&gt; Lambda rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#WithAcc"><span class="hs-identifier hs-var">WithAcc</span></a></span><span> </span><span class="annot"><span class="annottext">[WithAccInput GPU]
+</span><a href="#local-6989586621684429157"><span class="hs-identifier hs-var">inputs</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429151"><span class="hs-identifier hs-var">lam'</span></a></span><span>
+</span><span id="line-115"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-116"></span><span>    </span><span id="local-6989586621684429150"><span class="annot"><span class="annottext">acc_names :: [VName]
+</span><a href="#local-6989586621684429150"><span class="hs-identifier hs-var hs-var">acc_names</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Param Type -&gt; VName) -&gt; [Param Type] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param Type -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">([Param Type] -&gt; [VName]) -&gt; [Param Type] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; [Param Type] -&gt; [Param Type]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">drop</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[WithAccInput GPU] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[WithAccInput GPU]
+</span><a href="#local-6989586621684429157"><span class="hs-identifier hs-var">inputs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Param Type] -&gt; [Param Type]) -&gt; [Param Type] -&gt; [Param Type]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPU -&gt; [LParam GPU]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429156"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621684429153"><span class="annot"><span class="annottext">accs' :: Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429153"><span class="hs-identifier hs-var hs-var">accs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, WithAccInput GPU)] -&gt; Map VName (WithAccInput GPU)
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [WithAccInput GPU] -&gt; [(VName, WithAccInput GPU)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429150"><span class="hs-identifier hs-var">acc_names</span></a></span><span> </span><span class="annot"><span class="annottext">[WithAccInput GPU]
+</span><a href="#local-6989586621684429157"><span class="hs-identifier hs-var">inputs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+-&gt; Map VName (WithAccInput GPU) -&gt; Map VName (WithAccInput GPU)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429161"><span class="hs-identifier hs-var">accs</span></a></span><span>
+</span><span id="line-118"></span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#optimiseStm"><span class="hs-identifier hs-var">optimiseStm</span></a></span><span> </span><span id="local-6989586621684429146"><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429146"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684429145"><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684429145"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684429144"><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684429144"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-type">SegMap</span></a></span><span> </span><span id="local-6989586621684429143"><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684429143"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684429142"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429142"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684429141"><span class="annot"><span class="annottext">KernelBody GPU
+</span><a href="#local-6989586621684429141"><span class="hs-identifier hs-var">kbody</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-119"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429146"><span class="hs-identifier hs-var">accs</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+-&gt; Map VName (WithAccInput GPU) -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span>
+</span><span id="line-120"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684429139"><span class="annot"><span class="annottext">KernelBody GPU
+</span><a href="#local-6989586621684429139"><span class="hs-identifier hs-var">kbody'</span></a></span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684429138"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429138"><span class="hs-identifier hs-var">acc_shape</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684429137"><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429137"><span class="hs-identifier hs-var">acc_lam</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429136"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429136"><span class="hs-identifier hs-var">acc_nes</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429135"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429135"><span class="hs-identifier hs-var">acc</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-121"></span><span>      </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+-&gt; KernelBody GPU
+-&gt; Maybe (KernelBody GPU, WithAccInput GPU, VName)
+</span><a href="Futhark.Optimise.HistAccs.html#mkHistBody"><span class="hs-identifier hs-var">mkHistBody</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429146"><span class="hs-identifier hs-var">accs</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPU
+</span><a href="#local-6989586621684429141"><span class="hs-identifier hs-var">kbody</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-122"></span><span>    </span><span class="annot"><span class="annottext">(Type -&gt; Bool) -&gt; [Type] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; Bool
+forall shape u. TypeBase shape u -&gt; Bool
+</span><a href="Futhark.IR.Prop.Types.html#primType"><span class="hs-identifier hs-var">primType</span></a></span><span> </span><span class="annot"><span class="annottext">([Type] -&gt; Bool) -&gt; [Type] -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPU -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429137"><span class="hs-identifier hs-var">acc_lam</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Builder GPU ()
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var">runBuilder_</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder GPU ()
+ -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU))
+-&gt; Builder GPU ()
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-123"></span><span>    </span><span id="local-6989586621684429130"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429130"><span class="hs-identifier hs-var">hist_dests</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+-&gt; (SubExp -&gt; BuilderT GPU (State VNameSource) VName)
+-&gt; BuilderT GPU (State VNameSource) [VName]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m (t b)
+</span><span class="hs-identifier hs-var">forM</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429136"><span class="hs-identifier hs-var">acc_nes</span></a></span><span> </span><span class="annot"><span class="annottext">((SubExp -&gt; BuilderT GPU (State VNameSource) VName)
+ -&gt; BuilderT GPU (State VNameSource) [VName])
+-&gt; (SubExp -&gt; BuilderT GPU (State VNameSource) VName)
+-&gt; BuilderT GPU (State VNameSource) [VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684429129"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684429129"><span class="hs-identifier hs-var">ne</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-124"></span><span>      </span><span class="annot"><span class="annottext">String
+-&gt; Exp (Rep (BuilderT GPU (State VNameSource)))
+-&gt; BuilderT GPU (State VNameSource) VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;hist_dest&quot;</span></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (BuilderT GPU (State VNameSource)))
+ -&gt; BuilderT GPU (State VNameSource) VName)
+-&gt; Exp (Rep (BuilderT GPU (State VNameSource)))
+-&gt; BuilderT GPU (State VNameSource) VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; Exp GPU
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; Exp GPU) -&gt; BasicOp -&gt; Exp GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Shape -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Replicate"><span class="hs-identifier hs-var">Replicate</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429138"><span class="hs-identifier hs-var">acc_shape</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684429129"><span class="hs-identifier hs-var">ne</span></a></span><span>
+</span><span id="line-125"></span><span>
+</span><span id="line-126"></span><span>    </span><span id="local-6989586621684429127"><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429127"><span class="hs-identifier hs-var">acc_lam'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Shape
+-&gt; Lambda GPU -&gt; BuilderT GPU (State VNameSource) (Lambda GPU)
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Shape -&gt; Lambda GPU -&gt; m (Lambda GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#withAccLamToHistLam"><span class="hs-identifier hs-var">withAccLamToHistLam</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429138"><span class="hs-identifier hs-var">acc_shape</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429137"><span class="hs-identifier hs-var">acc_lam</span></a></span><span>
+</span><span id="line-127"></span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684429126"><span class="annot"><span class="annottext">ts' :: [Type]
+</span><a href="#local-6989586621684429126"><span class="hs-identifier hs-var hs-var">ts'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-129"></span><span>          </span><span class="annot"><span class="annottext">Int -&gt; Type -&gt; [Type]
+forall a. Int -&gt; a -&gt; [a]
+</span><span class="hs-identifier hs-var">replicate</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape -&gt; Int
+forall a. ArrayShape a =&gt; a -&gt; Int
+</span><a href="Futhark.IR.Syntax.Core.html#shapeRank"><span class="hs-identifier hs-var">shapeRank</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429138"><span class="hs-identifier hs-var">acc_shape</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int64"><span class="hs-identifier hs-var">int64</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-130"></span><span>            </span><span class="annot"><span class="annottext">[Type] -&gt; [Type] -&gt; [Type]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPU -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429137"><span class="hs-identifier hs-var">acc_lam</span></a></span><span>
+</span><span id="line-131"></span><span>        </span><span id="local-6989586621684429122"><span class="annot"><span class="annottext">histop :: HistOp GPU
+</span><a href="#local-6989586621684429122"><span class="hs-identifier hs-var hs-var">histop</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-132"></span><span>          </span><span class="annot"><span class="annottext">HistOp :: forall rep.
+Shape
+-&gt; SubExp
+-&gt; [VName]
+-&gt; [SubExp]
+-&gt; Shape
+-&gt; Lambda rep
+-&gt; HistOp rep
+</span><a href="Futhark.IR.SegOp.html#HistOp"><span class="hs-identifier hs-type">HistOp</span></a></span><span>
+</span><span id="line-133"></span><span>            </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">histShape :: Shape
+</span><a href="Futhark.IR.SegOp.html#histShape"><span class="hs-identifier hs-var">histShape</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429138"><span class="hs-identifier hs-var">acc_shape</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-134"></span><span>              </span><span class="annot"><span class="annottext">histRaceFactor :: SubExp
+</span><a href="Futhark.IR.SegOp.html#histRaceFactor"><span class="hs-identifier hs-var">histRaceFactor</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span class="hs-special">,</span><span>
+</span><span id="line-135"></span><span>              </span><span class="annot"><span class="annottext">histDest :: [VName]
+</span><a href="Futhark.IR.SegOp.html#histDest"><span class="hs-identifier hs-var">histDest</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429130"><span class="hs-identifier hs-var">hist_dests</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-136"></span><span>              </span><span class="annot"><span class="annottext">histNeutral :: [SubExp]
+</span><a href="Futhark.IR.SegOp.html#histNeutral"><span class="hs-identifier hs-var">histNeutral</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684429136"><span class="hs-identifier hs-var">acc_nes</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-137"></span><span>              </span><span class="annot"><span class="annottext">histOpShape :: Shape
+</span><a href="Futhark.IR.SegOp.html#histOpShape"><span class="hs-identifier hs-var">histOpShape</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Shape
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span>
+</span><span id="line-138"></span><span>              </span><span class="annot"><span class="annottext">histOp :: Lambda GPU
+</span><a href="Futhark.IR.SegOp.html#histOp"><span class="hs-identifier hs-var">histOp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Lambda GPU
+</span><a href="#local-6989586621684429127"><span class="hs-identifier hs-var">acc_lam'</span></a></span><span>
+</span><span id="line-139"></span><span>            </span><span class="hs-special">}</span><span>
+</span><span id="line-140"></span><span>
+</span><span id="line-141"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684429114"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429114"><span class="hs-identifier hs-var">space'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684429113"><span class="annot"><span class="annottext">KernelBody GPU
+</span><a href="#local-6989586621684429113"><span class="hs-identifier hs-var">kbody''</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SegSpace
+-&gt; KernelBody (Rep (BuilderT GPU (State VNameSource)))
+-&gt; BuilderT
+     GPU
+     (State VNameSource)
+     (SegSpace, KernelBody (Rep (BuilderT GPU (State VNameSource))))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+SegSpace -&gt; KernelBody (Rep m) -&gt; m (SegSpace, KernelBody (Rep m))
+</span><a href="Futhark.Optimise.HistAccs.html#flatKernelBody"><span class="hs-identifier hs-var">flatKernelBody</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429142"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody (Rep (BuilderT GPU (State VNameSource)))
+KernelBody GPU
+</span><a href="#local-6989586621684429139"><span class="hs-identifier hs-var">kbody'</span></a></span><span>
+</span><span id="line-142"></span><span>
+</span><span id="line-143"></span><span>    </span><span id="local-6989586621684429112"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429112"><span class="hs-identifier hs-var">hist_dest_upd</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-144"></span><span>      </span><span class="annot"><span class="annottext">String
+-&gt; Exp (Rep (BuilderT GPU (State VNameSource)))
+-&gt; BuilderT GPU (State VNameSource) [VName]
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m [VName]
+</span><a href="Futhark.Construct.html#letTupExp"><span class="hs-identifier hs-var">letTupExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;hist_dest_upd&quot;</span></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep (BuilderT GPU (State VNameSource)))
+ -&gt; BuilderT GPU (State VNameSource) [VName])
+-&gt; Exp (Rep (BuilderT GPU (State VNameSource)))
+-&gt; BuilderT GPU (State VNameSource) [VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Op GPU -&gt; Exp GPU
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op GPU -&gt; Exp GPU) -&gt; Op GPU -&gt; Exp GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPU -&gt; HostOp GPU (SOAC GPU)
+forall rep op. SegOp SegLevel rep -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-var">SegOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPU -&gt; HostOp GPU (SOAC GPU))
+-&gt; SegOp SegLevel GPU -&gt; HostOp GPU (SOAC GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegLevel
+-&gt; SegSpace
+-&gt; [HistOp GPU]
+-&gt; [Type]
+-&gt; KernelBody GPU
+-&gt; SegOp SegLevel GPU
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [HistOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-var">SegHist</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684429143"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684429114"><span class="hs-identifier hs-var">space'</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">HistOp GPU
+</span><a href="#local-6989586621684429122"><span class="hs-identifier hs-var">histop</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684429126"><span class="hs-identifier hs-var">ts'</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPU
+</span><a href="#local-6989586621684429113"><span class="hs-identifier hs-var">kbody''</span></a></span><span>
+</span><span id="line-145"></span><span>
+</span><span id="line-146"></span><span>    </span><span class="annot"><span class="annottext">Stm GPU -&gt; Builder GPU ()
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Stm (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#addStm"><span class="hs-identifier hs-var">addStm</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPU -&gt; Builder GPU ())
+-&gt; (Exp GPU -&gt; Stm GPU) -&gt; Exp GPU -&gt; Builder GPU ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Pat GPU -&gt; StmAux (ExpDec GPU) -&gt; Exp GPU -&gt; Stm GPU
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684429145"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684429144"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp GPU -&gt; Builder GPU ())
+-&gt; BuilderT GPU (State VNameSource) (Exp GPU) -&gt; Builder GPU ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">SegLevel
+-&gt; Shape
+-&gt; [VName]
+-&gt; VName
+-&gt; BuilderT GPU (State VNameSource) (Exp GPU)
+forall (m :: * -&gt; *).
+(MonadBuilder m, Rep m ~ GPU) =&gt;
+SegLevel -&gt; Shape -&gt; [VName] -&gt; VName -&gt; m (Exp GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#addArrsToAcc"><span class="hs-identifier hs-var">addArrsToAcc</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684429143"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684429138"><span class="hs-identifier hs-var">acc_shape</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684429112"><span class="hs-identifier hs-var">hist_dest_upd</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684429135"><span class="hs-identifier hs-var">acc</span></a></span><span>
+</span><span id="line-147"></span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#optimiseStm"><span class="hs-identifier hs-var">optimiseStm</span></a></span><span> </span><span id="local-6989586621684429108"><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429108"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684429107"><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684429107"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684429106"><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684429106"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span id="local-6989586621684429105"><span class="annot"><span class="annottext">Exp GPU
+</span><a href="#local-6989586621684429105"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-148"></span><span>  </span><span class="annot"><span class="annottext">Stm GPU -&gt; Stms GPU
+forall rep. Stm rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#oneStm"><span class="hs-identifier hs-var">oneStm</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPU -&gt; Stms GPU)
+-&gt; (Exp GPU -&gt; Stm GPU) -&gt; Exp GPU -&gt; Stms GPU
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Pat GPU -&gt; StmAux (ExpDec GPU) -&gt; Exp GPU -&gt; Stm GPU
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPU
+</span><a href="#local-6989586621684429107"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPU)
+</span><a href="#local-6989586621684429106"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp GPU -&gt; Stms GPU)
+-&gt; OptM (Exp GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU) -&gt; Exp GPU -&gt; OptM (Exp GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseExp"><span class="hs-identifier hs-var">optimiseExp</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429108"><span class="hs-identifier hs-var">accs</span></a></span><span> </span><span class="annot"><span class="annottext">Exp GPU
+</span><a href="#local-6989586621684429105"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-149"></span><span>
+</span><span id="line-150"></span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#optimiseStms"><span class="hs-identifier hs-type">optimiseStms</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#Accs"><span class="hs-identifier hs-type">Accs</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#OptM"><span class="hs-identifier hs-type">OptM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span id="optimiseStms"><span class="annot"><span class="annottext">optimiseStms :: Map VName (WithAccInput GPU)
+-&gt; Stms GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseStms"><span class="hs-identifier hs-var hs-var">optimiseStms</span></a></span></span><span> </span><span id="local-6989586621684429104"><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429104"><span class="hs-identifier hs-var">accs</span></a></span></span><span> </span><span id="local-6989586621684429103"><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429103"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-152"></span><span>  </span><span class="annot"><span class="annottext">Scope GPU
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms GPU -&gt; Scope GPU
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429103"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+ -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU))
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-153"></span><span>    </span><span class="annot"><span class="annottext">[Stms GPU] -&gt; Stms GPU
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([Stms GPU] -&gt; Stms GPU)
+-&gt; ReaderT (Scope GPU) (State VNameSource) [Stms GPU]
+-&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Stm GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU))
+-&gt; [Stm GPU] -&gt; ReaderT (Scope GPU) (State VNameSource) [Stms GPU]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+-&gt; Stm GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseStm"><span class="hs-identifier hs-var">optimiseStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+</span><a href="#local-6989586621684429104"><span class="hs-identifier hs-var">accs</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms GPU -&gt; [Stm GPU]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span> </span><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429103"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-154"></span><span>
+</span><span id="line-155"></span><span class="hs-comment">-- | The pass for GPU kernels.</span><span>
+</span><span id="line-156"></span><span class="annot"><a href="Futhark.Optimise.HistAccs.html#histAccsGPU"><span class="hs-identifier hs-type">histAccsGPU</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span>
+</span><span id="line-157"></span><span id="histAccsGPU"><span class="annot"><span class="annottext">histAccsGPU :: Pass GPU GPU
+</span><a href="Futhark.Optimise.HistAccs.html#histAccsGPU"><span class="hs-identifier hs-var hs-var">histAccsGPU</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-158"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; String -&gt; (Prog GPU -&gt; PassM (Prog GPU)) -&gt; Pass GPU GPU
+forall fromrep torep.
+String
+-&gt; String
+-&gt; (Prog fromrep -&gt; PassM (Prog torep))
+-&gt; Pass fromrep torep
+</span><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-var">Pass</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;hist accs&quot;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Turn certain accumulations into histograms&quot;</span></span><span> </span><span class="annot"><span class="annottext">((Prog GPU -&gt; PassM (Prog GPU)) -&gt; Pass GPU GPU)
+-&gt; (Prog GPU -&gt; PassM (Prog GPU)) -&gt; Pass GPU GPU
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-159"></span><span>    </span><span class="annot"><span class="annottext">(Scope GPU -&gt; Stms GPU -&gt; PassM (Stms GPU))
+-&gt; Prog GPU -&gt; PassM (Prog GPU)
+forall rep.
+(Scope rep -&gt; Stms rep -&gt; PassM (Stms rep))
+-&gt; Prog rep -&gt; PassM (Prog rep)
+</span><a href="Futhark.Pass.html#intraproceduralTransformation"><span class="hs-identifier hs-var">intraproceduralTransformation</span></a></span><span> </span><span class="annot"><span class="annottext">Scope GPU -&gt; Stms GPU -&gt; PassM (Stms GPU)
+forall {m :: * -&gt; *}.
+MonadFreshNames m =&gt;
+Scope GPU -&gt; Stms GPU -&gt; m (Stms GPU)
+</span><a href="#local-6989586621684429098"><span class="hs-identifier hs-var">onStms</span></a></span><span>
+</span><span id="line-160"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-161"></span><span>    </span><span id="local-6989586621684429098"><span class="annot"><span class="annottext">onStms :: Scope GPU -&gt; Stms GPU -&gt; m (Stms GPU)
+</span><a href="#local-6989586621684429098"><span class="hs-identifier hs-var hs-var">onStms</span></a></span></span><span> </span><span id="local-6989586621684429093"><span class="annot"><span class="annottext">Scope GPU
+</span><a href="#local-6989586621684429093"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span id="local-6989586621684429092"><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429092"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-162"></span><span>      </span><span class="annot"><span class="annottext">(VNameSource -&gt; (Stms GPU, VNameSource)) -&gt; m (Stms GPU)
+forall (m :: * -&gt; *) a.
+MonadFreshNames m =&gt;
+(VNameSource -&gt; (a, VNameSource)) -&gt; m a
+</span><a href="Futhark.MonadFreshNames.html#modifyNameSource"><span class="hs-identifier hs-var">modifyNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">((VNameSource -&gt; (Stms GPU, VNameSource)) -&gt; m (Stms GPU))
+-&gt; (State VNameSource (Stms GPU)
+    -&gt; VNameSource -&gt; (Stms GPU, VNameSource))
+-&gt; State VNameSource (Stms GPU)
+-&gt; m (Stms GPU)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">State VNameSource (Stms GPU)
+-&gt; VNameSource -&gt; (Stms GPU, VNameSource)
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><span class="hs-identifier hs-var">runState</span></span><span> </span><span class="annot"><span class="annottext">(State VNameSource (Stms GPU) -&gt; m (Stms GPU))
+-&gt; State VNameSource (Stms GPU) -&gt; m (Stms GPU)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-163"></span><span>        </span><span class="annot"><span class="annottext">ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+-&gt; Scope GPU -&gt; State VNameSource (Stms GPU)
+forall r (m :: * -&gt; *) a. ReaderT r m a -&gt; r -&gt; m a
+</span><span class="hs-identifier hs-var hs-var">runReaderT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+-&gt; Stms GPU -&gt; ReaderT (Scope GPU) (State VNameSource) (Stms GPU)
+</span><a href="Futhark.Optimise.HistAccs.html#optimiseStms"><span class="hs-identifier hs-var">optimiseStms</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (WithAccInput GPU)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">Stms GPU
+</span><a href="#local-6989586621684429092"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Scope GPU
+</span><a href="#local-6989586621684429093"><span class="hs-identifier hs-var">scope</span></a></span><span>
+</span><span id="line-164"></span></pre></body></html>

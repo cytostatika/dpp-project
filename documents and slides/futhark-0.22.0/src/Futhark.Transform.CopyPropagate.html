@@ -1,0 +1,114 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ConstraintKinds #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | Perform copy propagation.  This is done by invoking the</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- simplifier with no rules, so hoisting and dead-code elimination may</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- also take place.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Transform.CopyPropagate</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Transform.CopyPropagate.html#copyPropagateInProg"><span class="hs-identifier">copyPropagateInProg</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Transform.CopyPropagate.html#copyPropagateInStms"><span class="hs-identifier">copyPropagateInStms</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Transform.CopyPropagate.html#copyPropagateInFun"><span class="hs-identifier">copyPropagateInFun</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-12"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html"><span class="hs-identifier">Futhark.Analysis.SymbolTable</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">ST</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.html"><span class="hs-identifier">Futhark.Optimise.Simplify</span></a></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html"><span class="hs-identifier">Futhark.Optimise.Simplify.Rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier">Wise</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pass.html"><span class="hs-identifier">Futhark.Pass</span></a></span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- | Run copy propagation on an entire program.</span><span>
+</span><span id="line-22"></span><span id="local-6989586621684372640"><span class="annot"><a href="Futhark.Transform.CopyPropagate.html#copyPropagateInProg"><span class="hs-identifier hs-type">copyPropagateInProg</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-23"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimplifiableRep"><span class="hs-identifier hs-type">SimplifiableRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372640"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-24"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimpleOps"><span class="hs-identifier hs-type">SimpleOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372640"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-25"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372640"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-26"></span><span>  </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372640"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-27"></span><span id="copyPropagateInProg"><span class="annot"><span class="annottext">copyPropagateInProg :: forall rep.
+SimplifiableRep rep =&gt;
+SimpleOps rep -&gt; Prog rep -&gt; PassM (Prog rep)
+</span><a href="Futhark.Transform.CopyPropagate.html#copyPropagateInProg"><span class="hs-identifier hs-var hs-var">copyPropagateInProg</span></a></span></span><span> </span><span id="local-6989586621684372589"><span class="annot"><span class="annottext">SimpleOps rep
+</span><a href="#local-6989586621684372589"><span class="hs-identifier hs-var">simpl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SimpleOps rep
+-&gt; RuleBook (Wise rep)
+-&gt; HoistBlockers rep
+-&gt; Prog rep
+-&gt; PassM (Prog rep)
+forall rep.
+SimplifiableRep rep =&gt;
+SimpleOps rep
+-&gt; RuleBook (Wise rep)
+-&gt; HoistBlockers rep
+-&gt; Prog rep
+-&gt; PassM (Prog rep)
+</span><a href="Futhark.Optimise.Simplify.html#simplifyProg"><span class="hs-identifier hs-var">simplifyProg</span></a></span><span> </span><span class="annot"><span class="annottext">SimpleOps rep
+</span><a href="#local-6989586621684372589"><span class="hs-identifier hs-var">simpl</span></a></span><span> </span><span class="annot"><span class="annottext">RuleBook (Wise rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">HoistBlockers rep
+forall rep. HoistBlockers rep
+</span><a href="Futhark.Optimise.Simplify.Engine.html#neverHoist"><span class="hs-identifier hs-var">neverHoist</span></a></span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- | Run copy propagation on some statements.</span><span>
+</span><span id="line-30"></span><span id="local-6989586621684372618"><span id="local-6989586621684372620"><span class="annot"><a href="Futhark.Transform.CopyPropagate.html#copyPropagateInStms"><span class="hs-identifier hs-type">copyPropagateInStms</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-31"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372620"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimplifiableRep"><span class="hs-identifier hs-type">SimplifiableRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372618"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-32"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimpleOps"><span class="hs-identifier hs-type">SimpleOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372618"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-33"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372618"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-34"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372618"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-35"></span><span>  </span><span class="annot"><a href="#local-6989586621684372620"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372618"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-36"></span><span id="copyPropagateInStms"><span class="annot"><span class="annottext">copyPropagateInStms :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, SimplifiableRep rep) =&gt;
+SimpleOps rep -&gt; Scope rep -&gt; Stms rep -&gt; m (Stms rep)
+</span><a href="Futhark.Transform.CopyPropagate.html#copyPropagateInStms"><span class="hs-identifier hs-var hs-var">copyPropagateInStms</span></a></span></span><span> </span><span id="local-6989586621684372574"><span class="annot"><span class="annottext">SimpleOps rep
+</span><a href="#local-6989586621684372574"><span class="hs-identifier hs-var">simpl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SimpleOps rep
+-&gt; RuleBook (Wise rep)
+-&gt; HoistBlockers rep
+-&gt; Scope rep
+-&gt; Stms rep
+-&gt; m (Stms rep)
+forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, SimplifiableRep rep) =&gt;
+SimpleOps rep
+-&gt; RuleBook (Wise rep)
+-&gt; HoistBlockers rep
+-&gt; Scope rep
+-&gt; Stms rep
+-&gt; m (Stms rep)
+</span><a href="Futhark.Optimise.Simplify.html#simplifyStms"><span class="hs-identifier hs-var">simplifyStms</span></a></span><span> </span><span class="annot"><span class="annottext">SimpleOps rep
+</span><a href="#local-6989586621684372574"><span class="hs-identifier hs-var">simpl</span></a></span><span> </span><span class="annot"><span class="annottext">RuleBook (Wise rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">HoistBlockers rep
+forall rep. HoistBlockers rep
+</span><a href="Futhark.Optimise.Simplify.Engine.html#neverHoist"><span class="hs-identifier hs-var">neverHoist</span></a></span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- | Run copy propagation on a function.</span><span>
+</span><span id="line-39"></span><span id="local-6989586621684372610"><span id="local-6989586621684372611"><span class="annot"><a href="Futhark.Transform.CopyPropagate.html#copyPropagateInFun"><span class="hs-identifier hs-type">copyPropagateInFun</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-40"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372611"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimplifiableRep"><span class="hs-identifier hs-type">SimplifiableRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372610"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-41"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Engine.html#SimpleOps"><span class="hs-identifier hs-type">SimpleOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372610"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-42"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#SymbolTable"><span class="hs-identifier hs-type">ST.SymbolTable</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rep.html#Wise"><span class="hs-identifier hs-type">Wise</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372610"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-43"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372610"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-44"></span><span>  </span><span class="annot"><a href="#local-6989586621684372611"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684372610"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-45"></span><span id="copyPropagateInFun"><span class="annot"><span class="annottext">copyPropagateInFun :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, SimplifiableRep rep) =&gt;
+SimpleOps rep
+-&gt; SymbolTable (Wise rep) -&gt; FunDef rep -&gt; m (FunDef rep)
+</span><a href="Futhark.Transform.CopyPropagate.html#copyPropagateInFun"><span class="hs-identifier hs-var hs-var">copyPropagateInFun</span></a></span></span><span> </span><span id="local-6989586621684372560"><span class="annot"><span class="annottext">SimpleOps rep
+</span><a href="#local-6989586621684372560"><span class="hs-identifier hs-var">simpl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SimpleOps rep
+-&gt; RuleBook (Wise rep)
+-&gt; HoistBlockers rep
+-&gt; SymbolTable (Wise rep)
+-&gt; FunDef rep
+-&gt; m (FunDef rep)
+forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, SimplifiableRep rep) =&gt;
+SimpleOps rep
+-&gt; RuleBook (Wise rep)
+-&gt; HoistBlockers rep
+-&gt; SymbolTable (Wise rep)
+-&gt; FunDef rep
+-&gt; m (FunDef rep)
+</span><a href="Futhark.Optimise.Simplify.html#simplifyFun"><span class="hs-identifier hs-var">simplifyFun</span></a></span><span> </span><span class="annot"><span class="annottext">SimpleOps rep
+</span><a href="#local-6989586621684372560"><span class="hs-identifier hs-var">simpl</span></a></span><span> </span><span class="annot"><span class="annottext">RuleBook (Wise rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">HoistBlockers rep
+forall rep. HoistBlockers rep
+</span><a href="Futhark.Optimise.Simplify.Engine.html#neverHoist"><span class="hs-identifier hs-var">neverHoist</span></a></span><span>
+</span><span id="line-46"></span></pre></body></html>

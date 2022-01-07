@@ -1,0 +1,289 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | Code generation for 'SegScan'.  Dispatches to either a</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- single-pass or two-pass implementation, depending on the nature of</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- the scan and the chosen abckend.</span><span>
+</span><span id="line-4"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CodeGen.ImpGen.GPU.SegScan</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.html#compileSegScan"><span class="hs-identifier">compileSegScan</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.GPU.html"><span class="hs-identifier">Futhark.CodeGen.ImpCode.GPU</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Imp</span></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpGen.html#compileProg"><span class="hs-identifier">compileProg</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.Base.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen.GPU.Base</span></a></span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.SinglePass.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen.GPU.SegScan.SinglePass</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">SinglePass</span></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.TwoPass.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen.GPU.SegScan.TwoPass</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">TwoPass</span></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html"><span class="hs-identifier">Futhark.IR.GPUMem</span></a></span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- The single-pass scan does not support multiple operators, so jam</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- them together here.</span><span>
+</span><span id="line-15"></span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.html#combineScans"><span class="hs-identifier hs-type">combineScans</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegBinOp"><span class="hs-identifier hs-type">SegBinOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegBinOp"><span class="hs-identifier hs-type">SegBinOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span>
+</span><span id="line-16"></span><span id="combineScans"><span class="annot"><span class="annottext">combineScans :: [SegBinOp GPUMem] -&gt; SegBinOp GPUMem
+</span><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.html#combineScans"><span class="hs-identifier hs-var hs-var">combineScans</span></a></span></span><span> </span><span id="local-6989586621684541666"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541666"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-17"></span><span>  </span><span class="annot"><span class="annottext">SegBinOp :: forall rep.
+Commutativity -&gt; Lambda rep -&gt; [SubExp] -&gt; Shape -&gt; SegBinOp rep
+</span><a href="Futhark.IR.SegOp.html#SegBinOp"><span class="hs-identifier hs-type">SegBinOp</span></a></span><span>
+</span><span id="line-18"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">segBinOpComm :: Commutativity
+</span><a href="Futhark.IR.SegOp.html#segBinOpComm"><span class="hs-identifier hs-var">segBinOpComm</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Commutativity] -&gt; Commutativity
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SegBinOp GPUMem -&gt; Commutativity)
+-&gt; [SegBinOp GPUMem] -&gt; [Commutativity]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SegBinOp GPUMem -&gt; Commutativity
+forall rep. SegBinOp rep -&gt; Commutativity
+</span><a href="Futhark.IR.SegOp.html#segBinOpComm"><span class="hs-identifier hs-var hs-var">segBinOpComm</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541666"><span class="hs-identifier hs-var">ops</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>      </span><span class="annot"><span class="annottext">segBinOpLambda :: Lambda GPUMem
+</span><a href="Futhark.IR.SegOp.html#segBinOpLambda"><span class="hs-identifier hs-var">segBinOpLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Lambda GPUMem
+</span><a href="#local-6989586621684541662"><span class="hs-identifier hs-var">lam'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>      </span><span class="annot"><span class="annottext">segBinOpNeutral :: [SubExp]
+</span><a href="Futhark.IR.SegOp.html#segBinOpNeutral"><span class="hs-identifier hs-var">segBinOpNeutral</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SegBinOp GPUMem -&gt; [SubExp]) -&gt; [SegBinOp GPUMem] -&gt; [SubExp]
+forall (t :: * -&gt; *) a b. Foldable t =&gt; (a -&gt; [b]) -&gt; t a -&gt; [b]
+</span><span class="hs-identifier hs-var">concatMap</span></span><span> </span><span class="annot"><span class="annottext">SegBinOp GPUMem -&gt; [SubExp]
+forall rep. SegBinOp rep -&gt; [SubExp]
+</span><a href="Futhark.IR.SegOp.html#segBinOpNeutral"><span class="hs-identifier hs-var hs-var">segBinOpNeutral</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541666"><span class="hs-identifier hs-var">ops</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>      </span><span class="annot"><span class="annottext">segBinOpShape :: Shape
+</span><a href="Futhark.IR.SegOp.html#segBinOpShape"><span class="hs-identifier hs-var">segBinOpShape</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Shape
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="hs-comment">-- Assumed</span><span>
+</span><span id="line-22"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-23"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-24"></span><span>    </span><span id="local-6989586621684541658"><span class="annot"><span class="annottext">lams :: [Lambda GPUMem]
+</span><a href="#local-6989586621684541658"><span class="hs-identifier hs-var hs-var">lams</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SegBinOp GPUMem -&gt; Lambda GPUMem)
+-&gt; [SegBinOp GPUMem] -&gt; [Lambda GPUMem]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SegBinOp GPUMem -&gt; Lambda GPUMem
+forall rep. SegBinOp rep -&gt; Lambda rep
+</span><a href="Futhark.IR.SegOp.html#segBinOpLambda"><span class="hs-identifier hs-var hs-var">segBinOpLambda</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541666"><span class="hs-identifier hs-var">ops</span></a></span><span>
+</span><span id="line-25"></span><span>    </span><span id="local-6989586621684541656"><span class="annot"><span class="annottext">xParams :: LambdaT rep -&gt; [Param (LParamInfo rep)]
+</span><a href="#local-6989586621684541656"><span class="hs-identifier hs-var hs-var">xParams</span></a></span></span><span> </span><span id="local-6989586621684541655"><span class="annot"><span class="annottext">LambdaT rep
+</span><a href="#local-6989586621684541655"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [Param (LParamInfo rep)] -&gt; [Param (LParamInfo rep)]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">take</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Type] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LambdaT rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">LambdaT rep
+</span><a href="#local-6989586621684541655"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LambdaT rep -&gt; [Param (LParamInfo rep)]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">LambdaT rep
+</span><a href="#local-6989586621684541655"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span>    </span><span id="local-6989586621684541649"><span class="annot"><span class="annottext">yParams :: LambdaT rep -&gt; [Param (LParamInfo rep)]
+</span><a href="#local-6989586621684541649"><span class="hs-identifier hs-var hs-var">yParams</span></a></span></span><span> </span><span id="local-6989586621684541648"><span class="annot"><span class="annottext">LambdaT rep
+</span><a href="#local-6989586621684541648"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [Param (LParamInfo rep)] -&gt; [Param (LParamInfo rep)]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">drop</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Type] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LambdaT rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">LambdaT rep
+</span><a href="#local-6989586621684541648"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LambdaT rep -&gt; [Param (LParamInfo rep)]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">LambdaT rep
+</span><a href="#local-6989586621684541648"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span>    </span><span id="local-6989586621684541662"><span class="annot"><span class="annottext">lam' :: Lambda GPUMem
+</span><a href="#local-6989586621684541662"><span class="hs-identifier hs-var hs-var">lam'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-28"></span><span>      </span><span class="annot"><span class="annottext">Lambda :: forall rep. [LParam rep] -&gt; BodyT rep -&gt; [Type] -&gt; LambdaT rep
+</span><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span>
+</span><span id="line-29"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">lambdaParams :: [LParam GPUMem]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var">lambdaParams</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Lambda GPUMem -&gt; [Param LParamMem])
+-&gt; [Lambda GPUMem] -&gt; [Param LParamMem]
+forall (t :: * -&gt; *) a b. Foldable t =&gt; (a -&gt; [b]) -&gt; t a -&gt; [b]
+</span><span class="hs-identifier hs-var">concatMap</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPUMem -&gt; [Param LParamMem]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="#local-6989586621684541656"><span class="hs-identifier hs-var">xParams</span></a></span><span> </span><span class="annot"><span class="annottext">[Lambda GPUMem]
+</span><a href="#local-6989586621684541658"><span class="hs-identifier hs-var">lams</span></a></span><span> </span><span class="annot"><span class="annottext">[Param LParamMem] -&gt; [Param LParamMem] -&gt; [Param LParamMem]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(Lambda GPUMem -&gt; [Param LParamMem])
+-&gt; [Lambda GPUMem] -&gt; [Param LParamMem]
+forall (t :: * -&gt; *) a b. Foldable t =&gt; (a -&gt; [b]) -&gt; t a -&gt; [b]
+</span><span class="hs-identifier hs-var">concatMap</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPUMem -&gt; [Param LParamMem]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="#local-6989586621684541649"><span class="hs-identifier hs-var">yParams</span></a></span><span> </span><span class="annot"><span class="annottext">[Lambda GPUMem]
+</span><a href="#local-6989586621684541658"><span class="hs-identifier hs-var">lams</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-30"></span><span>          </span><span class="annot"><span class="annottext">lambdaReturnType :: [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var">lambdaReturnType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Lambda GPUMem -&gt; [Type]) -&gt; [Lambda GPUMem] -&gt; [Type]
+forall (t :: * -&gt; *) a b. Foldable t =&gt; (a -&gt; [b]) -&gt; t a -&gt; [b]
+</span><span class="hs-identifier hs-var">concatMap</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPUMem -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">[Lambda GPUMem]
+</span><a href="#local-6989586621684541658"><span class="hs-identifier hs-var">lams</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-31"></span><span>          </span><span class="annot"><span class="annottext">lambdaBody :: BodyT GPUMem
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var">lambdaBody</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-32"></span><span>            </span><span class="annot"><span class="annottext">BodyDec GPUMem -&gt; Stms GPUMem -&gt; Result -&gt; BodyT GPUMem
+forall rep. BodyDec rep -&gt; Stms rep -&gt; Result -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-var">Body</span></a></span><span>
+</span><span id="line-33"></span><span>              </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>              </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Stms GPUMem] -&gt; Stms GPUMem
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Lambda GPUMem -&gt; Stms GPUMem) -&gt; [Lambda GPUMem] -&gt; [Stms GPUMem]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Stms GPUMem
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">(BodyT GPUMem -&gt; Stms GPUMem)
+-&gt; (Lambda GPUMem -&gt; BodyT GPUMem) -&gt; Lambda GPUMem -&gt; Stms GPUMem
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPUMem -&gt; BodyT GPUMem
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Lambda GPUMem]
+</span><a href="#local-6989586621684541658"><span class="hs-identifier hs-var">lams</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>              </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Lambda GPUMem -&gt; Result) -&gt; [Lambda GPUMem] -&gt; Result
+forall (t :: * -&gt; *) a b. Foldable t =&gt; (a -&gt; [b]) -&gt; t a -&gt; [b]
+</span><span class="hs-identifier hs-var">concatMap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Result
+forall rep. BodyT rep -&gt; Result
+</span><a href="Futhark.IR.Syntax.html#bodyResult"><span class="hs-identifier hs-var hs-var">bodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">(BodyT GPUMem -&gt; Result)
+-&gt; (Lambda GPUMem -&gt; BodyT GPUMem) -&gt; Lambda GPUMem -&gt; Result
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Lambda GPUMem -&gt; BodyT GPUMem
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Lambda GPUMem]
+</span><a href="#local-6989586621684541658"><span class="hs-identifier hs-var">lams</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.html#canBeSinglePass"><span class="hs-identifier hs-type">canBeSinglePass</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegBinOp"><span class="hs-identifier hs-type">SegBinOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegBinOp"><span class="hs-identifier hs-type">SegBinOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span id="canBeSinglePass"><span class="annot"><span class="annottext">canBeSinglePass :: [SegBinOp GPUMem] -&gt; Maybe (SegBinOp GPUMem)
+</span><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.html#canBeSinglePass"><span class="hs-identifier hs-var hs-var">canBeSinglePass</span></a></span></span><span> </span><span id="local-6989586621684541633"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541633"><span class="hs-identifier hs-var">ops</span></a></span></span><span>
+</span><span id="line-40"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">(SegBinOp GPUMem -&gt; Bool) -&gt; [SegBinOp GPUMem] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="annot"><span class="annottext">SegBinOp GPUMem -&gt; Bool
+forall {rep}. SegBinOp rep -&gt; Bool
+</span><a href="#local-6989586621684541631"><span class="hs-identifier hs-var">ok</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541633"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-41"></span><span>    </span><span class="annot"><span class="annottext">SegBinOp GPUMem -&gt; Maybe (SegBinOp GPUMem)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(SegBinOp GPUMem -&gt; Maybe (SegBinOp GPUMem))
+-&gt; SegBinOp GPUMem -&gt; Maybe (SegBinOp GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem] -&gt; SegBinOp GPUMem
+</span><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.html#combineScans"><span class="hs-identifier hs-var">combineScans</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541633"><span class="hs-identifier hs-var">ops</span></a></span><span>
+</span><span id="line-42"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-43"></span><span>    </span><span class="annot"><span class="annottext">Maybe (SegBinOp GPUMem)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-44"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-45"></span><span>    </span><span id="local-6989586621684541631"><span class="annot"><span class="annottext">ok :: SegBinOp rep -&gt; Bool
+</span><a href="#local-6989586621684541631"><span class="hs-identifier hs-var hs-var">ok</span></a></span></span><span> </span><span id="local-6989586621684541624"><span class="annot"><span class="annottext">SegBinOp rep
+</span><a href="#local-6989586621684541624"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-46"></span><span>      </span><span class="annot"><span class="annottext">SegBinOp rep -&gt; Shape
+forall rep. SegBinOp rep -&gt; Shape
+</span><a href="Futhark.IR.SegOp.html#segBinOpShape"><span class="hs-identifier hs-var hs-var">segBinOpShape</span></a></span><span> </span><span class="annot"><span class="annottext">SegBinOp rep
+</span><a href="#local-6989586621684541624"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">Shape -&gt; Shape -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Shape
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-47"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; Bool) -&gt; [Type] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">all</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; Bool
+forall shape u. TypeBase shape u -&gt; Bool
+</span><a href="Futhark.IR.Prop.Types.html#primType"><span class="hs-identifier hs-var">primType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LambdaT rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegBinOp rep -&gt; LambdaT rep
+forall rep. SegBinOp rep -&gt; Lambda rep
+</span><a href="Futhark.IR.SegOp.html#segBinOpLambda"><span class="hs-identifier hs-var hs-var">segBinOpLambda</span></a></span><span> </span><span class="annot"><span class="annottext">SegBinOp rep
+</span><a href="#local-6989586621684541624"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- | Compile 'SegScan' instance to host-level code with calls to</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- various kernels.</span><span>
+</span><span id="line-51"></span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.html#compileSegScan"><span class="hs-identifier hs-type">compileSegScan</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-53"></span><span>  </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-54"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegBinOp"><span class="hs-identifier hs-type">SegBinOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#CallKernelGen"><span class="hs-identifier hs-type">CallKernelGen</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-58"></span><span id="compileSegScan"><span class="annot"><span class="annottext">compileSegScan :: Pat GPUMem
+-&gt; SegLevel
+-&gt; SegSpace
+-&gt; [SegBinOp GPUMem]
+-&gt; KernelBody GPUMem
+-&gt; CallKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.html#compileSegScan"><span class="hs-identifier hs-var hs-var">compileSegScan</span></a></span></span><span> </span><span id="local-6989586621684541621"><span class="annot"><span class="annottext">Pat GPUMem
+</span><a href="#local-6989586621684541621"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684541620"><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684541620"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684541619"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684541619"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684541618"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541618"><span class="hs-identifier hs-var">scans</span></a></span></span><span> </span><span id="local-6989586621684541617"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684541617"><span class="hs-identifier hs-var">kbody</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TExp Bool -&gt; CallKernelGen () -&gt; CallKernelGen ()
+forall rep r op. TExp Bool -&gt; ImpM rep r op () -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#sWhen"><span class="hs-identifier hs-var">sWhen</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TPrimExp Int64 VName
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int64 VName -&gt; TPrimExp Int64 VName -&gt; TExp Bool
+forall t v. TPrimExp t v -&gt; TPrimExp t v -&gt; TPrimExp Bool v
+</span><a href="Futhark.Analysis.PrimExp.html#.%3C."><span class="hs-operator hs-var">.&lt;.</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int64 VName
+</span><a href="#local-6989586621684541614"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(CallKernelGen () -&gt; CallKernelGen ())
+-&gt; CallKernelGen () -&gt; CallKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><span class="annottext">Code HostOp -&gt; CallKernelGen ()
+forall op rep r. Code op -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#emit"><span class="hs-identifier hs-var">emit</span></a></span><span> </span><span class="annot"><span class="annottext">(Code HostOp -&gt; CallKernelGen ())
+-&gt; Code HostOp -&gt; CallKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; Maybe Exp -&gt; Code HostOp
+forall a. String -&gt; Maybe Exp -&gt; Code a
+</span><a href="Futhark.CodeGen.ImpCode.html#DebugPrint"><span class="hs-identifier hs-var">Imp.DebugPrint</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;\n# SegScan&quot;</span></span><span> </span><span class="annot"><span class="annottext">Maybe Exp
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-60"></span><span>  </span><span id="local-6989586621684541611"><span class="annot"><span class="annottext">Target
+</span><a href="#local-6989586621684541611"><span class="hs-identifier hs-var">target</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">HostEnv -&gt; Target
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#hostTarget"><span class="hs-identifier hs-var hs-var">hostTarget</span></a></span><span> </span><span class="annot"><span class="annottext">(HostEnv -&gt; Target)
+-&gt; ImpM GPUMem HostEnv HostOp HostEnv
+-&gt; ImpM GPUMem HostEnv HostOp Target
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">ImpM GPUMem HostEnv HostOp HostEnv
+forall rep r op. ImpM rep r op r
+</span><a href="Futhark.CodeGen.ImpGen.html#askEnv"><span class="hs-identifier hs-var">askEnv</span></a></span><span>
+</span><span id="line-61"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Target
+</span><a href="#local-6989586621684541611"><span class="hs-identifier hs-var">target</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><span class="annottext">Target
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#CUDA"><span class="hs-identifier hs-var">CUDA</span></a></span><span>
+</span><span id="line-63"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684541606"><span class="annot"><span class="annottext">SegBinOp GPUMem
+</span><a href="#local-6989586621684541606"><span class="hs-identifier hs-var">scan'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem] -&gt; Maybe (SegBinOp GPUMem)
+</span><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.html#canBeSinglePass"><span class="hs-identifier hs-var">canBeSinglePass</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541618"><span class="hs-identifier hs-var">scans</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-64"></span><span>        </span><span class="annot"><span class="annottext">Pat GPUMem
+-&gt; SegLevel
+-&gt; SegSpace
+-&gt; SegBinOp GPUMem
+-&gt; KernelBody GPUMem
+-&gt; CallKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.SinglePass.html#compileSegScan"><span class="hs-identifier hs-var">SinglePass.compileSegScan</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPUMem
+</span><a href="#local-6989586621684541621"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684541620"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684541619"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">SegBinOp GPUMem
+</span><a href="#local-6989586621684541606"><span class="hs-identifier hs-var">scan'</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684541617"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-65"></span><span>    </span><span class="annot"><span class="annottext">Target
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Pat GPUMem
+-&gt; SegLevel
+-&gt; SegSpace
+-&gt; [SegBinOp GPUMem]
+-&gt; KernelBody GPUMem
+-&gt; CallKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.SegScan.TwoPass.html#compileSegScan"><span class="hs-identifier hs-var">TwoPass.compileSegScan</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPUMem
+</span><a href="#local-6989586621684541621"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684541620"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684541619"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684541618"><span class="hs-identifier hs-var">scans</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684541617"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-67"></span><span>    </span><span id="local-6989586621684541614"><span class="annot"><span class="annottext">n :: TPrimExp Int64 VName
+</span><a href="#local-6989586621684541614"><span class="hs-identifier hs-var hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[TPrimExp Int64 VName] -&gt; TPrimExp Int64 VName
+forall (t :: * -&gt; *) a. (Foldable t, Num a) =&gt; t a -&gt; a
+</span><span class="hs-identifier hs-var">product</span></span><span> </span><span class="annot"><span class="annottext">([TPrimExp Int64 VName] -&gt; TPrimExp Int64 VName)
+-&gt; [TPrimExp Int64 VName] -&gt; TPrimExp Int64 VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TPrimExp Int64 VName)
+-&gt; [SubExp] -&gt; [TPrimExp Int64 VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+forall a. ToExp a =&gt; a -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.CodeGen.ImpGen.html#toInt64Exp"><span class="hs-identifier hs-var">toInt64Exp</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; [TPrimExp Int64 VName])
+-&gt; [SubExp] -&gt; [TPrimExp Int64 VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegSpace -&gt; [SubExp]
+</span><a href="Futhark.IR.SegOp.html#segSpaceDims"><span class="hs-identifier hs-var">segSpaceDims</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684541619"><span class="hs-identifier hs-var">space</span></a></span><span>
+</span><span id="line-68"></span></pre></body></html>

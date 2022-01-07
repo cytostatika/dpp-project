@@ -1,0 +1,1049 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ConstraintKinds #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE DefaultSignatures #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# LANGUAGE MultiParamTypeClasses #-}</span><span>
+</span><span id="line-7"></span><span class="hs-pragma">{-# LANGUAGE Trustworthy #-}</span><span>
+</span><span id="line-8"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-9"></span><span class="hs-pragma">{-# LANGUAGE UndecidableInstances #-}</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- | This module defines a convenience monad/typeclass for building</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- ASTs.  The fundamental building block is 'BuilderT' and its</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- execution functions, but it is usually easier to use 'Builder'.</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- See &quot;Futhark.Construct&quot; for a high-level description.</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Builder</span><span>
+</span><span id="line-17"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * A concrete @MonadBuilder@ monad.</span></span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier">BuilderT</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#runBuilderT"><span class="hs-identifier">runBuilderT</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#runBuilderT_"><span class="hs-identifier">runBuilderT_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#runBuilderT%27"><span class="hs-identifier">runBuilderT'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#runBuilderT%27_"><span class="hs-identifier">runBuilderT'_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier">BuilderOps</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-24"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#Builder"><span class="hs-identifier">Builder</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#runBuilder"><span class="hs-identifier">runBuilder</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier">runBuilder_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-27"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#runBodyBuilder"><span class="hs-identifier">runBodyBuilder</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span>    </span><span class="annot"><span class="hs-comment">-- * The 'MonadBuilder' typeclass</span></span><span>
+</span><span id="line-30"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html"><span class="hs-identifier">Futhark.Builder.Class</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-31"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Arrow</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">second</span></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Error.Class</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State.Strict</span></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Writer</span></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html"><span class="hs-identifier">Futhark.Builder.Class</span></a></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- | A 'BuilderT' (and by extension, a 'Builder') is only an instance of</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- 'MonadBuilder' for representations that implement this type class,</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- which contains methods for constructing statements.</span><span>
+</span><span id="line-46"></span><span class="hs-keyword">class</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span id="BuilderOps"><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-var">BuilderOps</span></a></span></span><span> </span><span id="local-6989586621684349183"><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-47"></span><span>  </span><span id="local-6989586621684349032"><span id="mkExpDecB"><span class="annot"><a href="Futhark.Builder.html#mkExpDecB"><span class="hs-identifier hs-type">mkExpDecB</span></a></span></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-48"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349032"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349032"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-49"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-50"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-51"></span><span>    </span><span class="annot"><a href="#local-6989586621684349032"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-52"></span><span>  </span><span id="local-6989586621684349031"><span id="mkBodyB"><span class="annot"><a href="Futhark.Builder.html#mkBodyB"><span class="hs-identifier hs-type">mkBodyB</span></a></span></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349031"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349031"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-54"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-55"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Result"><span class="hs-identifier hs-type">Result</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-56"></span><span>    </span><span class="annot"><a href="#local-6989586621684349031"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-57"></span><span>  </span><span id="local-6989586621684349030"><span id="mkLetNamesB"><span class="annot"><a href="Futhark.Builder.html#mkLetNamesB"><span class="hs-identifier hs-type">mkLetNamesB</span></a></span></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349030"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349030"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-60"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-61"></span><span>    </span><span class="annot"><a href="#local-6989586621684349030"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span>  </span><span id="local-6989586621684349182"><span class="hs-keyword">default</span><span> </span><span id="mkExpDecB"><span class="annot"><a href="Futhark.Builder.html#mkExpDecB"><span class="hs-identifier hs-type">mkExpDecB</span></a></span></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-64"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349182"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-65"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-67"></span><span>    </span><span class="annot"><a href="#local-6989586621684349182"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-68"></span><span>  </span><span id="local-6989586621684348846"><span class="annot"><a href="Futhark.Builder.html#mkExpDecB"><span class="hs-identifier hs-var hs-var">mkExpDecB</span></a></span><span> </span><span id="local-6989586621684348837"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684348837"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684348836"><span class="annot"><span class="annottext">Exp rep
+</span><a href="#local-6989586621684348836"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ExpDec rep -&gt; m (ExpDec rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ExpDec rep -&gt; m (ExpDec rep)) -&gt; ExpDec rep -&gt; m (ExpDec rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Pat rep -&gt; Exp rep -&gt; ExpDec rep
+forall rep. Buildable rep =&gt; Pat rep -&gt; Exp rep -&gt; ExpDec rep
+</span><a href="Futhark.Builder.Class.html#mkExpDec"><span class="hs-identifier hs-var">mkExpDec</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684348837"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">Exp rep
+</span><a href="#local-6989586621684348836"><span class="hs-identifier hs-var">e</span></a></span></span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span>  </span><span id="local-6989586621684349169"><span class="hs-keyword">default</span><span> </span><span id="mkBodyB"><span class="annot"><a href="Futhark.Builder.html#mkBodyB"><span class="hs-identifier hs-type">mkBodyB</span></a></span></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-71"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349169"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-72"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-73"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Result"><span class="hs-identifier hs-type">Result</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-74"></span><span>    </span><span class="annot"><a href="#local-6989586621684349169"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-75"></span><span>  </span><span id="local-6989586621684348834"><span class="annot"><a href="Futhark.Builder.html#mkBodyB"><span class="hs-identifier hs-var hs-var">mkBodyB</span></a></span><span> </span><span id="local-6989586621684348827"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348827"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span id="local-6989586621684348826"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684348826"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body rep -&gt; m (Body rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Body rep -&gt; m (Body rep)) -&gt; Body rep -&gt; m (Body rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; Result -&gt; Body rep
+forall rep. Buildable rep =&gt; Stms rep -&gt; Result -&gt; Body rep
+</span><a href="Futhark.Builder.Class.html#mkBody"><span class="hs-identifier hs-var">mkBody</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348827"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684348826"><span class="hs-identifier hs-var">res</span></a></span></span><span>
+</span><span id="line-76"></span><span>
+</span><span id="line-77"></span><span>  </span><span id="local-6989586621684349164"><span class="hs-keyword">default</span><span> </span><span id="mkLetNamesB"><span class="annot"><a href="Futhark.Builder.html#mkLetNamesB"><span class="hs-identifier hs-type">mkLetNamesB</span></a></span></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-78"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349164"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349164"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-79"></span><span>    </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-80"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-81"></span><span>    </span><span class="annot"><a href="#local-6989586621684349164"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349183"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-82"></span><span>  </span><span id="local-6989586621684348824"><span class="annot"><a href="Futhark.Builder.html#mkLetNamesB"><span class="hs-identifier hs-var hs-var">mkLetNamesB</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; Exp rep -&gt; m (Stm rep)
+forall rep (m :: * -&gt; *).
+(Buildable rep, MonadFreshNames m, HasScope rep m) =&gt;
+[VName] -&gt; Exp rep -&gt; m (Stm rep)
+</span><a href="Futhark.Builder.Class.html#mkLetNames"><span class="hs-identifier hs-var">mkLetNames</span></a></span></span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- | A monad transformer that tracks statements and provides a</span><span>
+</span><span id="line-85"></span><span class="hs-comment">-- 'MonadBuilder' instance, assuming that the underlying monad provides</span><span>
+</span><span id="line-86"></span><span class="hs-comment">-- a name source.  In almost all cases, this is what you will use for</span><span>
+</span><span id="line-87"></span><span class="hs-comment">-- constructing statements (possibly as part of a larger monad stack).</span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- If you find yourself needing to implement 'MonadBuilder' from</span><span>
+</span><span id="line-89"></span><span class="hs-comment">-- scratch, then it is likely that you are making a mistake.</span><span>
+</span><span id="line-90"></span><span class="hs-keyword">newtype</span><span> </span><span id="BuilderT"><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span></span><span> </span><span id="local-6989586621684349139"><span class="annot"><a href="#local-6989586621684349139"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684349140"><span class="annot"><a href="#local-6989586621684349140"><span class="hs-identifier hs-type">m</span></a></span></span><span> </span><span id="local-6989586621684349091"><span class="annot"><a href="#local-6989586621684349091"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="BuilderT"><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">StateT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349139"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349139"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684349140"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349091"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684348799"><span id="local-6989586621684348804"><span class="annot"><span class="annottext">(forall a b. (a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b)
+-&gt; (forall a b. a -&gt; BuilderT rep m b -&gt; BuilderT rep m a)
+-&gt; Functor (BuilderT rep m)
+forall a b. a -&gt; BuilderT rep m b -&gt; BuilderT rep m a
+forall a b. (a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b
+forall rep (m :: * -&gt; *) a b.
+Functor m =&gt;
+a -&gt; BuilderT rep m b -&gt; BuilderT rep m a
+forall rep (m :: * -&gt; *) a b.
+Functor m =&gt;
+(a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+&lt;$ :: forall a b. a -&gt; BuilderT rep m b -&gt; BuilderT rep m a
+$c&lt;$ :: forall rep (m :: * -&gt; *) a b.
+Functor m =&gt;
+a -&gt; BuilderT rep m b -&gt; BuilderT rep m a
+fmap :: forall a b. (a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b
+$cfmap :: forall rep (m :: * -&gt; *) a b.
+Functor m =&gt;
+(a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684348780"><span id="local-6989586621684348784"><span id="local-6989586621684348789"><span class="annot"><span class="annottext">Applicative (BuilderT rep m)
+Applicative (BuilderT rep m)
+-&gt; (forall a b.
+    BuilderT rep m a -&gt; (a -&gt; BuilderT rep m b) -&gt; BuilderT rep m b)
+-&gt; (forall a b.
+    BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b)
+-&gt; (forall a. a -&gt; BuilderT rep m a)
+-&gt; Monad (BuilderT rep m)
+forall a. a -&gt; BuilderT rep m a
+forall a b.
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b
+forall a b.
+BuilderT rep m a -&gt; (a -&gt; BuilderT rep m b) -&gt; BuilderT rep m b
+forall {rep} {m :: * -&gt; *}. Monad m =&gt; Applicative (BuilderT rep m)
+forall rep (m :: * -&gt; *) a. Monad m =&gt; a -&gt; BuilderT rep m a
+forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b
+forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m a -&gt; (a -&gt; BuilderT rep m b) -&gt; BuilderT rep m b
+forall (m :: * -&gt; *).
+Applicative m
+-&gt; (forall a b. m a -&gt; (a -&gt; m b) -&gt; m b)
+-&gt; (forall a b. m a -&gt; m b -&gt; m b)
+-&gt; (forall a. a -&gt; m a)
+-&gt; Monad m
+return :: forall a. a -&gt; BuilderT rep m a
+$creturn :: forall rep (m :: * -&gt; *) a. Monad m =&gt; a -&gt; BuilderT rep m a
+&gt;&gt; :: forall a b.
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b
+$c&gt;&gt; :: forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b
+&gt;&gt;= :: forall a b.
+BuilderT rep m a -&gt; (a -&gt; BuilderT rep m b) -&gt; BuilderT rep m b
+$c&gt;&gt;= :: forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m a -&gt; (a -&gt; BuilderT rep m b) -&gt; BuilderT rep m b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monad</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684348753"><span id="local-6989586621684348757"><span id="local-6989586621684348761"><span id="local-6989586621684348765"><span id="local-6989586621684348770"><span class="annot"><span class="annottext">Functor (BuilderT rep m)
+Functor (BuilderT rep m)
+-&gt; (forall a. a -&gt; BuilderT rep m a)
+-&gt; (forall a b.
+    BuilderT rep m (a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b)
+-&gt; (forall a b c.
+    (a -&gt; b -&gt; c)
+    -&gt; BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m c)
+-&gt; (forall a b.
+    BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b)
+-&gt; (forall a b.
+    BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m a)
+-&gt; Applicative (BuilderT rep m)
+forall a. a -&gt; BuilderT rep m a
+forall a b.
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m a
+forall a b.
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b
+forall a b.
+BuilderT rep m (a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b
+forall a b c.
+(a -&gt; b -&gt; c)
+-&gt; BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m c
+forall {rep} {m :: * -&gt; *}. Monad m =&gt; Functor (BuilderT rep m)
+forall rep (m :: * -&gt; *) a. Monad m =&gt; a -&gt; BuilderT rep m a
+forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m a
+forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b
+forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m (a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b
+forall rep (m :: * -&gt; *) a b c.
+Monad m =&gt;
+(a -&gt; b -&gt; c)
+-&gt; BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m c
+forall (f :: * -&gt; *).
+Functor f
+-&gt; (forall a. a -&gt; f a)
+-&gt; (forall a b. f (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c)
+-&gt; (forall a b. f a -&gt; f b -&gt; f b)
+-&gt; (forall a b. f a -&gt; f b -&gt; f a)
+-&gt; Applicative f
+&lt;* :: forall a b.
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m a
+$c&lt;* :: forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m a
+*&gt; :: forall a b.
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b
+$c*&gt; :: forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m b
+liftA2 :: forall a b c.
+(a -&gt; b -&gt; c)
+-&gt; BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m c
+$cliftA2 :: forall rep (m :: * -&gt; *) a b c.
+Monad m =&gt;
+(a -&gt; b -&gt; c)
+-&gt; BuilderT rep m a -&gt; BuilderT rep m b -&gt; BuilderT rep m c
+&lt;*&gt; :: forall a b.
+BuilderT rep m (a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b
+$c&lt;*&gt; :: forall rep (m :: * -&gt; *) a b.
+Monad m =&gt;
+BuilderT rep m (a -&gt; b) -&gt; BuilderT rep m a -&gt; BuilderT rep m b
+pure :: forall a. a -&gt; BuilderT rep m a
+$cpure :: forall rep (m :: * -&gt; *) a. Monad m =&gt; a -&gt; BuilderT rep m a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Applicative</span></span></span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span id="local-6989586621684349095"><span class="hs-keyword">instance</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadTrans</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349095"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-94"></span><span>  </span><span id="local-6989586621684348739"><span class="annot"><span class="annottext">lift :: forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; BuilderT rep m a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">lift</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a)
+-&gt; (m a -&gt; StateT (Stms rep, Scope rep) m a)
+-&gt; m a
+-&gt; BuilderT rep m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">m a -&gt; StateT (Stms rep, Scope rep) m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span></span><span>
+</span><span id="line-95"></span><span>
+</span><span id="line-96"></span><span class="hs-comment">-- | The most commonly used binder monad.</span><span>
+</span><span id="line-97"></span><span class="hs-keyword">type</span><span> </span><span id="Builder"><span class="annot"><a href="Futhark.Builder.html#Builder"><span class="hs-identifier hs-var">Builder</span></a></span></span><span> </span><span id="local-6989586621684348736"><span class="annot"><a href="#local-6989586621684348736"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348736"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">State</span></span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span id="local-6989586621684349083"><span id="local-6989586621684349084"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349084"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349083"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349084"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-100"></span><span>  </span><span id="local-6989586621684348722"><span class="annot"><span class="annottext">getNameSource :: BuilderT rep m VNameSource
+</span><a href="Futhark.MonadFreshNames.html#getNameSource"><span class="hs-identifier hs-var hs-var hs-var hs-var">getNameSource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m VNameSource -&gt; BuilderT rep m VNameSource
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">m VNameSource
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; m VNameSource
+</span><a href="Futhark.MonadFreshNames.html#getNameSource"><span class="hs-identifier hs-var">getNameSource</span></a></span><span>
+</span><span id="line-101"></span><span>  </span><span id="local-6989586621684348717"><span class="annot"><span class="annottext">putNameSource :: VNameSource -&gt; BuilderT rep m ()
+</span><a href="Futhark.MonadFreshNames.html#putNameSource"><span class="hs-identifier hs-var hs-var hs-var hs-var">putNameSource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m () -&gt; BuilderT rep m ()
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m () -&gt; BuilderT rep m ())
+-&gt; (VNameSource -&gt; m ()) -&gt; VNameSource -&gt; BuilderT rep m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">VNameSource -&gt; m ()
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; VNameSource -&gt; m ()
+</span><a href="Futhark.MonadFreshNames.html#putNameSource"><span class="hs-identifier hs-var">putNameSource</span></a></span></span></span><span>
+</span><span id="line-102"></span><span>
+</span><span id="line-103"></span><span id="local-6989586621684349075"><span id="local-6989586621684349076"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684348706"><span id="local-6989586621684348709"><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349076"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684349075"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349076"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349076"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349075"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-104"></span><span>  </span><span id="local-6989586621684348692"><span class="annot"><span class="annottext">lookupType :: VName -&gt; BuilderT rep m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var hs-var hs-var hs-var">lookupType</span></a></span></span><span> </span><span id="local-6989586621684348690"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684348690"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-105"></span><span>    </span><span id="local-6989586621684348689"><span class="annot"><span class="annottext">Maybe (NameInfo rep)
+</span><a href="#local-6989586621684348689"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m (Maybe (NameInfo rep))
+-&gt; BuilderT rep m (Maybe (NameInfo rep))
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m (Maybe (NameInfo rep))
+ -&gt; BuilderT rep m (Maybe (NameInfo rep)))
+-&gt; StateT (Stms rep, Scope rep) m (Maybe (NameInfo rep))
+-&gt; BuilderT rep m (Maybe (NameInfo rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">((Stms rep, Scope rep) -&gt; Maybe (NameInfo rep))
+-&gt; StateT (Stms rep, Scope rep) m (Maybe (NameInfo rep))
+forall s (m :: * -&gt; *) a. MonadState s m =&gt; (s -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">gets</span></span><span> </span><span class="annot"><span class="annottext">(((Stms rep, Scope rep) -&gt; Maybe (NameInfo rep))
+ -&gt; StateT (Stms rep, Scope rep) m (Maybe (NameInfo rep)))
+-&gt; ((Stms rep, Scope rep) -&gt; Maybe (NameInfo rep))
+-&gt; StateT (Stms rep, Scope rep) m (Maybe (NameInfo rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Scope rep -&gt; Maybe (NameInfo rep)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684348690"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Maybe (NameInfo rep))
+-&gt; ((Stms rep, Scope rep) -&gt; Scope rep)
+-&gt; (Stms rep, Scope rep)
+-&gt; Maybe (NameInfo rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Stms rep, Scope rep) -&gt; Scope rep
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span>
+</span><span id="line-106"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe (NameInfo rep)
+</span><a href="#local-6989586621684348689"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-107"></span><span>      </span><span class="annot"><span class="annottext">Maybe (NameInfo rep)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; BuilderT rep m Type
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; BuilderT rep m Type) -&gt; [Char] -&gt; BuilderT rep m Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;BuilderT.lookupType: unknown variable &quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; [Char]
+forall a. Pretty a =&gt; a -&gt; [Char]
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684348690"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-108"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684348684"><span class="annot"><span class="annottext">NameInfo rep
+</span><a href="#local-6989586621684348684"><span class="hs-identifier hs-var">t'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Type -&gt; BuilderT rep m Type
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; BuilderT rep m Type) -&gt; Type -&gt; BuilderT rep m Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NameInfo rep -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">NameInfo rep
+</span><a href="#local-6989586621684348684"><span class="hs-identifier hs-var">t'</span></a></span><span>
+</span><span id="line-109"></span><span>  </span><span id="local-6989586621684348681"><span class="annot"><span class="annottext">askScope :: BuilderT rep m (Scope rep)
+</span><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-var hs-var hs-var hs-var">askScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m (Scope rep)
+-&gt; BuilderT rep m (Scope rep)
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m (Scope rep)
+ -&gt; BuilderT rep m (Scope rep))
+-&gt; StateT (Stms rep, Scope rep) m (Scope rep)
+-&gt; BuilderT rep m (Scope rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">((Stms rep, Scope rep) -&gt; Scope rep)
+-&gt; StateT (Stms rep, Scope rep) m (Scope rep)
+forall s (m :: * -&gt; *) a. MonadState s m =&gt; (s -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">gets</span></span><span> </span><span class="annot"><span class="annottext">(Stms rep, Scope rep) -&gt; Scope rep
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span></span></span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span id="local-6989586621684349051"><span id="local-6989586621684349052"><span class="hs-keyword">instance</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349052"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684349051"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349052"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349052"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349051"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-112"></span><span>  </span><span id="local-6989586621684348659"><span class="annot"><span class="annottext">localScope :: forall a. Scope rep -&gt; BuilderT rep m a -&gt; BuilderT rep m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var hs-var hs-var hs-var">localScope</span></a></span></span><span> </span><span id="local-6989586621684348657"><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684348657"><span class="hs-identifier hs-var">types</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span id="local-6989586621684348656"><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348656"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a)
+-&gt; StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-113"></span><span>    </span><span class="annot"><span class="annottext">((Stms rep, Scope rep) -&gt; (Stms rep, Scope rep))
+-&gt; StateT (Stms rep, Scope rep) m ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="annot"><span class="annottext">(((Stms rep, Scope rep) -&gt; (Stms rep, Scope rep))
+ -&gt; StateT (Stms rep, Scope rep) m ())
+-&gt; ((Stms rep, Scope rep) -&gt; (Stms rep, Scope rep))
+-&gt; StateT (Stms rep, Scope rep) m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Scope rep)
+-&gt; (Stms rep, Scope rep) -&gt; (Stms rep, Scope rep)
+forall (a :: * -&gt; * -&gt; *) b c d.
+Arrow a =&gt;
+a b c -&gt; a (d, b) (d, c)
+</span><span class="hs-identifier hs-var">second</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Scope rep -&gt; Scope rep -&gt; Scope rep
+forall k a. Ord k =&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.union</span></span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684348657"><span class="hs-identifier hs-var">types</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>    </span><span id="local-6989586621684348653"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348653"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348656"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-115"></span><span>    </span><span class="annot"><span class="annottext">((Stms rep, Scope rep) -&gt; (Stms rep, Scope rep))
+-&gt; StateT (Stms rep, Scope rep) m ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="annot"><span class="annottext">(((Stms rep, Scope rep) -&gt; (Stms rep, Scope rep))
+ -&gt; StateT (Stms rep, Scope rep) m ())
+-&gt; ((Stms rep, Scope rep) -&gt; (Stms rep, Scope rep))
+-&gt; StateT (Stms rep, Scope rep) m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; Scope rep)
+-&gt; (Stms rep, Scope rep) -&gt; (Stms rep, Scope rep)
+forall (a :: * -&gt; * -&gt; *) b c d.
+Arrow a =&gt;
+a b c -&gt; a (d, b) (d, c)
+</span><span class="hs-identifier hs-var">second</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Scope rep -&gt; Scope rep -&gt; Scope rep
+forall k a b. Ord k =&gt; Map k a -&gt; Map k b -&gt; Map k a
+</span><span class="hs-operator hs-var">`M.difference`</span></span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684348657"><span class="hs-identifier hs-var">types</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>    </span><span class="annot"><span class="annottext">a -&gt; StateT (Stms rep, Scope rep) m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348653"><span class="hs-identifier hs-var">x</span></a></span></span></span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span id="local-6989586621684349033"><span id="local-6989586621684349034"><span class="hs-keyword">instance</span><span>
+</span><span id="line-119"></span><span>  </span><span id="local-6989586621684348632"><span id="local-6989586621684348636"><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349034"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349033"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-type">BuilderOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349034"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-120"></span><span>  </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349034"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349033"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-121"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-122"></span><span>  </span><span class="hs-keyword">type</span><span> </span><span id="Rep"><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-var">Rep</span></a></span></span><span> </span><span id="local-6989586621684349033"><span id="local-6989586621684349034"><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349034"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349033"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621684349034"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-123"></span><span>  </span><span id="local-6989586621684348626"><span class="annot"><span class="annottext">mkExpDecM :: Pat (Rep (BuilderT rep m))
+-&gt; Exp (Rep (BuilderT rep m))
+-&gt; BuilderT rep m (ExpDec (Rep (BuilderT rep m)))
+</span><a href="Futhark.Builder.Class.html#mkExpDecM"><span class="hs-identifier hs-var hs-var hs-var hs-var">mkExpDecM</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT rep m))
+-&gt; Exp (Rep (BuilderT rep m))
+-&gt; BuilderT rep m (ExpDec (Rep (BuilderT rep m)))
+forall rep (m :: * -&gt; *).
+(BuilderOps rep, MonadBuilder m, Rep m ~ rep) =&gt;
+Pat rep -&gt; Exp rep -&gt; m (ExpDec rep)
+</span><a href="Futhark.Builder.html#mkExpDecB"><span class="hs-identifier hs-var">mkExpDecB</span></a></span><span>
+</span><span id="line-124"></span><span>  </span><span id="local-6989586621684348620"><span class="annot"><span class="annottext">mkBodyM :: Stms (Rep (BuilderT rep m))
+-&gt; Result -&gt; BuilderT rep m (Body (Rep (BuilderT rep m)))
+</span><a href="Futhark.Builder.Class.html#mkBodyM"><span class="hs-identifier hs-var hs-var hs-var hs-var">mkBodyM</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stms (Rep (BuilderT rep m))
+-&gt; Result -&gt; BuilderT rep m (Body (Rep (BuilderT rep m)))
+forall rep (m :: * -&gt; *).
+(BuilderOps rep, MonadBuilder m, Rep m ~ rep) =&gt;
+Stms rep -&gt; Result -&gt; m (Body rep)
+</span><a href="Futhark.Builder.html#mkBodyB"><span class="hs-identifier hs-var">mkBodyB</span></a></span><span>
+</span><span id="line-125"></span><span>  </span><span id="local-6989586621684348614"><span class="annot"><span class="annottext">mkLetNamesM :: [VName]
+-&gt; Exp (Rep (BuilderT rep m))
+-&gt; BuilderT rep m (Stm (Rep (BuilderT rep m)))
+</span><a href="Futhark.Builder.Class.html#mkLetNamesM"><span class="hs-identifier hs-var hs-var hs-var hs-var">mkLetNamesM</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[VName]
+-&gt; Exp (Rep (BuilderT rep m))
+-&gt; BuilderT rep m (Stm (Rep (BuilderT rep m)))
+forall rep (m :: * -&gt; *).
+(BuilderOps rep, MonadBuilder m, Rep m ~ rep) =&gt;
+[VName] -&gt; Exp rep -&gt; m (Stm rep)
+</span><a href="Futhark.Builder.html#mkLetNamesB"><span class="hs-identifier hs-var">mkLetNamesB</span></a></span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span>  </span><span id="local-6989586621684348606"><span class="annot"><span class="annottext">addStms :: Stms (Rep (BuilderT rep m)) -&gt; BuilderT rep m ()
+</span><a href="Futhark.Builder.Class.html#addStms"><span class="hs-identifier hs-var hs-var hs-var hs-var">addStms</span></a></span></span><span> </span><span id="local-6989586621684348604"><span class="annot"><span class="annottext">Stms (Rep (BuilderT rep m))
+</span><a href="#local-6989586621684348604"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-128"></span><span>    </span><span class="annot"><span class="annottext">StateT (Stms rep, Map VName (NameInfo rep)) m ()
+-&gt; BuilderT rep m ()
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Map VName (NameInfo rep)) m ()
+ -&gt; BuilderT rep m ())
+-&gt; StateT (Stms rep, Map VName (NameInfo rep)) m ()
+-&gt; BuilderT rep m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-129"></span><span>      </span><span class="annot"><span class="annottext">((Stms rep, Map VName (NameInfo rep))
+ -&gt; (Stms rep, Map VName (NameInfo rep)))
+-&gt; StateT (Stms rep, Map VName (NameInfo rep)) m ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; (s -&gt; s) -&gt; m ()
+</span><span class="hs-identifier hs-var">modify</span></span><span> </span><span class="annot"><span class="annottext">(((Stms rep, Map VName (NameInfo rep))
+  -&gt; (Stms rep, Map VName (NameInfo rep)))
+ -&gt; StateT (Stms rep, Map VName (NameInfo rep)) m ())
+-&gt; ((Stms rep, Map VName (NameInfo rep))
+    -&gt; (Stms rep, Map VName (NameInfo rep)))
+-&gt; StateT (Stms rep, Map VName (NameInfo rep)) m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684348603"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348603"><span class="hs-identifier hs-var">cur_stms</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684348602"><span class="annot"><span class="annottext">Map VName (NameInfo rep)
+</span><a href="#local-6989586621684348602"><span class="hs-identifier hs-var">scope</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-130"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348603"><span class="hs-identifier hs-var">cur_stms</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; Stms rep -&gt; Stms rep
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Stms rep
+Stms (Rep (BuilderT rep m))
+</span><a href="#local-6989586621684348604"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Map VName (NameInfo rep)
+</span><a href="#local-6989586621684348602"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName (NameInfo rep)
+-&gt; Map VName (NameInfo rep) -&gt; Map VName (NameInfo rep)
+forall k a. Ord k =&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-operator hs-var">`M.union`</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; Map VName (NameInfo rep)
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+Stms (Rep (BuilderT rep m))
+</span><a href="#local-6989586621684348604"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-131"></span><span>
+</span><span id="line-132"></span><span>  </span><span id="local-6989586621684348588"><span class="annot"><span class="annottext">collectStms :: forall a.
+BuilderT rep m a -&gt; BuilderT rep m (a, Stms (Rep (BuilderT rep m)))
+</span><a href="Futhark.Builder.Class.html#collectStms"><span class="hs-identifier hs-var hs-var hs-var hs-var">collectStms</span></a></span></span><span> </span><span id="local-6989586621684348586"><span class="annot"><span class="annottext">BuilderT rep m a
+</span><a href="#local-6989586621684348586"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-133"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684348585"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348585"><span class="hs-identifier hs-var">old_stms</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684348584"><span class="annot"><span class="annottext">Map VName (NameInfo rep)
+</span><a href="#local-6989586621684348584"><span class="hs-identifier hs-var">old_scope</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">StateT
+  (Stms rep, Map VName (NameInfo rep))
+  m
+  (Stms rep, Map VName (NameInfo rep))
+-&gt; BuilderT rep m (Stms rep, Map VName (NameInfo rep))
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">StateT
+  (Stms rep, Map VName (NameInfo rep))
+  m
+  (Stms rep, Map VName (NameInfo rep))
+forall s (m :: * -&gt; *). MonadState s m =&gt; m s
+</span><span class="hs-identifier hs-var">get</span></span><span>
+</span><span id="line-134"></span><span>    </span><span class="annot"><span class="annottext">StateT (Stms rep, Map VName (NameInfo rep)) m ()
+-&gt; BuilderT rep m ()
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Map VName (NameInfo rep)) m ()
+ -&gt; BuilderT rep m ())
+-&gt; StateT (Stms rep, Map VName (NameInfo rep)) m ()
+-&gt; BuilderT rep m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Stms rep, Map VName (NameInfo rep))
+-&gt; StateT (Stms rep, Map VName (NameInfo rep)) m ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; s -&gt; m ()
+</span><span class="hs-identifier hs-var">put</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Map VName (NameInfo rep)
+</span><a href="#local-6989586621684348584"><span class="hs-identifier hs-var">old_scope</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>    </span><span id="local-6989586621684348581"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348581"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BuilderT rep m a
+</span><a href="#local-6989586621684348586"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-136"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684348580"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348580"><span class="hs-identifier hs-var">new_stms</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Map VName (NameInfo rep)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">StateT
+  (Stms rep, Map VName (NameInfo rep))
+  m
+  (Stms rep, Map VName (NameInfo rep))
+-&gt; BuilderT rep m (Stms rep, Map VName (NameInfo rep))
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">StateT
+  (Stms rep, Map VName (NameInfo rep))
+  m
+  (Stms rep, Map VName (NameInfo rep))
+forall s (m :: * -&gt; *). MonadState s m =&gt; m s
+</span><span class="hs-identifier hs-var">get</span></span><span>
+</span><span id="line-137"></span><span>    </span><span class="annot"><span class="annottext">StateT (Stms rep, Map VName (NameInfo rep)) m ()
+-&gt; BuilderT rep m ()
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Map VName (NameInfo rep)) m ()
+ -&gt; BuilderT rep m ())
+-&gt; StateT (Stms rep, Map VName (NameInfo rep)) m ()
+-&gt; BuilderT rep m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Stms rep, Map VName (NameInfo rep))
+-&gt; StateT (Stms rep, Map VName (NameInfo rep)) m ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; s -&gt; m ()
+</span><span class="hs-identifier hs-var">put</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348585"><span class="hs-identifier hs-var">old_stms</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Map VName (NameInfo rep)
+</span><a href="#local-6989586621684348584"><span class="hs-identifier hs-var">old_scope</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-138"></span><span>    </span><span class="annot"><span class="annottext">(a, Stms rep) -&gt; BuilderT rep m (a, Stms rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348581"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348580"><span class="hs-identifier hs-var">new_stms</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-139"></span><span>
+</span><span id="line-140"></span><span class="hs-comment">-- | Run a binder action given an initial scope, returning a value and</span><span>
+</span><span id="line-141"></span><span class="hs-comment">-- the statements added ('addStm') during the action.</span><span>
+</span><span id="line-142"></span><span id="local-6989586621684349015"><span id="local-6989586621684349016"><span id="local-6989586621684349017"><span class="annot"><a href="Futhark.Builder.html#runBuilderT"><span class="hs-identifier hs-type">runBuilderT</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-143"></span><span>  </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349017"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-144"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349016"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349017"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349015"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-145"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349016"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-146"></span><span>  </span><span class="annot"><a href="#local-6989586621684349017"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684349015"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349016"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-147"></span><span id="runBuilderT"><span class="annot"><span class="annottext">runBuilderT :: forall (m :: * -&gt; *) rep a.
+MonadFreshNames m =&gt;
+BuilderT rep m a -&gt; Scope rep -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT"><span class="hs-identifier hs-var hs-var">runBuilderT</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span id="local-6989586621684348574"><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348574"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684348573"><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684348573"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-148"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684348572"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348572"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684348571"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348571"><span class="hs-identifier hs-var">stms</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+-&gt; (Stms rep, Scope rep) -&gt; m (a, (Stms rep, Scope rep))
+forall s (m :: * -&gt; *) a. StateT s m a -&gt; s -&gt; m (a, s)
+</span><span class="hs-identifier hs-var hs-var">runStateT</span></span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348574"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684348573"><span class="hs-identifier hs-var">scope</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span>  </span><span class="annot"><span class="annottext">(a, Stms rep) -&gt; m (a, Stms rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348572"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684348571"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-150"></span><span>
+</span><span id="line-151"></span><span class="hs-comment">-- | Like 'runBuilderT', but return only the statements.</span><span>
+</span><span id="line-152"></span><span id="local-6989586621684349007"><span id="local-6989586621684349008"><span class="annot"><a href="Futhark.Builder.html#runBuilderT_"><span class="hs-identifier hs-type">runBuilderT_</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-153"></span><span>  </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349008"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-154"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349007"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349008"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-155"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349007"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-156"></span><span>  </span><span class="annot"><a href="#local-6989586621684349008"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349007"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-157"></span><span id="runBuilderT_"><span class="annot"><span class="annottext">runBuilderT_ :: forall (m :: * -&gt; *) rep.
+MonadFreshNames m =&gt;
+BuilderT rep m () -&gt; Scope rep -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT_"><span class="hs-identifier hs-var hs-var">runBuilderT_</span></a></span></span><span> </span><span id="local-6989586621684348563"><span class="annot"><span class="annottext">BuilderT rep m ()
+</span><a href="#local-6989586621684348563"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(((), Stms rep) -&gt; Stms rep) -&gt; m ((), Stms rep) -&gt; m (Stms rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">((), Stms rep) -&gt; Stms rep
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">(m ((), Stms rep) -&gt; m (Stms rep))
+-&gt; (Scope rep -&gt; m ((), Stms rep)) -&gt; Scope rep -&gt; m (Stms rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">BuilderT rep m () -&gt; Scope rep -&gt; m ((), Stms rep)
+forall (m :: * -&gt; *) rep a.
+MonadFreshNames m =&gt;
+BuilderT rep m a -&gt; Scope rep -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT"><span class="hs-identifier hs-var">runBuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">BuilderT rep m ()
+</span><a href="#local-6989586621684348563"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-158"></span><span>
+</span><span id="line-159"></span><span class="hs-comment">-- | Like 'runBuilderT', but get the initial scope from the current</span><span>
+</span><span id="line-160"></span><span class="hs-comment">-- monad.</span><span>
+</span><span id="line-161"></span><span id="local-6989586621684349000"><span id="local-6989586621684349002"><span id="local-6989586621684349003"><span id="local-6989586621684349004"><span class="annot"><a href="Futhark.Builder.html#runBuilderT%27"><span class="hs-identifier hs-type">runBuilderT'</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-162"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349004"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349003"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349004"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier hs-type">SameScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349003"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349002"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-163"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349002"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349004"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349000"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-164"></span><span>  </span><span class="annot"><a href="#local-6989586621684349004"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684349000"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684349002"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span></span></span><span>
+</span><span id="line-165"></span><span id="runBuilderT%27"><span class="annot"><span class="annottext">runBuilderT' :: forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+BuilderT rep m a -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT%27"><span class="hs-identifier hs-var hs-var">runBuilderT'</span></a></span></span><span> </span><span id="local-6989586621684348534"><span class="annot"><span class="annottext">BuilderT rep m a
+</span><a href="#local-6989586621684348534"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-166"></span><span>  </span><span id="local-6989586621684348533"><span class="annot"><span class="annottext">Scope somerep
+</span><a href="#local-6989586621684348533"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">m (Scope somerep)
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; m (Scope rep)
+</span><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-var">askScope</span></a></span><span>
+</span><span id="line-167"></span><span>  </span><span class="annot"><span class="annottext">BuilderT rep m a -&gt; Scope rep -&gt; m (a, Stms rep)
+forall (m :: * -&gt; *) rep a.
+MonadFreshNames m =&gt;
+BuilderT rep m a -&gt; Scope rep -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT"><span class="hs-identifier hs-var">runBuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">BuilderT rep m a
+</span><a href="#local-6989586621684348534"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; m (a, Stms rep)) -&gt; Scope rep -&gt; m (a, Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Scope somerep -&gt; Scope rep
+forall fromrep torep.
+SameScope fromrep torep =&gt;
+Scope fromrep -&gt; Scope torep
+</span><a href="Futhark.IR.Prop.Scope.html#castScope"><span class="hs-identifier hs-var">castScope</span></a></span><span> </span><span class="annot"><span class="annottext">Scope somerep
+</span><a href="#local-6989586621684348533"><span class="hs-identifier hs-var">scope</span></a></span><span>
+</span><span id="line-168"></span><span>
+</span><span id="line-169"></span><span class="hs-comment">-- | Like 'runBuilderT_', but get the initial scope from the current</span><span>
+</span><span id="line-170"></span><span class="hs-comment">-- monad.</span><span>
+</span><span id="line-171"></span><span id="local-6989586621684348985"><span id="local-6989586621684348986"><span id="local-6989586621684348987"><span id="local-6989586621684348988"><span class="annot"><a href="Futhark.Builder.html#runBuilderT%27_"><span class="hs-identifier hs-type">runBuilderT'_</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-172"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348988"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348987"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348988"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier hs-type">SameScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348987"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348986"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348986"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348988"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348985"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-174"></span><span>  </span><span class="annot"><a href="#local-6989586621684348988"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348986"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span></span></span><span>
+</span><span id="line-175"></span><span id="runBuilderT%27_"><span class="annot"><span class="annottext">runBuilderT'_ :: forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+BuilderT rep m a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT%27_"><span class="hs-identifier hs-var hs-var">runBuilderT'_</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((a, Stms rep) -&gt; Stms rep) -&gt; m (a, Stms rep) -&gt; m (Stms rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">(a, Stms rep) -&gt; Stms rep
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">(m (a, Stms rep) -&gt; m (Stms rep))
+-&gt; (BuilderT rep m a -&gt; m (a, Stms rep))
+-&gt; BuilderT rep m a
+-&gt; m (Stms rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">BuilderT rep m a -&gt; m (a, Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+BuilderT rep m a -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT%27"><span class="hs-identifier hs-var">runBuilderT'</span></a></span><span>
+</span><span id="line-176"></span><span>
+</span><span id="line-177"></span><span class="hs-comment">-- | Run a binder action, returning a value and the statements added</span><span>
+</span><span id="line-178"></span><span class="hs-comment">-- ('addStm') during the action.  Assumes that the current monad</span><span>
+</span><span id="line-179"></span><span class="hs-comment">-- provides initial scope and name source.</span><span>
+</span><span id="line-180"></span><span id="local-6989586621684348977"><span id="local-6989586621684348978"><span id="local-6989586621684348979"><span id="local-6989586621684348980"><span class="annot"><a href="Futhark.Builder.html#runBuilder"><span class="hs-identifier hs-type">runBuilder</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-181"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348980"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348979"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348980"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier hs-type">SameScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348979"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348978"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-182"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348978"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348977"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-183"></span><span>  </span><span class="annot"><a href="#local-6989586621684348980"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684348977"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348978"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span></span></span><span>
+</span><span id="line-184"></span><span id="runBuilder"><span class="annot"><span class="annottext">runBuilder :: forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder"><span class="hs-identifier hs-var hs-var">runBuilder</span></a></span></span><span> </span><span id="local-6989586621684348474"><span class="annot"><span class="annottext">Builder rep a
+</span><a href="#local-6989586621684348474"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-185"></span><span>  </span><span id="local-6989586621684348473"><span class="annot"><span class="annottext">Scope somerep
+</span><a href="#local-6989586621684348473"><span class="hs-identifier hs-var">types</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">m (Scope somerep)
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; m (Scope rep)
+</span><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-var">askScope</span></a></span><span>
+</span><span id="line-186"></span><span>  </span><span class="annot"><span class="annottext">(VNameSource -&gt; ((a, Stms rep), VNameSource)) -&gt; m (a, Stms rep)
+forall (m :: * -&gt; *) a.
+MonadFreshNames m =&gt;
+(VNameSource -&gt; (a, VNameSource)) -&gt; m a
+</span><a href="Futhark.MonadFreshNames.html#modifyNameSource"><span class="hs-identifier hs-var">modifyNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">((VNameSource -&gt; ((a, Stms rep), VNameSource)) -&gt; m (a, Stms rep))
+-&gt; (VNameSource -&gt; ((a, Stms rep), VNameSource)) -&gt; m (a, Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">State VNameSource (a, Stms rep)
+-&gt; VNameSource -&gt; ((a, Stms rep), VNameSource)
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><span class="hs-identifier hs-var">runState</span></span><span> </span><span class="annot"><span class="annottext">(State VNameSource (a, Stms rep)
+ -&gt; VNameSource -&gt; ((a, Stms rep), VNameSource))
+-&gt; State VNameSource (a, Stms rep)
+-&gt; VNameSource
+-&gt; ((a, Stms rep), VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Builder rep a -&gt; Scope rep -&gt; State VNameSource (a, Stms rep)
+forall (m :: * -&gt; *) rep a.
+MonadFreshNames m =&gt;
+BuilderT rep m a -&gt; Scope rep -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT"><span class="hs-identifier hs-var">runBuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">Builder rep a
+</span><a href="#local-6989586621684348474"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Scope rep -&gt; State VNameSource (a, Stms rep))
+-&gt; Scope rep -&gt; State VNameSource (a, Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Scope somerep -&gt; Scope rep
+forall fromrep torep.
+SameScope fromrep torep =&gt;
+Scope fromrep -&gt; Scope torep
+</span><a href="Futhark.IR.Prop.Scope.html#castScope"><span class="hs-identifier hs-var">castScope</span></a></span><span> </span><span class="annot"><span class="annottext">Scope somerep
+</span><a href="#local-6989586621684348473"><span class="hs-identifier hs-var">types</span></a></span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span class="hs-comment">-- | Like 'runBuilder', but throw away the result and just return the</span><span>
+</span><span id="line-189"></span><span class="hs-comment">-- added statements.</span><span>
+</span><span id="line-190"></span><span id="local-6989586621684348961"><span id="local-6989586621684348962"><span id="local-6989586621684348963"><span id="local-6989586621684348964"><span class="annot"><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-type">runBuilder_</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-191"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348964"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348963"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348964"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier hs-type">SameScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348963"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348962"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-192"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348962"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348961"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-193"></span><span>  </span><span class="annot"><a href="#local-6989586621684348964"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348962"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span></span></span><span>
+</span><span id="line-194"></span><span id="runBuilder_"><span class="annot"><span class="annottext">runBuilder_ :: forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder_"><span class="hs-identifier hs-var hs-var">runBuilder_</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((a, Stms rep) -&gt; Stms rep) -&gt; m (a, Stms rep) -&gt; m (Stms rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">(a, Stms rep) -&gt; Stms rep
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">(m (a, Stms rep) -&gt; m (Stms rep))
+-&gt; (Builder rep a -&gt; m (a, Stms rep))
+-&gt; Builder rep a
+-&gt; m (Stms rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Builder rep a -&gt; m (a, Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder"><span class="hs-identifier hs-var">runBuilder</span></a></span><span>
+</span><span id="line-195"></span><span>
+</span><span id="line-196"></span><span class="hs-comment">-- | Run a binder that produces a t'Body', and prefix that t'Body' by</span><span>
+</span><span id="line-197"></span><span class="hs-comment">-- the statements produced during execution of the action.</span><span>
+</span><span id="line-198"></span><span id="local-6989586621684348954"><span id="local-6989586621684348955"><span id="local-6989586621684348956"><span class="annot"><a href="Futhark.Builder.html#runBodyBuilder"><span class="hs-identifier hs-type">runBodyBuilder</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-199"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348956"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-200"></span><span>    </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348955"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-201"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348954"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348955"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-202"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier hs-type">SameScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348954"><span class="hs-identifier hs-type">somerep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348956"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-203"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-204"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#Builder"><span class="hs-identifier hs-type">Builder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348956"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348956"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-205"></span><span>  </span><span class="annot"><a href="#local-6989586621684348955"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348956"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-206"></span><span id="runBodyBuilder"><span class="annot"><span class="annottext">runBodyBuilder :: forall rep (m :: * -&gt; *) somerep.
+(Buildable rep, MonadFreshNames m, HasScope somerep m,
+ SameScope somerep rep) =&gt;
+Builder rep (Body rep) -&gt; m (Body rep)
+</span><a href="Futhark.Builder.html#runBodyBuilder"><span class="hs-identifier hs-var hs-var">runBodyBuilder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((Body rep, Stms rep) -&gt; Body rep)
+-&gt; m (Body rep, Stms rep) -&gt; m (Body rep)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Body rep -&gt; Stms rep -&gt; Body rep)
+-&gt; (Body rep, Stms rep) -&gt; Body rep
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="annot"><span class="annottext">((Body rep -&gt; Stms rep -&gt; Body rep)
+ -&gt; (Body rep, Stms rep) -&gt; Body rep)
+-&gt; (Body rep -&gt; Stms rep -&gt; Body rep)
+-&gt; (Body rep, Stms rep)
+-&gt; Body rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Stms rep -&gt; Body rep -&gt; Body rep)
+-&gt; Body rep -&gt; Stms rep -&gt; Body rep
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; Body rep -&gt; Body rep
+forall rep. Buildable rep =&gt; Stms rep -&gt; Body rep -&gt; Body rep
+</span><a href="Futhark.Builder.Class.html#insertStms"><span class="hs-identifier hs-var">insertStms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(m (Body rep, Stms rep) -&gt; m (Body rep))
+-&gt; (Builder rep (Body rep) -&gt; m (Body rep, Stms rep))
+-&gt; Builder rep (Body rep)
+-&gt; m (Body rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Builder rep (Body rep) -&gt; m (Body rep, Stms rep)
+forall (m :: * -&gt; *) somerep rep a.
+(MonadFreshNames m, HasScope somerep m, SameScope somerep rep) =&gt;
+Builder rep a -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilder"><span class="hs-identifier hs-var">runBuilder</span></a></span><span>
+</span><span id="line-207"></span><span>
+</span><span id="line-208"></span><span class="hs-comment">-- Utility instance defintions for MTL classes.  These require</span><span>
+</span><span id="line-209"></span><span class="hs-comment">-- UndecidableInstances, but save on typing elsewhere.</span><span>
+</span><span id="line-210"></span><span>
+</span><span id="line-211"></span><span id="local-6989586621684348939"><span id="local-6989586621684348940"><span id="local-6989586621684348941"><span id="local-6989586621684348942"><span class="annot"><a href="Futhark.Builder.html#mapInner"><span class="hs-identifier hs-type">mapInner</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-212"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684348942"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-213"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="#local-6989586621684348942"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684348941"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348940"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348940"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-214"></span><span>    </span><span class="annot"><a href="#local-6989586621684348942"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684348939"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348940"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348940"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-215"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-216"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348940"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348942"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348941"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-217"></span><span>  </span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348940"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348942"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348939"><span class="hs-identifier hs-type">b</span></a></span></span></span></span></span><span>
+</span><span id="line-218"></span><span id="mapInner"><span class="annot"><span class="annottext">mapInner :: forall (m :: * -&gt; *) a rep b.
+Monad m =&gt;
+(m (a, (Stms rep, Scope rep)) -&gt; m (b, (Stms rep, Scope rep)))
+-&gt; BuilderT rep m a -&gt; BuilderT rep m b
+</span><a href="Futhark.Builder.html#mapInner"><span class="hs-identifier hs-var hs-var">mapInner</span></a></span></span><span> </span><span id="local-6989586621684348395"><span class="annot"><span class="annottext">m (a, (Stms rep, Scope rep)) -&gt; m (b, (Stms rep, Scope rep))
+</span><a href="#local-6989586621684348395"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span id="local-6989586621684348394"><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348394"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m b -&gt; BuilderT rep m b
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m b -&gt; BuilderT rep m b)
+-&gt; StateT (Stms rep, Scope rep) m b -&gt; BuilderT rep m b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-219"></span><span>  </span><span id="local-6989586621684348393"><span class="annot"><span class="annottext">(Stms rep, Scope rep)
+</span><a href="#local-6989586621684348393"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m (Stms rep, Scope rep)
+forall s (m :: * -&gt; *). MonadState s m =&gt; m s
+</span><span class="hs-identifier hs-var">get</span></span><span>
+</span><span id="line-220"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684348392"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621684348392"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684348391"><span class="annot"><span class="annottext">(Stms rep, Scope rep)
+</span><a href="#local-6989586621684348391"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">m (b, (Stms rep, Scope rep))
+-&gt; StateT (Stms rep, Scope rep) m (b, (Stms rep, Scope rep))
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m (b, (Stms rep, Scope rep))
+ -&gt; StateT (Stms rep, Scope rep) m (b, (Stms rep, Scope rep)))
+-&gt; m (b, (Stms rep, Scope rep))
+-&gt; StateT (Stms rep, Scope rep) m (b, (Stms rep, Scope rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">m (a, (Stms rep, Scope rep)) -&gt; m (b, (Stms rep, Scope rep))
+</span><a href="#local-6989586621684348395"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(m (a, (Stms rep, Scope rep)) -&gt; m (b, (Stms rep, Scope rep)))
+-&gt; m (a, (Stms rep, Scope rep)) -&gt; m (b, (Stms rep, Scope rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+-&gt; (Stms rep, Scope rep) -&gt; m (a, (Stms rep, Scope rep))
+forall s (m :: * -&gt; *) a. StateT s m a -&gt; s -&gt; m (a, s)
+</span><span class="hs-identifier hs-var hs-var">runStateT</span></span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348394"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Stms rep, Scope rep)
+</span><a href="#local-6989586621684348393"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-221"></span><span>  </span><span class="annot"><span class="annottext">(Stms rep, Scope rep) -&gt; StateT (Stms rep, Scope rep) m ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; s -&gt; m ()
+</span><span class="hs-identifier hs-var">put</span></span><span> </span><span class="annot"><span class="annottext">(Stms rep, Scope rep)
+</span><a href="#local-6989586621684348391"><span class="hs-identifier hs-var">s'</span></a></span><span>
+</span><span id="line-222"></span><span>  </span><span class="annot"><span class="annottext">b -&gt; StateT (Stms rep, Scope rep) m b
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621684348392"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-223"></span><span>
+</span><span id="line-224"></span><span id="local-6989586621684348928"><span id="local-6989586621684348929"><span id="local-6989586621684348930"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684348385"><span class="annot"><span class="hs-identifier hs-type">MonadReader</span></span><span> </span><span class="annot"><a href="#local-6989586621684348930"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348929"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadReader</span></span><span> </span><span class="annot"><a href="#local-6989586621684348930"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348928"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348929"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-225"></span><span>  </span><span id="local-6989586621684348380"><span class="annot"><span class="annottext">ask :: BuilderT rep m r
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">ask</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m r -&gt; BuilderT rep m r
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m r -&gt; BuilderT rep m r)
+-&gt; StateT (Stms rep, Scope rep) m r -&gt; BuilderT rep m r
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">m r -&gt; StateT (Stms rep, Scope rep) m r
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">m r
+forall r (m :: * -&gt; *). MonadReader r m =&gt; m r
+</span><span class="hs-identifier hs-var">ask</span></span><span>
+</span><span id="line-226"></span><span>  </span><span id="local-6989586621684348376"><span class="annot"><span class="annottext">local :: forall a. (r -&gt; r) -&gt; BuilderT rep m a -&gt; BuilderT rep m a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">local</span></span></span><span> </span><span id="local-6989586621684348374"><span class="annot"><span class="annottext">r -&gt; r
+</span><a href="#local-6989586621684348374"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(m (a, (Stms rep, Scope rep)) -&gt; m (a, (Stms rep, Scope rep)))
+-&gt; BuilderT rep m a -&gt; BuilderT rep m a
+forall (m :: * -&gt; *) a rep b.
+Monad m =&gt;
+(m (a, (Stms rep, Scope rep)) -&gt; m (b, (Stms rep, Scope rep)))
+-&gt; BuilderT rep m a -&gt; BuilderT rep m b
+</span><a href="Futhark.Builder.html#mapInner"><span class="hs-identifier hs-var">mapInner</span></a></span><span> </span><span class="annot"><span class="annottext">((m (a, (Stms rep, Scope rep)) -&gt; m (a, (Stms rep, Scope rep)))
+ -&gt; BuilderT rep m a -&gt; BuilderT rep m a)
+-&gt; (m (a, (Stms rep, Scope rep)) -&gt; m (a, (Stms rep, Scope rep)))
+-&gt; BuilderT rep m a
+-&gt; BuilderT rep m a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(r -&gt; r)
+-&gt; m (a, (Stms rep, Scope rep)) -&gt; m (a, (Stms rep, Scope rep))
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="annot"><span class="annottext">r -&gt; r
+</span><a href="#local-6989586621684348374"><span class="hs-identifier hs-var">f</span></a></span></span></span></span><span>
+</span><span id="line-227"></span><span>
+</span><span id="line-228"></span><span id="local-6989586621684348923"><span id="local-6989586621684348924"><span id="local-6989586621684348925"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684348368"><span class="annot"><span class="hs-identifier hs-type">MonadState</span></span><span> </span><span class="annot"><a href="#local-6989586621684348925"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348924"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadState</span></span><span> </span><span class="annot"><a href="#local-6989586621684348925"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348923"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348924"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-229"></span><span>  </span><span id="local-6989586621684348363"><span class="annot"><span class="annottext">get :: BuilderT rep m s
+</span><a href="#local-6989586621684348363"><span class="hs-identifier hs-var hs-var hs-var hs-var">get</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m s -&gt; BuilderT rep m s
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m s -&gt; BuilderT rep m s)
+-&gt; StateT (Stms rep, Scope rep) m s -&gt; BuilderT rep m s
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">m s -&gt; StateT (Stms rep, Scope rep) m s
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">m s
+forall s (m :: * -&gt; *). MonadState s m =&gt; m s
+</span><span class="hs-identifier hs-var">get</span></span><span>
+</span><span id="line-230"></span><span>  </span><span id="local-6989586621684348359"><span class="annot"><span class="annottext">put :: s -&gt; BuilderT rep m ()
+</span><a href="#local-6989586621684348359"><span class="hs-identifier hs-var hs-var hs-var hs-var">put</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m () -&gt; BuilderT rep m ()
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m () -&gt; BuilderT rep m ())
+-&gt; (s -&gt; StateT (Stms rep, Scope rep) m ())
+-&gt; s
+-&gt; BuilderT rep m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">m () -&gt; StateT (Stms rep, Scope rep) m ()
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m () -&gt; StateT (Stms rep, Scope rep) m ())
+-&gt; (s -&gt; m ()) -&gt; s -&gt; StateT (Stms rep, Scope rep) m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">s -&gt; m ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; s -&gt; m ()
+</span><span class="hs-identifier hs-var">put</span></span></span></span></span><span>
+</span><span id="line-231"></span><span>
+</span><span id="line-232"></span><span id="local-6989586621684348915"><span id="local-6989586621684348916"><span id="local-6989586621684348917"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684348353"><span class="annot"><span class="hs-identifier hs-type">MonadWriter</span></span><span> </span><span class="annot"><a href="#local-6989586621684348917"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348916"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadWriter</span></span><span> </span><span class="annot"><a href="#local-6989586621684348917"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348915"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348916"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-233"></span><span>  </span><span id="local-6989586621684348345"><span class="annot"><span class="annottext">tell :: w -&gt; BuilderT rep m ()
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">tell</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m () -&gt; BuilderT rep m ()
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m () -&gt; BuilderT rep m ())
+-&gt; (w -&gt; StateT (Stms rep, Scope rep) m ())
+-&gt; w
+-&gt; BuilderT rep m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">m () -&gt; StateT (Stms rep, Scope rep) m ()
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m () -&gt; StateT (Stms rep, Scope rep) m ())
+-&gt; (w -&gt; m ()) -&gt; w -&gt; StateT (Stms rep, Scope rep) m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">w -&gt; m ()
+forall w (m :: * -&gt; *). MonadWriter w m =&gt; w -&gt; m ()
+</span><span class="hs-identifier hs-var">tell</span></span><span>
+</span><span id="line-234"></span><span>  </span><span id="local-6989586621684348339"><span class="annot"><span class="annottext">pass :: forall a. BuilderT rep m (a, w -&gt; w) -&gt; BuilderT rep m a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">pass</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(m ((a, w -&gt; w), (Stms rep, Scope rep))
+ -&gt; m (a, (Stms rep, Scope rep)))
+-&gt; BuilderT rep m (a, w -&gt; w) -&gt; BuilderT rep m a
+forall (m :: * -&gt; *) a rep b.
+Monad m =&gt;
+(m (a, (Stms rep, Scope rep)) -&gt; m (b, (Stms rep, Scope rep)))
+-&gt; BuilderT rep m a -&gt; BuilderT rep m b
+</span><a href="Futhark.Builder.html#mapInner"><span class="hs-identifier hs-var">mapInner</span></a></span><span> </span><span class="annot"><span class="annottext">((m ((a, w -&gt; w), (Stms rep, Scope rep))
+  -&gt; m (a, (Stms rep, Scope rep)))
+ -&gt; BuilderT rep m (a, w -&gt; w) -&gt; BuilderT rep m a)
+-&gt; (m ((a, w -&gt; w), (Stms rep, Scope rep))
+    -&gt; m (a, (Stms rep, Scope rep)))
+-&gt; BuilderT rep m (a, w -&gt; w)
+-&gt; BuilderT rep m a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684348337"><span class="annot"><span class="annottext">m ((a, w -&gt; w), (Stms rep, Scope rep))
+</span><a href="#local-6989586621684348337"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">m ((a, (Stms rep, Scope rep)), w -&gt; w)
+-&gt; m (a, (Stms rep, Scope rep))
+forall w (m :: * -&gt; *) a. MonadWriter w m =&gt; m (a, w -&gt; w) -&gt; m a
+</span><span class="hs-identifier hs-var">pass</span></span><span> </span><span class="annot"><span class="annottext">(m ((a, (Stms rep, Scope rep)), w -&gt; w)
+ -&gt; m (a, (Stms rep, Scope rep)))
+-&gt; m ((a, (Stms rep, Scope rep)), w -&gt; w)
+-&gt; m (a, (Stms rep, Scope rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-235"></span><span>    </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684348336"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348336"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684348335"><span class="annot"><span class="annottext">w -&gt; w
+</span><a href="#local-6989586621684348335"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684348334"><span class="annot"><span class="annottext">(Stms rep, Scope rep)
+</span><a href="#local-6989586621684348334"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">m ((a, w -&gt; w), (Stms rep, Scope rep))
+</span><a href="#local-6989586621684348337"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-236"></span><span>    </span><span class="annot"><span class="annottext">((a, (Stms rep, Scope rep)), w -&gt; w)
+-&gt; m ((a, (Stms rep, Scope rep)), w -&gt; w)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348336"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(Stms rep, Scope rep)
+</span><a href="#local-6989586621684348334"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">w -&gt; w
+</span><a href="#local-6989586621684348335"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-237"></span><span>  </span><span id="local-6989586621684348329"><span class="annot"><span class="annottext">listen :: forall a. BuilderT rep m a -&gt; BuilderT rep m (a, w)
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">listen</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(m (a, (Stms rep, Scope rep)) -&gt; m ((a, w), (Stms rep, Scope rep)))
+-&gt; BuilderT rep m a -&gt; BuilderT rep m (a, w)
+forall (m :: * -&gt; *) a rep b.
+Monad m =&gt;
+(m (a, (Stms rep, Scope rep)) -&gt; m (b, (Stms rep, Scope rep)))
+-&gt; BuilderT rep m a -&gt; BuilderT rep m b
+</span><a href="Futhark.Builder.html#mapInner"><span class="hs-identifier hs-var">mapInner</span></a></span><span> </span><span class="annot"><span class="annottext">((m (a, (Stms rep, Scope rep))
+  -&gt; m ((a, w), (Stms rep, Scope rep)))
+ -&gt; BuilderT rep m a -&gt; BuilderT rep m (a, w))
+-&gt; (m (a, (Stms rep, Scope rep))
+    -&gt; m ((a, w), (Stms rep, Scope rep)))
+-&gt; BuilderT rep m a
+-&gt; BuilderT rep m (a, w)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684348327"><span class="annot"><span class="annottext">m (a, (Stms rep, Scope rep))
+</span><a href="#local-6989586621684348327"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-238"></span><span>    </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684348326"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348326"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684348325"><span class="annot"><span class="annottext">(Stms rep, Scope rep)
+</span><a href="#local-6989586621684348325"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684348324"><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621684348324"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">m (a, (Stms rep, Scope rep)) -&gt; m ((a, (Stms rep, Scope rep)), w)
+forall w (m :: * -&gt; *) a. MonadWriter w m =&gt; m a -&gt; m (a, w)
+</span><span class="hs-identifier hs-var">listen</span></span><span> </span><span class="annot"><span class="annottext">m (a, (Stms rep, Scope rep))
+</span><a href="#local-6989586621684348327"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-239"></span><span>    </span><span class="annot"><span class="annottext">((a, w), (Stms rep, Scope rep))
+-&gt; m ((a, w), (Stms rep, Scope rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684348326"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621684348324"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(Stms rep, Scope rep)
+</span><a href="#local-6989586621684348325"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-240"></span><span>
+</span><span id="line-241"></span><span id="local-6989586621684348902"><span id="local-6989586621684348903"><span id="local-6989586621684348904"><span class="hs-keyword">instance</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadError</span></span><span> </span><span class="annot"><a href="#local-6989586621684348904"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348903"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadError</span></span><span> </span><span class="annot"><a href="#local-6989586621684348904"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348902"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684348903"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-242"></span><span>  </span><span id="local-6989586621684348311"><span class="annot"><span class="annottext">throwError :: forall a. e -&gt; BuilderT rep m a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">throwError</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">m a -&gt; BuilderT rep m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(m a -&gt; BuilderT rep m a) -&gt; (e -&gt; m a) -&gt; e -&gt; BuilderT rep m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">e -&gt; m a
+forall e (m :: * -&gt; *) a. MonadError e m =&gt; e -&gt; m a
+</span><span class="hs-identifier hs-var">throwError</span></span><span>
+</span><span id="line-243"></span><span>  </span><span id="local-6989586621684348307"><span class="annot"><span class="annottext">catchError :: forall a.
+BuilderT rep m a -&gt; (e -&gt; BuilderT rep m a) -&gt; BuilderT rep m a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">catchError</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span id="local-6989586621684348305"><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348305"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684348304"><span class="annot"><span class="annottext">e -&gt; BuilderT rep m a
+</span><a href="#local-6989586621684348304"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-244"></span><span>    </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+forall rep (m :: * -&gt; *) a.
+StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+</span><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-var">BuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">(StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a)
+-&gt; StateT (Stms rep, Scope rep) m a -&gt; BuilderT rep m a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+-&gt; (e -&gt; StateT (Stms rep, Scope rep) m a)
+-&gt; StateT (Stms rep, Scope rep) m a
+forall e (m :: * -&gt; *) a.
+MonadError e m =&gt;
+m a -&gt; (e -&gt; m a) -&gt; m a
+</span><span class="hs-identifier hs-var">catchError</span></span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348305"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">((e -&gt; StateT (Stms rep, Scope rep) m a)
+ -&gt; StateT (Stms rep, Scope rep) m a)
+-&gt; (e -&gt; StateT (Stms rep, Scope rep) m a)
+-&gt; StateT (Stms rep, Scope rep) m a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BuilderT rep m a -&gt; StateT (Stms rep, Scope rep) m a
+forall {rep} {m :: * -&gt; *} {a}.
+BuilderT rep m a -&gt; StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348303"><span class="hs-identifier hs-var">unBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT rep m a -&gt; StateT (Stms rep, Scope rep) m a)
+-&gt; (e -&gt; BuilderT rep m a) -&gt; e -&gt; StateT (Stms rep, Scope rep) m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">e -&gt; BuilderT rep m a
+</span><a href="#local-6989586621684348304"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-245"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-246"></span><span>      </span><span id="local-6989586621684348303"><span class="annot"><span class="annottext">unBuilder :: BuilderT rep m a -&gt; StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348303"><span class="hs-identifier hs-var hs-var">unBuilder</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span id="local-6989586621684348302"><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348302"><span class="hs-identifier hs-var">m'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">StateT (Stms rep, Scope rep) m a
+</span><a href="#local-6989586621684348302"><span class="hs-identifier hs-var">m'</span></a></span></span></span></span><span>
+</span><span id="line-247"></span></pre></body></html>

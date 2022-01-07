@@ -1,0 +1,785 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# OPTIONS_GHC -fno-warn-orphans #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | Converting back and forth between 'PrimExp's.  Use the 'ToExp'</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- instance to convert to Futhark expressions.</span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Analysis.PrimExp.Convert</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromExp"><span class="hs-identifier">primExpFromExp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExp"><span class="hs-identifier">primExpFromSubExp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#pe32"><span class="hs-identifier">pe32</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#le32"><span class="hs-identifier">le32</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier">pe64</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#le64"><span class="hs-identifier">le64</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#f32pe"><span class="hs-identifier">f32pe</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#f32le"><span class="hs-identifier">f32le</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#f64pe"><span class="hs-identifier">f64pe</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#f64le"><span class="hs-identifier">f64le</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier">primExpFromSubExpM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExp"><span class="hs-identifier">replaceInPrimExp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier">replaceInPrimExpM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#substituteInPrimExp"><span class="hs-identifier">substituteInPrimExp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpSlice"><span class="hs-identifier">primExpSlice</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#subExpSlice"><span class="hs-identifier">subExpSlice</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Module reexport</span></span><span>
+</span><span id="line-24"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html"><span class="hs-identifier">Futhark.Analysis.PrimExp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Fail</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Fail</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Identity</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html"><span class="hs-identifier">Futhark.Analysis.PrimExp</span></a></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Construct.html"><span class="hs-identifier">Futhark.Construct</span></a></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span id="local-6989586621684359682"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.Construct.html#ToExp"><span class="hs-identifier hs-type">ToExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359682"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Construct.html#ToExp"><span class="hs-identifier hs-type">ToExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359682"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-37"></span><span>  </span><span id="local-6989586621684359485"><span class="annot"><span class="annottext">toExp :: forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+PrimExp v -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var hs-var hs-var hs-var">toExp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#BinOpExp"><span class="hs-identifier hs-type">BinOpExp</span></a></span><span> </span><span id="local-6989586621684359482"><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684359482"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621684359481"><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359481"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684359480"><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359480"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-38"></span><span>    </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; m BasicOp -&gt; m (ExpT (Rep m))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BinOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#BinOp"><span class="hs-identifier hs-var">BinOp</span></a></span><span> </span><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684359482"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; SubExp -&gt; BasicOp) -&gt; m SubExp -&gt; m (SubExp -&gt; BasicOp)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; PrimExp v -&gt; m SubExp
+forall (m :: * -&gt; *) a.
+(MonadBuilder m, ToExp a) =&gt;
+String -&gt; a -&gt; m SubExp
+</span><a href="Futhark.Construct.html#toSubExp"><span class="hs-identifier hs-var">toSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;binop_x&quot;</span></span><span> </span><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359481"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">m (SubExp -&gt; BasicOp) -&gt; m SubExp -&gt; m BasicOp
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; PrimExp v -&gt; m SubExp
+forall (m :: * -&gt; *) a.
+(MonadBuilder m, ToExp a) =&gt;
+String -&gt; a -&gt; m SubExp
+</span><a href="Futhark.Construct.html#toSubExp"><span class="hs-identifier hs-var">toSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;binop_y&quot;</span></span><span> </span><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359480"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span>  </span><span class="annot"><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var">toExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#CmpOpExp"><span class="hs-identifier hs-type">CmpOpExp</span></a></span><span> </span><span id="local-6989586621684359474"><span class="annot"><span class="annottext">CmpOp
+</span><a href="#local-6989586621684359474"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621684359473"><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359473"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684359472"><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359472"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-40"></span><span>    </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; m BasicOp -&gt; m (ExpT (Rep m))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmpOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#CmpOp"><span class="hs-identifier hs-var">CmpOp</span></a></span><span> </span><span class="annot"><span class="annottext">CmpOp
+</span><a href="#local-6989586621684359474"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; SubExp -&gt; BasicOp) -&gt; m SubExp -&gt; m (SubExp -&gt; BasicOp)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; PrimExp v -&gt; m SubExp
+forall (m :: * -&gt; *) a.
+(MonadBuilder m, ToExp a) =&gt;
+String -&gt; a -&gt; m SubExp
+</span><a href="Futhark.Construct.html#toSubExp"><span class="hs-identifier hs-var">toSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;cmpop_x&quot;</span></span><span> </span><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359473"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">m (SubExp -&gt; BasicOp) -&gt; m SubExp -&gt; m BasicOp
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; PrimExp v -&gt; m SubExp
+forall (m :: * -&gt; *) a.
+(MonadBuilder m, ToExp a) =&gt;
+String -&gt; a -&gt; m SubExp
+</span><a href="Futhark.Construct.html#toSubExp"><span class="hs-identifier hs-var">toSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;cmpop_y&quot;</span></span><span> </span><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359472"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span>  </span><span class="annot"><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var">toExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#UnOpExp"><span class="hs-identifier hs-type">UnOpExp</span></a></span><span> </span><span id="local-6989586621684359469"><span class="annot"><span class="annottext">UnOp
+</span><a href="#local-6989586621684359469"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621684359468"><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359468"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-42"></span><span>    </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; m BasicOp -&gt; m (ExpT (Rep m))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UnOp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#UnOp"><span class="hs-identifier hs-var">UnOp</span></a></span><span> </span><span class="annot"><span class="annottext">UnOp
+</span><a href="#local-6989586621684359469"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; BasicOp) -&gt; m SubExp -&gt; m BasicOp
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; PrimExp v -&gt; m SubExp
+forall (m :: * -&gt; *) a.
+(MonadBuilder m, ToExp a) =&gt;
+String -&gt; a -&gt; m SubExp
+</span><a href="Futhark.Construct.html#toSubExp"><span class="hs-identifier hs-var">toSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;unop_x&quot;</span></span><span> </span><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359468"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>  </span><span class="annot"><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var">toExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#ConvOpExp"><span class="hs-identifier hs-type">ConvOpExp</span></a></span><span> </span><span id="local-6989586621684359465"><span class="annot"><span class="annottext">ConvOp
+</span><a href="#local-6989586621684359465"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621684359464"><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359464"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-44"></span><span>    </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; m BasicOp -&gt; m (ExpT (Rep m))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ConvOp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#ConvOp"><span class="hs-identifier hs-var">ConvOp</span></a></span><span> </span><span class="annot"><span class="annottext">ConvOp
+</span><a href="#local-6989586621684359465"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; BasicOp) -&gt; m SubExp -&gt; m BasicOp
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; PrimExp v -&gt; m SubExp
+forall (m :: * -&gt; *) a.
+(MonadBuilder m, ToExp a) =&gt;
+String -&gt; a -&gt; m SubExp
+</span><a href="Futhark.Construct.html#toSubExp"><span class="hs-identifier hs-var">toSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;convop_x&quot;</span></span><span> </span><span class="annot"><span class="annottext">PrimExp v
+</span><a href="#local-6989586621684359464"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span>  </span><span class="annot"><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var">toExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#ValueExp"><span class="hs-identifier hs-type">ValueExp</span></a></span><span> </span><span id="local-6989586621684359461"><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684359461"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-46"></span><span>    </span><span class="annot"><span class="annottext">ExpT (Rep m) -&gt; m (ExpT (Rep m))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ExpT (Rep m) -&gt; m (ExpT (Rep m)))
+-&gt; ExpT (Rep m) -&gt; m (ExpT (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; BasicOp -&gt; ExpT (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#SubExp"><span class="hs-identifier hs-var">SubExp</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; BasicOp) -&gt; SubExp -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimValue -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Constant"><span class="hs-identifier hs-var">Constant</span></a></span><span> </span><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684359461"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-47"></span><span>  </span><span class="annot"><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var">toExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#FunExp"><span class="hs-identifier hs-type">FunExp</span></a></span><span> </span><span id="local-6989586621684359457"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684359457"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621684359456"><span class="annot"><span class="annottext">[PrimExp v]
+</span><a href="#local-6989586621684359456"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span id="local-6989586621684359455"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359455"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-48"></span><span>    </span><span class="annot"><span class="annottext">Name
+-&gt; [(SubExp, Diet)]
+-&gt; [RetType (Rep m)]
+-&gt; (Safety, SrcLoc, [SrcLoc])
+-&gt; ExpT (Rep m)
+forall rep.
+Name
+-&gt; [(SubExp, Diet)]
+-&gt; [RetType rep]
+-&gt; (Safety, SrcLoc, [SrcLoc])
+-&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Apply"><span class="hs-identifier hs-var">Apply</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Name
+</span><a href="Language.Futhark.Core.html#nameFromString"><span class="hs-identifier hs-var">nameFromString</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684359457"><span class="hs-identifier hs-var">h</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(SubExp, Diet)]
+ -&gt; [RetType (Rep m)] -&gt; (Safety, SrcLoc, [SrcLoc]) -&gt; ExpT (Rep m))
+-&gt; m [(SubExp, Diet)]
+-&gt; m ([RetType (Rep m)]
+      -&gt; (Safety, SrcLoc, [SrcLoc]) -&gt; ExpT (Rep m))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">m [(SubExp, Diet)]
+</span><a href="#local-6989586621684359452"><span class="hs-identifier hs-var">args'</span></a></span><span> </span><span class="annot"><span class="annottext">m ([RetType (Rep m)] -&gt; (Safety, SrcLoc, [SrcLoc]) -&gt; ExpT (Rep m))
+-&gt; m [RetType (Rep m)]
+-&gt; m ((Safety, SrcLoc, [SrcLoc]) -&gt; ExpT (Rep m))
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">[RetType (Rep m)] -&gt; m [RetType (Rep m)]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; RetType (Rep m)
+forall rt. IsRetType rt =&gt; PrimType -&gt; rt
+</span><a href="Futhark.IR.RetType.html#primRetType"><span class="hs-identifier hs-var">primRetType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359455"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-49"></span><span>      </span><span class="annot"><span class="annottext">m ((Safety, SrcLoc, [SrcLoc]) -&gt; ExpT (Rep m))
+-&gt; m (Safety, SrcLoc, [SrcLoc]) -&gt; m (ExpT (Rep m))
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Safety, SrcLoc, [SrcLoc]) -&gt; m (Safety, SrcLoc, [SrcLoc])
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Safety
+</span><a href="Futhark.IR.Primitive.html#Safe"><span class="hs-identifier hs-var">Safe</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-keyword">where</span><span>
+</span><span id="line-51"></span><span>      </span><span id="local-6989586621684359452"><span class="annot"><span class="annottext">args' :: m [(SubExp, Diet)]
+</span><a href="#local-6989586621684359452"><span class="hs-identifier hs-var hs-var">args'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; [Diet] -&gt; [(SubExp, Diet)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; [Diet] -&gt; [(SubExp, Diet)])
+-&gt; m [SubExp] -&gt; m ([Diet] -&gt; [(SubExp, Diet)])
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(PrimExp v -&gt; m SubExp) -&gt; [PrimExp v] -&gt; m [SubExp]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; PrimExp v -&gt; m SubExp
+forall (m :: * -&gt; *) a.
+(MonadBuilder m, ToExp a) =&gt;
+String -&gt; a -&gt; m SubExp
+</span><a href="Futhark.Construct.html#toSubExp"><span class="hs-identifier hs-var">toSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;apply_arg&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[PrimExp v]
+</span><a href="#local-6989586621684359456"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">m ([Diet] -&gt; [(SubExp, Diet)]) -&gt; m [Diet] -&gt; m [(SubExp, Diet)]
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">[Diet] -&gt; m [Diet]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Diet -&gt; [Diet]
+forall a. a -&gt; [a]
+</span><span class="hs-identifier hs-var">repeat</span></span><span> </span><span class="annot"><span class="annottext">Diet
+</span><a href="Futhark.IR.Syntax.Core.html#Observe"><span class="hs-identifier hs-var">Observe</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var">toExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#LeafExp"><span class="hs-identifier hs-type">LeafExp</span></a></span><span> </span><span id="local-6989586621684359436"><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621684359436"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-53"></span><span>    </span><span class="annot"><span class="annottext">v -&gt; m (ExpT (Rep m))
+forall a (m :: * -&gt; *).
+(ToExp a, MonadBuilder m) =&gt;
+a -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var">toExp</span></a></span><span> </span><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621684359436"><span class="hs-identifier hs-var">v</span></a></span></span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span id="local-6989586621684359629"><span id="local-6989586621684359630"><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.Construct.html#ToExp"><span class="hs-identifier hs-type">ToExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359630"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Construct.html#ToExp"><span class="hs-identifier hs-type">ToExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359629"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359630"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-56"></span><span>  </span><span id="local-6989586621684359428"><span class="annot"><span class="annottext">toExp :: forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+TPrimExp t v -&gt; m (Exp (Rep m))
+</span><a href="#local-6989586621684359428"><span class="hs-identifier hs-var hs-var hs-var hs-var">toExp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp v -&gt; m (ExpT (Rep m))
+forall a (m :: * -&gt; *).
+(ToExp a, MonadBuilder m) =&gt;
+a -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#toExp"><span class="hs-identifier hs-var">toExp</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp v -&gt; m (ExpT (Rep m)))
+-&gt; (TPrimExp t v -&gt; PrimExp v) -&gt; TPrimExp t v -&gt; m (ExpT (Rep m))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp t v -&gt; PrimExp v
+forall t v. TPrimExp t v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#untyped"><span class="hs-identifier hs-var hs-var">untyped</span></a></span></span></span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- | Convert an expression to a 'PrimExp'.  The provided function is</span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- used to convert expressions that are not trivially 'PrimExp's.</span><span>
+</span><span id="line-60"></span><span class="hs-comment">-- This includes constants and variable names, which are passed as</span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- t'SubExp's.</span><span>
+</span><span id="line-62"></span><span id="local-6989586621684359619"><span id="local-6989586621684359621"><span id="local-6989586621684359622"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromExp"><span class="hs-identifier hs-type">primExpFromExp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Fail.MonadFail</span></span><span> </span><span class="annot"><a href="#local-6989586621684359622"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359621"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-64"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684359622"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359619"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-65"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359621"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-66"></span><span>  </span><span class="annot"><a href="#local-6989586621684359622"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359619"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-67"></span><span id="primExpFromExp"><span class="annot"><span class="annottext">primExpFromExp :: forall (m :: * -&gt; *) rep v.
+(MonadFail m, RepTypes rep) =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; Exp rep -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromExp"><span class="hs-identifier hs-var hs-var">primExpFromExp</span></a></span></span><span> </span><span id="local-6989586621684359392"><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359392"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BinOp"><span class="hs-identifier hs-type">BinOp</span></a></span><span> </span><span id="local-6989586621684359391"><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684359391"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621684359390"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359390"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684359389"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359389"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><span class="annottext">BinOp -&gt; PrimExp v -&gt; PrimExp v -&gt; PrimExp v
+forall v. BinOp -&gt; PrimExp v -&gt; PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#BinOpExp"><span class="hs-identifier hs-var">BinOpExp</span></a></span><span> </span><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684359391"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp v -&gt; PrimExp v -&gt; PrimExp v)
+-&gt; m (PrimExp v) -&gt; m (PrimExp v -&gt; PrimExp v)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+forall (m :: * -&gt; *) v.
+Applicative m =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var">primExpFromSubExpM</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359392"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359390"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">m (PrimExp v -&gt; PrimExp v) -&gt; m (PrimExp v) -&gt; m (PrimExp v)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+forall (m :: * -&gt; *) v.
+Applicative m =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var">primExpFromSubExpM</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359392"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359389"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-69"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromExp"><span class="hs-identifier hs-var">primExpFromExp</span></a></span><span> </span><span id="local-6989586621684359388"><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359388"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#CmpOp"><span class="hs-identifier hs-type">CmpOp</span></a></span><span> </span><span id="local-6989586621684359387"><span class="annot"><span class="annottext">CmpOp
+</span><a href="#local-6989586621684359387"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621684359386"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359386"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684359385"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359385"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-70"></span><span>  </span><span class="annot"><span class="annottext">CmpOp -&gt; PrimExp v -&gt; PrimExp v -&gt; PrimExp v
+forall v. CmpOp -&gt; PrimExp v -&gt; PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#CmpOpExp"><span class="hs-identifier hs-var">CmpOpExp</span></a></span><span> </span><span class="annot"><span class="annottext">CmpOp
+</span><a href="#local-6989586621684359387"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp v -&gt; PrimExp v -&gt; PrimExp v)
+-&gt; m (PrimExp v) -&gt; m (PrimExp v -&gt; PrimExp v)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+forall (m :: * -&gt; *) v.
+Applicative m =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var">primExpFromSubExpM</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359388"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359386"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">m (PrimExp v -&gt; PrimExp v) -&gt; m (PrimExp v) -&gt; m (PrimExp v)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+forall (m :: * -&gt; *) v.
+Applicative m =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var">primExpFromSubExpM</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359388"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359385"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-71"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromExp"><span class="hs-identifier hs-var">primExpFromExp</span></a></span><span> </span><span id="local-6989586621684359384"><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359384"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#UnOp"><span class="hs-identifier hs-type">UnOp</span></a></span><span> </span><span id="local-6989586621684359383"><span class="annot"><span class="annottext">UnOp
+</span><a href="#local-6989586621684359383"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621684359382"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359382"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-72"></span><span>  </span><span class="annot"><span class="annottext">UnOp -&gt; PrimExp v -&gt; PrimExp v
+forall v. UnOp -&gt; PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#UnOpExp"><span class="hs-identifier hs-var">UnOpExp</span></a></span><span> </span><span class="annot"><span class="annottext">UnOp
+</span><a href="#local-6989586621684359383"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp v -&gt; PrimExp v) -&gt; m (PrimExp v) -&gt; m (PrimExp v)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+forall (m :: * -&gt; *) v.
+Applicative m =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var">primExpFromSubExpM</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359384"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359382"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-73"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromExp"><span class="hs-identifier hs-var">primExpFromExp</span></a></span><span> </span><span id="local-6989586621684359381"><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359381"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#ConvOp"><span class="hs-identifier hs-type">ConvOp</span></a></span><span> </span><span id="local-6989586621684359380"><span class="annot"><span class="annottext">ConvOp
+</span><a href="#local-6989586621684359380"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621684359379"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359379"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-74"></span><span>  </span><span class="annot"><span class="annottext">ConvOp -&gt; PrimExp v -&gt; PrimExp v
+forall v. ConvOp -&gt; PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#ConvOpExp"><span class="hs-identifier hs-var">ConvOpExp</span></a></span><span> </span><span class="annot"><span class="annottext">ConvOp
+</span><a href="#local-6989586621684359380"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp v -&gt; PrimExp v) -&gt; m (PrimExp v) -&gt; m (PrimExp v)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+forall (m :: * -&gt; *) v.
+Applicative m =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var">primExpFromSubExpM</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359381"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359379"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-75"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromExp"><span class="hs-identifier hs-var">primExpFromExp</span></a></span><span> </span><span id="local-6989586621684359378"><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359378"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span id="local-6989586621684359377"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359377"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-76"></span><span>  </span><span class="annot"><span class="annottext">(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+forall (m :: * -&gt; *) v.
+Applicative m =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var">primExpFromSubExpM</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359378"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684359377"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-77"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromExp"><span class="hs-identifier hs-var">primExpFromExp</span></a></span><span> </span><span id="local-6989586621684359376"><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359376"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Apply"><span class="hs-identifier hs-type">Apply</span></a></span><span> </span><span id="local-6989586621684359375"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684359375"><span class="hs-identifier hs-var">fname</span></a></span></span><span> </span><span id="local-6989586621684359374"><span class="annot"><span class="annottext">[(SubExp, Diet)]
+</span><a href="#local-6989586621684359374"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span id="local-6989586621684359373"><span class="annot"><span class="annottext">[RetType rep]
+</span><a href="#local-6989586621684359373"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="annot"><span class="annottext">(Safety, SrcLoc, [SrcLoc])
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Name -&gt; Bool
+</span><a href="Futhark.IR.Prop.html#isBuiltInFunction"><span class="hs-identifier hs-var">isBuiltInFunction</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684359375"><span class="hs-identifier hs-var">fname</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-79"></span><span>    </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-type">Prim</span></a></span><span> </span><span id="local-6989586621684359370"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359370"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(RetType rep -&gt; DeclExtType) -&gt; [RetType rep] -&gt; [DeclExtType]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">RetType rep -&gt; DeclExtType
+forall t. DeclExtTyped t =&gt; t -&gt; DeclExtType
+</span><a href="Futhark.IR.Prop.Types.html#declExtTypeOf"><span class="hs-identifier hs-var">declExtTypeOf</span></a></span><span> </span><span class="annot"><span class="annottext">[RetType rep]
+</span><a href="#local-6989586621684359373"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-80"></span><span>    </span><span class="annot"><span class="annottext">String -&gt; [PrimExp v] -&gt; PrimType -&gt; PrimExp v
+forall v. String -&gt; [PrimExp v] -&gt; PrimType -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#FunExp"><span class="hs-identifier hs-var">FunExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; String
+</span><a href="Language.Futhark.Core.html#nameToString"><span class="hs-identifier hs-var">nameToString</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684359375"><span class="hs-identifier hs-var">fname</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([PrimExp v] -&gt; PrimType -&gt; PrimExp v)
+-&gt; m [PrimExp v] -&gt; m (PrimType -&gt; PrimExp v)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">((SubExp, Diet) -&gt; m (PrimExp v))
+-&gt; [(SubExp, Diet)] -&gt; m [PrimExp v]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+forall (m :: * -&gt; *) v.
+Applicative m =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var">primExpFromSubExpM</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359376"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; m (PrimExp v))
+-&gt; ((SubExp, Diet) -&gt; SubExp) -&gt; (SubExp, Diet) -&gt; m (PrimExp v)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(SubExp, Diet) -&gt; SubExp
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(SubExp, Diet)]
+</span><a href="#local-6989586621684359374"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">m (PrimType -&gt; PrimExp v) -&gt; m PrimType -&gt; m (PrimExp v)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; m PrimType
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359370"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromExp"><span class="hs-identifier hs-var">primExpFromExp</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">ExpT rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; m (PrimExp v)
+forall (m :: * -&gt; *) a. MonadFail m =&gt; String -&gt; m a
+</span><span class="hs-identifier hs-var">fail</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Not a PrimExp&quot;</span></span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span class="hs-comment">-- | Like 'primExpFromExp', but for a t'SubExp'.</span><span>
+</span><span id="line-84"></span><span id="local-6989586621684359611"><span id="local-6989586621684359612"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-type">primExpFromSubExpM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="annot"><a href="#local-6989586621684359612"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684359612"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359611"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684359612"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359611"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-85"></span><span id="primExpFromSubExpM"><span class="annot"><span class="annottext">primExpFromSubExpM :: forall (m :: * -&gt; *) v.
+Applicative m =&gt;
+(VName -&gt; m (PrimExp v)) -&gt; SubExp -&gt; m (PrimExp v)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var hs-var">primExpFromSubExpM</span></a></span></span><span> </span><span id="local-6989586621684359365"><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359365"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684359363"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684359363"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><a href="#local-6989586621684359365"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684359363"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-86"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExpM"><span class="hs-identifier hs-var">primExpFromSubExpM</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m (PrimExp v)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Constant"><span class="hs-identifier hs-type">Constant</span></a></span><span> </span><span id="local-6989586621684359362"><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684359362"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp v -&gt; m (PrimExp v)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(PrimExp v -&gt; m (PrimExp v)) -&gt; PrimExp v -&gt; m (PrimExp v)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimValue -&gt; PrimExp v
+forall v. PrimValue -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#ValueExp"><span class="hs-identifier hs-var">ValueExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684359362"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- | Convert t'SubExp's of a given type.</span><span>
+</span><span id="line-89"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExp"><span class="hs-identifier hs-type">primExpFromSubExp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Primitive.html#PrimType"><span class="hs-identifier hs-type">PrimType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span>
+</span><span id="line-90"></span><span id="primExpFromSubExp"><span class="annot"><span class="annottext">primExpFromSubExp :: PrimType -&gt; SubExp -&gt; PrimExp VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExp"><span class="hs-identifier hs-var hs-var">primExpFromSubExp</span></a></span></span><span> </span><span id="local-6989586621684359361"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359361"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684359360"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684359360"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; PrimType -&gt; PrimExp VName
+forall v. v -&gt; PrimType -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#LeafExp"><span class="hs-identifier hs-var">LeafExp</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684359360"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359361"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-91"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExp"><span class="hs-identifier hs-var">primExpFromSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Constant"><span class="hs-identifier hs-type">Constant</span></a></span><span> </span><span id="local-6989586621684359359"><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684359359"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimValue -&gt; PrimExp VName
+forall v. PrimValue -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#ValueExp"><span class="hs-identifier hs-var">ValueExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684359359"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span class="hs-comment">-- | Shorthand for constructing a 'TPrimExp' of type v'Int32'.</span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#pe32"><span class="hs-identifier hs-type">pe32</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int32</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span>
+</span><span id="line-95"></span><span id="pe32"><span class="annot"><span class="annottext">pe32 :: SubExp -&gt; TPrimExp Int32 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe32"><span class="hs-identifier hs-var hs-var">pe32</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp VName -&gt; TPrimExp Int32 VName
+forall v. PrimExp v -&gt; TPrimExp Int32 v
+</span><a href="Futhark.Analysis.PrimExp.html#isInt32"><span class="hs-identifier hs-var">isInt32</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp VName -&gt; TPrimExp Int32 VName)
+-&gt; (SubExp -&gt; PrimExp VName) -&gt; SubExp -&gt; TPrimExp Int32 VName
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; SubExp -&gt; PrimExp VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExp"><span class="hs-identifier hs-var">primExpFromSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int32"><span class="hs-identifier hs-var">int32</span></a></span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span class="hs-comment">-- | Shorthand for constructing a 'TPrimExp' of type v'Int32', from a leaf.</span><span>
+</span><span id="line-98"></span><span id="local-6989586621684359600"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#le32"><span class="hs-identifier hs-type">le32</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621684359600"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int32</span></span><span> </span><span class="annot"><a href="#local-6989586621684359600"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-99"></span><span id="le32"><span class="annot"><span class="annottext">le32 :: forall a. a -&gt; TPrimExp Int32 a
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#le32"><span class="hs-identifier hs-var hs-var">le32</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp a -&gt; TPrimExp Int32 a
+forall v. PrimExp v -&gt; TPrimExp Int32 v
+</span><a href="Futhark.Analysis.PrimExp.html#isInt32"><span class="hs-identifier hs-var">isInt32</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp a -&gt; TPrimExp Int32 a)
+-&gt; (a -&gt; PrimExp a) -&gt; a -&gt; TPrimExp Int32 a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; PrimExp a) -&gt; PrimType -&gt; a -&gt; PrimExp a
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; PrimExp a
+forall v. v -&gt; PrimType -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#LeafExp"><span class="hs-identifier hs-var">LeafExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int32"><span class="hs-identifier hs-var">int32</span></a></span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- | Shorthand for constructing a 'TPrimExp' of type v'Int64'.</span><span>
+</span><span id="line-102"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-type">pe64</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span>
+</span><span id="line-103"></span><span id="pe64"><span class="annot"><span class="annottext">pe64 :: SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var hs-var">pe64</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp VName -&gt; TPrimExp Int64 VName
+forall v. PrimExp v -&gt; TPrimExp Int64 v
+</span><a href="Futhark.Analysis.PrimExp.html#isInt64"><span class="hs-identifier hs-var">isInt64</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp VName -&gt; TPrimExp Int64 VName)
+-&gt; (SubExp -&gt; PrimExp VName) -&gt; SubExp -&gt; TPrimExp Int64 VName
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; SubExp -&gt; PrimExp VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExp"><span class="hs-identifier hs-var">primExpFromSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int64"><span class="hs-identifier hs-var">int64</span></a></span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="hs-comment">-- | Shorthand for constructing a 'TPrimExp' of type v'Int64', from a leaf.</span><span>
+</span><span id="line-106"></span><span id="local-6989586621684359594"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#le64"><span class="hs-identifier hs-type">le64</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621684359594"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span> </span><span class="annot"><a href="#local-6989586621684359594"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-107"></span><span id="le64"><span class="annot"><span class="annottext">le64 :: forall a. a -&gt; TPrimExp Int64 a
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#le64"><span class="hs-identifier hs-var hs-var">le64</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp a -&gt; TPrimExp Int64 a
+forall v. PrimExp v -&gt; TPrimExp Int64 v
+</span><a href="Futhark.Analysis.PrimExp.html#isInt64"><span class="hs-identifier hs-var">isInt64</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp a -&gt; TPrimExp Int64 a)
+-&gt; (a -&gt; PrimExp a) -&gt; a -&gt; TPrimExp Int64 a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; PrimExp a) -&gt; PrimType -&gt; a -&gt; PrimExp a
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; PrimExp a
+forall v. v -&gt; PrimType -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#LeafExp"><span class="hs-identifier hs-var">LeafExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int64"><span class="hs-identifier hs-var">int64</span></a></span><span>
+</span><span id="line-108"></span><span>
+</span><span id="line-109"></span><span class="hs-comment">-- | Shorthand for constructing a 'TPrimExp' of type 'Float32'.</span><span>
+</span><span id="line-110"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#f32pe"><span class="hs-identifier hs-type">f32pe</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Float</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span>
+</span><span id="line-111"></span><span id="f32pe"><span class="annot"><span class="annottext">f32pe :: SubExp -&gt; TPrimExp Float VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#f32pe"><span class="hs-identifier hs-var hs-var">f32pe</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp VName -&gt; TPrimExp Float VName
+forall v. PrimExp v -&gt; TPrimExp Float v
+</span><a href="Futhark.Analysis.PrimExp.html#isF32"><span class="hs-identifier hs-var">isF32</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp VName -&gt; TPrimExp Float VName)
+-&gt; (SubExp -&gt; PrimExp VName) -&gt; SubExp -&gt; TPrimExp Float VName
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; SubExp -&gt; PrimExp VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExp"><span class="hs-identifier hs-var">primExpFromSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#float32"><span class="hs-identifier hs-var">float32</span></a></span><span>
+</span><span id="line-112"></span><span>
+</span><span id="line-113"></span><span class="hs-comment">-- | Shorthand for constructing a 'TPrimExp' of type v'Float32', from a leaf.</span><span>
+</span><span id="line-114"></span><span id="local-6989586621684359591"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#f32le"><span class="hs-identifier hs-type">f32le</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621684359591"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Float</span></span><span> </span><span class="annot"><a href="#local-6989586621684359591"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-115"></span><span id="f32le"><span class="annot"><span class="annottext">f32le :: forall a. a -&gt; TPrimExp Float a
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#f32le"><span class="hs-identifier hs-var hs-var">f32le</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp a -&gt; TPrimExp Float a
+forall v. PrimExp v -&gt; TPrimExp Float v
+</span><a href="Futhark.Analysis.PrimExp.html#isF32"><span class="hs-identifier hs-var">isF32</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp a -&gt; TPrimExp Float a)
+-&gt; (a -&gt; PrimExp a) -&gt; a -&gt; TPrimExp Float a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; PrimExp a) -&gt; PrimType -&gt; a -&gt; PrimExp a
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; PrimExp a
+forall v. v -&gt; PrimType -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#LeafExp"><span class="hs-identifier hs-var">LeafExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#float32"><span class="hs-identifier hs-var">float32</span></a></span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span class="hs-comment">-- | Shorthand for constructing a 'TPrimExp' of type v'Float64'.</span><span>
+</span><span id="line-118"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#f64pe"><span class="hs-identifier hs-type">f64pe</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Double</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span>
+</span><span id="line-119"></span><span id="f64pe"><span class="annot"><span class="annottext">f64pe :: SubExp -&gt; TPrimExp Double VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#f64pe"><span class="hs-identifier hs-var hs-var">f64pe</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp VName -&gt; TPrimExp Double VName
+forall v. PrimExp v -&gt; TPrimExp Double v
+</span><a href="Futhark.Analysis.PrimExp.html#isF64"><span class="hs-identifier hs-var">isF64</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp VName -&gt; TPrimExp Double VName)
+-&gt; (SubExp -&gt; PrimExp VName) -&gt; SubExp -&gt; TPrimExp Double VName
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; SubExp -&gt; PrimExp VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpFromSubExp"><span class="hs-identifier hs-var">primExpFromSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#float64"><span class="hs-identifier hs-var">float64</span></a></span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="hs-comment">-- | Shorthand for constructing a 'TPrimExp' of type v'Float64', from a leaf.</span><span>
+</span><span id="line-122"></span><span id="local-6989586621684359588"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#f64le"><span class="hs-identifier hs-type">f64le</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621684359588"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Double</span></span><span> </span><span class="annot"><a href="#local-6989586621684359588"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-123"></span><span id="f64le"><span class="annot"><span class="annottext">f64le :: forall a. a -&gt; TPrimExp Double a
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#f64le"><span class="hs-identifier hs-var hs-var">f64le</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp a -&gt; TPrimExp Double a
+forall v. PrimExp v -&gt; TPrimExp Double v
+</span><a href="Futhark.Analysis.PrimExp.html#isF64"><span class="hs-identifier hs-var">isF64</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp a -&gt; TPrimExp Double a)
+-&gt; (a -&gt; PrimExp a) -&gt; a -&gt; TPrimExp Double a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; PrimExp a) -&gt; PrimType -&gt; a -&gt; PrimExp a
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; PrimExp a
+forall v. v -&gt; PrimType -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#LeafExp"><span class="hs-identifier hs-var">LeafExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#float64"><span class="hs-identifier hs-var">float64</span></a></span><span>
+</span><span id="line-124"></span><span>
+</span><span id="line-125"></span><span class="hs-comment">-- | Applying a monadic transformation to the leaves in a 'PrimExp'.</span><span>
+</span><span id="line-126"></span><span id="local-6989586621684359584"><span id="local-6989586621684359585"><span id="local-6989586621684359586"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-type">replaceInPrimExpM</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-127"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684359586"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-128"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684359585"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Primitive.html#PrimType"><span class="hs-identifier hs-type">PrimType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684359586"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359584"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-129"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359585"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-130"></span><span>  </span><span class="annot"><a href="#local-6989586621684359586"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359584"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-131"></span><span id="replaceInPrimExpM"><span class="annot"><span class="annottext">replaceInPrimExpM :: forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var hs-var">replaceInPrimExpM</span></a></span></span><span> </span><span id="local-6989586621684359326"><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359326"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#LeafExp"><span class="hs-identifier hs-type">LeafExp</span></a></span><span> </span><span id="local-6989586621684359325"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684359325"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684359324"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359324"><span class="hs-identifier hs-var">pt</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-132"></span><span>  </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359326"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684359325"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359324"><span class="hs-identifier hs-var">pt</span></a></span><span>
+</span><span id="line-133"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#ValueExp"><span class="hs-identifier hs-type">ValueExp</span></a></span><span> </span><span id="local-6989586621684359323"><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684359323"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-134"></span><span>  </span><span class="annot"><span class="annottext">PrimExp b -&gt; m (PrimExp b)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(PrimExp b -&gt; m (PrimExp b)) -&gt; PrimExp b -&gt; m (PrimExp b)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimValue -&gt; PrimExp b
+forall v. PrimValue -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#ValueExp"><span class="hs-identifier hs-var">ValueExp</span></a></span><span> </span><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684359323"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-135"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span id="local-6989586621684359322"><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359322"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#BinOpExp"><span class="hs-identifier hs-type">BinOpExp</span></a></span><span> </span><span id="local-6989586621684359321"><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684359321"><span class="hs-identifier hs-var">bop</span></a></span></span><span> </span><span id="local-6989586621684359320"><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359320"><span class="hs-identifier hs-var">pe1</span></a></span></span><span> </span><span id="local-6989586621684359319"><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359319"><span class="hs-identifier hs-var">pe2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-136"></span><span>  </span><span class="annot"><span class="annottext">PrimExp b -&gt; PrimExp b
+forall v. PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#constFoldPrimExp"><span class="hs-identifier hs-var">constFoldPrimExp</span></a></span><span>
+</span><span id="line-137"></span><span>    </span><span class="annot"><span class="annottext">(PrimExp b -&gt; PrimExp b) -&gt; m (PrimExp b) -&gt; m (PrimExp b)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BinOp -&gt; PrimExp b -&gt; PrimExp b -&gt; PrimExp b
+forall v. BinOp -&gt; PrimExp v -&gt; PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#BinOpExp"><span class="hs-identifier hs-var">BinOpExp</span></a></span><span> </span><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684359321"><span class="hs-identifier hs-var">bop</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp b -&gt; PrimExp b -&gt; PrimExp b)
+-&gt; m (PrimExp b) -&gt; m (PrimExp b -&gt; PrimExp b)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359322"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359320"><span class="hs-identifier hs-var">pe1</span></a></span><span> </span><span class="annot"><span class="annottext">m (PrimExp b -&gt; PrimExp b) -&gt; m (PrimExp b) -&gt; m (PrimExp b)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359322"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359319"><span class="hs-identifier hs-var">pe2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-138"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span id="local-6989586621684359317"><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359317"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#CmpOpExp"><span class="hs-identifier hs-type">CmpOpExp</span></a></span><span> </span><span id="local-6989586621684359316"><span class="annot"><span class="annottext">CmpOp
+</span><a href="#local-6989586621684359316"><span class="hs-identifier hs-var">cop</span></a></span></span><span> </span><span id="local-6989586621684359315"><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359315"><span class="hs-identifier hs-var">pe1</span></a></span></span><span> </span><span id="local-6989586621684359314"><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359314"><span class="hs-identifier hs-var">pe2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-139"></span><span>  </span><span class="annot"><span class="annottext">CmpOp -&gt; PrimExp b -&gt; PrimExp b -&gt; PrimExp b
+forall v. CmpOp -&gt; PrimExp v -&gt; PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#CmpOpExp"><span class="hs-identifier hs-var">CmpOpExp</span></a></span><span> </span><span class="annot"><span class="annottext">CmpOp
+</span><a href="#local-6989586621684359316"><span class="hs-identifier hs-var">cop</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp b -&gt; PrimExp b -&gt; PrimExp b)
+-&gt; m (PrimExp b) -&gt; m (PrimExp b -&gt; PrimExp b)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359317"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359315"><span class="hs-identifier hs-var">pe1</span></a></span><span> </span><span class="annot"><span class="annottext">m (PrimExp b -&gt; PrimExp b) -&gt; m (PrimExp b) -&gt; m (PrimExp b)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359317"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359314"><span class="hs-identifier hs-var">pe2</span></a></span><span>
+</span><span id="line-140"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span id="local-6989586621684359313"><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359313"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#UnOpExp"><span class="hs-identifier hs-type">UnOpExp</span></a></span><span> </span><span id="local-6989586621684359312"><span class="annot"><span class="annottext">UnOp
+</span><a href="#local-6989586621684359312"><span class="hs-identifier hs-var">uop</span></a></span></span><span> </span><span id="local-6989586621684359311"><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359311"><span class="hs-identifier hs-var">pe</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-141"></span><span>  </span><span class="annot"><span class="annottext">UnOp -&gt; PrimExp b -&gt; PrimExp b
+forall v. UnOp -&gt; PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#UnOpExp"><span class="hs-identifier hs-var">UnOpExp</span></a></span><span> </span><span class="annot"><span class="annottext">UnOp
+</span><a href="#local-6989586621684359312"><span class="hs-identifier hs-var">uop</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp b -&gt; PrimExp b) -&gt; m (PrimExp b) -&gt; m (PrimExp b)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359313"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359311"><span class="hs-identifier hs-var">pe</span></a></span><span>
+</span><span id="line-142"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span id="local-6989586621684359310"><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359310"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#ConvOpExp"><span class="hs-identifier hs-type">ConvOpExp</span></a></span><span> </span><span id="local-6989586621684359309"><span class="annot"><span class="annottext">ConvOp
+</span><a href="#local-6989586621684359309"><span class="hs-identifier hs-var">cop</span></a></span></span><span> </span><span id="local-6989586621684359308"><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359308"><span class="hs-identifier hs-var">pe</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-143"></span><span>  </span><span class="annot"><span class="annottext">ConvOp -&gt; PrimExp b -&gt; PrimExp b
+forall v. ConvOp -&gt; PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#ConvOpExp"><span class="hs-identifier hs-var">ConvOpExp</span></a></span><span> </span><span class="annot"><span class="annottext">ConvOp
+</span><a href="#local-6989586621684359309"><span class="hs-identifier hs-var">cop</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimExp b -&gt; PrimExp b) -&gt; m (PrimExp b) -&gt; m (PrimExp b)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359310"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359308"><span class="hs-identifier hs-var">pe</span></a></span><span>
+</span><span id="line-144"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span id="local-6989586621684359307"><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359307"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#FunExp"><span class="hs-identifier hs-type">FunExp</span></a></span><span> </span><span id="local-6989586621684359306"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684359306"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621684359305"><span class="annot"><span class="annottext">[PrimExp a]
+</span><a href="#local-6989586621684359305"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span id="local-6989586621684359304"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359304"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-145"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; [PrimExp b] -&gt; PrimType -&gt; PrimExp b
+forall v. String -&gt; [PrimExp v] -&gt; PrimType -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#FunExp"><span class="hs-identifier hs-var">FunExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684359306"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">([PrimExp b] -&gt; PrimType -&gt; PrimExp b)
+-&gt; m [PrimExp b] -&gt; m (PrimType -&gt; PrimExp b)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(PrimExp a -&gt; m (PrimExp b)) -&gt; [PrimExp a] -&gt; m [PrimExp b]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359307"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[PrimExp a]
+</span><a href="#local-6989586621684359305"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">m (PrimType -&gt; PrimExp b) -&gt; m PrimType -&gt; m (PrimExp b)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; m PrimType
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359304"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-146"></span><span>
+</span><span id="line-147"></span><span class="hs-comment">-- | As 'replaceInPrimExpM', but in the identity monad.</span><span>
+</span><span id="line-148"></span><span id="local-6989586621684359578"><span id="local-6989586621684359579"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExp"><span class="hs-identifier hs-type">replaceInPrimExp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-149"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684359579"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Primitive.html#PrimType"><span class="hs-identifier hs-type">PrimType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359578"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-150"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359579"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-151"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359578"><span class="hs-identifier hs-type">b</span></a></span></span></span><span>
+</span><span id="line-152"></span><span id="replaceInPrimExp"><span class="annot"><span class="annottext">replaceInPrimExp :: forall a b. (a -&gt; PrimType -&gt; PrimExp b) -&gt; PrimExp a -&gt; PrimExp b
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExp"><span class="hs-identifier hs-var hs-var">replaceInPrimExp</span></a></span></span><span> </span><span id="local-6989586621684359300"><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; PrimExp b
+</span><a href="#local-6989586621684359300"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684359299"><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359299"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Identity (PrimExp b) -&gt; PrimExp b
+forall a. Identity a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">runIdentity</span></span><span> </span><span class="annot"><span class="annottext">(Identity (PrimExp b) -&gt; PrimExp b)
+-&gt; Identity (PrimExp b) -&gt; PrimExp b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; PrimType -&gt; Identity (PrimExp b))
+-&gt; PrimExp a -&gt; Identity (PrimExp b)
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; PrimType -&gt; m (PrimExp b)) -&gt; PrimExp a -&gt; m (PrimExp b)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExpM"><span class="hs-identifier hs-var">replaceInPrimExpM</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; Identity (PrimExp b)
+forall {m :: * -&gt; *}. Monad m =&gt; a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359297"><span class="hs-identifier hs-var">f'</span></a></span><span> </span><span class="annot"><span class="annottext">PrimExp a
+</span><a href="#local-6989586621684359299"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-153"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-154"></span><span>    </span><span id="local-6989586621684359297"><span class="annot"><span class="annottext">f' :: a -&gt; PrimType -&gt; m (PrimExp b)
+</span><a href="#local-6989586621684359297"><span class="hs-identifier hs-var hs-var">f'</span></a></span></span><span> </span><span id="local-6989586621684359294"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684359294"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684359293"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359293"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrimExp b -&gt; m (PrimExp b)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(PrimExp b -&gt; m (PrimExp b)) -&gt; PrimExp b -&gt; m (PrimExp b)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; PrimType -&gt; PrimExp b
+</span><a href="#local-6989586621684359300"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684359294"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359293"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-155"></span><span>
+</span><span id="line-156"></span><span class="hs-comment">-- | Substituting names in a PrimExp with other PrimExps</span><span>
+</span><span id="line-157"></span><span id="local-6989586621684359572"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#substituteInPrimExp"><span class="hs-identifier hs-type">substituteInPrimExp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-158"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621684359572"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-159"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="#local-6989586621684359572"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359572"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-160"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359572"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-161"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#PrimExp"><span class="hs-identifier hs-type">PrimExp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359572"><span class="hs-identifier hs-type">v</span></a></span></span><span>
+</span><span id="line-162"></span><span id="substituteInPrimExp"><span class="annot"><span class="annottext">substituteInPrimExp :: forall v. Ord v =&gt; Map v (PrimExp v) -&gt; PrimExp v -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#substituteInPrimExp"><span class="hs-identifier hs-var hs-var">substituteInPrimExp</span></a></span></span><span> </span><span id="local-6989586621684359290"><span class="annot"><span class="annottext">Map v (PrimExp v)
+</span><a href="#local-6989586621684359290"><span class="hs-identifier hs-var">tab</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(v -&gt; PrimType -&gt; PrimExp v) -&gt; PrimExp v -&gt; PrimExp v
+forall a b. (a -&gt; PrimType -&gt; PrimExp b) -&gt; PrimExp a -&gt; PrimExp b
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#replaceInPrimExp"><span class="hs-identifier hs-var">replaceInPrimExp</span></a></span><span> </span><span class="annot"><span class="annottext">((v -&gt; PrimType -&gt; PrimExp v) -&gt; PrimExp v -&gt; PrimExp v)
+-&gt; (v -&gt; PrimType -&gt; PrimExp v) -&gt; PrimExp v -&gt; PrimExp v
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684359289"><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621684359289"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684359288"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359288"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-163"></span><span>  </span><span class="annot"><span class="annottext">PrimExp v -&gt; Maybe (PrimExp v) -&gt; PrimExp v
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">v -&gt; PrimType -&gt; PrimExp v
+forall v. v -&gt; PrimType -&gt; PrimExp v
+</span><a href="Futhark.Analysis.PrimExp.html#LeafExp"><span class="hs-identifier hs-var">LeafExp</span></a></span><span> </span><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621684359289"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684359288"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Maybe (PrimExp v) -&gt; PrimExp v) -&gt; Maybe (PrimExp v) -&gt; PrimExp v
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">v -&gt; Map v (PrimExp v) -&gt; Maybe (PrimExp v)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">v
+</span><a href="#local-6989586621684359289"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Map v (PrimExp v)
+</span><a href="#local-6989586621684359290"><span class="hs-identifier hs-var">tab</span></a></span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span class="hs-comment">-- | Convert a t'SubExp' slice to a 'PrimExp' slice.</span><span>
+</span><span id="line-166"></span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#primExpSlice"><span class="hs-identifier hs-type">primExpSlice</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-type">Slice</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-type">Slice</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-167"></span><span id="primExpSlice"><span class="annot"><span class="annottext">primExpSlice :: Slice SubExp -&gt; Slice (TPrimExp Int64 VName)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#primExpSlice"><span class="hs-identifier hs-var hs-var">primExpSlice</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TPrimExp Int64 VName)
+-&gt; Slice SubExp -&gt; Slice (TPrimExp Int64 VName)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TPrimExp Int64 VName
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#pe64"><span class="hs-identifier hs-var">pe64</span></a></span><span>
+</span><span id="line-168"></span><span>
+</span><span id="line-169"></span><span class="hs-comment">-- | Convert a 'PrimExp' slice to a t'SubExp' slice.</span><span>
+</span><span id="line-170"></span><span id="local-6989586621684359563"><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html#subExpSlice"><span class="hs-identifier hs-type">subExpSlice</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684359563"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-type">Slice</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.PrimExp.html#TPrimExp"><span class="hs-identifier hs-type">TPrimExp</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684359563"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-type">Slice</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-171"></span><span id="subExpSlice"><span class="annot"><span class="annottext">subExpSlice :: forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Slice (TPrimExp Int64 VName) -&gt; m (Slice SubExp)
+</span><a href="Futhark.Analysis.PrimExp.Convert.html#subExpSlice"><span class="hs-identifier hs-var hs-var">subExpSlice</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(TPrimExp Int64 VName -&gt; m SubExp)
+-&gt; Slice (TPrimExp Int64 VName) -&gt; m (Slice SubExp)
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f (t b)
+</span><span class="hs-identifier hs-var">traverse</span></span><span> </span><span class="annot"><span class="annottext">((TPrimExp Int64 VName -&gt; m SubExp)
+ -&gt; Slice (TPrimExp Int64 VName) -&gt; m (Slice SubExp))
+-&gt; (TPrimExp Int64 VName -&gt; m SubExp)
+-&gt; Slice (TPrimExp Int64 VName)
+-&gt; m (Slice SubExp)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; TPrimExp Int64 VName -&gt; m SubExp
+forall (m :: * -&gt; *) a.
+(MonadBuilder m, ToExp a) =&gt;
+String -&gt; a -&gt; m SubExp
+</span><a href="Futhark.Construct.html#toSubExp"><span class="hs-identifier hs-var">toSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;slice&quot;</span></span><span>
+</span><span id="line-172"></span></pre></body></html>

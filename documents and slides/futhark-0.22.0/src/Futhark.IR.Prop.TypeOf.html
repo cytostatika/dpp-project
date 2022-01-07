@@ -1,0 +1,754 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE MultiParamTypeClasses #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- | This module provides facilities for obtaining the types of</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- various Futhark constructs.  Typically, you will need to execute</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- these in a context where type information is available as a</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- 'Scope'; usually by using a monad that is an instance of</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- 'HasScope'.  The information is returned as a list of 'ExtType'</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- values - one for each of the values the Futhark construct returns.</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- Some constructs (such as subexpressions) can produce only a single</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- value, and their typing functions hence do not return a list.</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- Some representations may have more specialised facilities enabling</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- even more information - for example,</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- &quot;Futhark.IR.Mem&quot; exposes functionality for</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- also obtaining information about the storage location of results.</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.IR.Prop.TypeOf</span><span>
+</span><span id="line-20"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier">expExtType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#expExtTypeSize"><span class="hs-identifier">expExtTypeSize</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier">subExpType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#subExpResType"><span class="hs-identifier">subExpResType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-24"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier">basicOpType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#mapType"><span class="hs-identifier">mapType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Return type</span></span><span>
+</span><span id="line-28"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Futhark.IR.RetType.html"><span class="hs-identifier">Futhark.IR.RetType</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Type environment</span></span><span>
+</span><span id="line-31"></span><span>    </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html"><span class="hs-identifier">Futhark.IR.Prop.Scope</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Extensibility</span></span><span>
+</span><span id="line-34"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#TypedOp"><span class="hs-identifier">TypedOp</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-35"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Constants.html"><span class="hs-identifier">Futhark.IR.Prop.Constants</span></a></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Reshape.html"><span class="hs-identifier">Futhark.IR.Prop.Reshape</span></a></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html"><span class="hs-identifier">Futhark.IR.Prop.Scope</span></a></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Types.html"><span class="hs-identifier">Futhark.IR.Prop.Types</span></a></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.RetType.html"><span class="hs-identifier">Futhark.IR.RetType</span></a></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html"><span class="hs-identifier">Futhark.IR.Syntax</span></a></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- | The type of a subexpression.</span><span>
+</span><span id="line-46"></span><span id="local-6989586621684338378"><span id="local-6989586621684338379"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier hs-type">subExpType</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338379"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338378"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684338378"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span></span></span><span>
+</span><span id="line-47"></span><span id="subExpType"><span class="annot"><span class="annottext">subExpType :: forall t (m :: * -&gt; *). HasScope t m =&gt; SubExp -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier hs-var hs-var">subExpType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Constant"><span class="hs-identifier hs-type">Constant</span></a></span><span> </span><span id="local-6989586621684338177"><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684338177"><span class="hs-identifier hs-var">val</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Type -&gt; m Type
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; m Type) -&gt; Type -&gt; m Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; Type) -&gt; PrimType -&gt; Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimValue -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#primValueType"><span class="hs-identifier hs-var">primValueType</span></a></span><span> </span><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684338177"><span class="hs-identifier hs-var">val</span></a></span><span>
+</span><span id="line-48"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier hs-var">subExpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684338173"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338173"><span class="hs-identifier hs-var">name</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338173"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- | Type type of a 'SubExpRes' - not that this might refer to names</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- bound in the body containing the result.</span><span>
+</span><span id="line-52"></span><span id="local-6989586621684338359"><span id="local-6989586621684338360"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#subExpResType"><span class="hs-identifier hs-type">subExpResType</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338360"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338359"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#SubExpRes"><span class="hs-identifier hs-type">SubExpRes</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684338359"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span></span></span><span>
+</span><span id="line-53"></span><span id="subExpResType"><span class="annot"><span class="annottext">subExpResType :: forall t (m :: * -&gt; *). HasScope t m =&gt; SubExpRes -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpResType"><span class="hs-identifier hs-var hs-var">subExpResType</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; m Type
+forall t (m :: * -&gt; *). HasScope t m =&gt; SubExp -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier hs-var">subExpType</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; m Type) -&gt; (SubExpRes -&gt; SubExp) -&gt; SubExpRes -&gt; m Type
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SubExpRes -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.html#resSubExp"><span class="hs-identifier hs-var hs-var">resSubExp</span></a></span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- | @mapType f arrts@ wraps each element in the return type of @f@ in</span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- an array with size equal to the outermost dimension of the first</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- element of @arrts@.</span><span>
+</span><span id="line-58"></span><span id="local-6989586621684338352"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#mapType"><span class="hs-identifier hs-type">mapType</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338352"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-59"></span><span id="mapType"><span class="annot"><span class="annottext">mapType :: forall rep. SubExp -&gt; Lambda rep -&gt; [Type]
+</span><a href="Futhark.IR.Prop.TypeOf.html#mapType"><span class="hs-identifier hs-var hs-var">mapType</span></a></span></span><span> </span><span id="local-6989586621684338165"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338165"><span class="hs-identifier hs-var">outersize</span></a></span></span><span> </span><span id="local-6989586621684338164"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684338164"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">Type -&gt; Shape -&gt; NoUniqueness -&gt; Type
+forall shape u_unused u.
+ArrayShape shape =&gt;
+TypeBase shape u_unused -&gt; shape -&gt; u -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Prop.Types.html#arrayOf"><span class="hs-identifier hs-var">arrayOf</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338162"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; Shape
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338165"><span class="hs-identifier hs-var">outersize</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">NoUniqueness
+</span><a href="Futhark.IR.Syntax.Core.html#NoUniqueness"><span class="hs-identifier hs-var">NoUniqueness</span></a></span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span id="local-6989586621684338162"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338162"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684338164"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-special">]</span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- | The type of a primitive operation.</span><span>
+</span><span id="line-65"></span><span id="local-6989586621684338338"><span id="local-6989586621684338339"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-type">basicOpType</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338339"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338338"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684338338"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">]</span></span></span><span>
+</span><span id="line-66"></span><span id="basicOpType"><span class="annot"><span class="annottext">basicOpType :: forall rep (m :: * -&gt; *). HasScope rep m =&gt; BasicOp -&gt; m [Type]
+</span><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var hs-var">basicOpType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span id="local-6989586621684338091"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338091"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-67"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; m Type
+forall t (m :: * -&gt; *). HasScope t m =&gt; SubExp -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier hs-var">subExpType</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338091"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-68"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Opaque"><span class="hs-identifier hs-type">Opaque</span></a></span><span> </span><span class="annot"><span class="annottext">OpaqueOp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684338088"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338088"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; m Type
+forall t (m :: * -&gt; *). HasScope t m =&gt; SubExp -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier hs-var">subExpType</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338088"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-70"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#ArrayLit"><span class="hs-identifier hs-type">ArrayLit</span></a></span><span> </span><span id="local-6989586621684338086"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684338086"><span class="hs-identifier hs-var">es</span></a></span></span><span> </span><span id="local-6989586621684338085"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338085"><span class="hs-identifier hs-var">rt</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-71"></span><span>  </span><span class="annot"><span class="annottext">[Type] -&gt; m [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Type -&gt; Shape -&gt; NoUniqueness -&gt; Type
+forall shape u_unused u.
+ArrayShape shape =&gt;
+TypeBase shape u_unused -&gt; shape -&gt; u -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Prop.Types.html#arrayOf"><span class="hs-identifier hs-var">arrayOf</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338085"><span class="hs-identifier hs-var">rt</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; Shape
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338084"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">NoUniqueness
+</span><a href="Futhark.IR.Syntax.Core.html#NoUniqueness"><span class="hs-identifier hs-var">NoUniqueness</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-72"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-73"></span><span>    </span><span id="local-6989586621684338084"><span class="annot"><span class="annottext">n :: SubExp
+</span><a href="#local-6989586621684338084"><span class="hs-identifier hs-var hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; SubExp) -&gt; Integer -&gt; SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Integer) -&gt; Int -&gt; Integer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684338086"><span class="hs-identifier hs-var">es</span></a></span><span>
+</span><span id="line-74"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BinOp"><span class="hs-identifier hs-type">BinOp</span></a></span><span> </span><span id="local-6989586621684338079"><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684338079"><span class="hs-identifier hs-var">bop</span></a></span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-75"></span><span>  </span><span class="annot"><span class="annottext">[Type] -&gt; m [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; Type) -&gt; PrimType -&gt; Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BinOp -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#binOpType"><span class="hs-identifier hs-var">binOpType</span></a></span><span> </span><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684338079"><span class="hs-identifier hs-var">bop</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-76"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#UnOp"><span class="hs-identifier hs-type">UnOp</span></a></span><span> </span><span class="annot"><span class="annottext">UnOp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684338076"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338076"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-77"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; m Type
+forall t (m :: * -&gt; *). HasScope t m =&gt; SubExp -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier hs-var">subExpType</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338076"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-78"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#CmpOp"><span class="hs-identifier hs-type">CmpOp</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-79"></span><span>  </span><span class="annot"><span class="annottext">[Type] -&gt; m [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Primitive.html#Bool"><span class="hs-identifier hs-var">Bool</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-80"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#ConvOp"><span class="hs-identifier hs-type">ConvOp</span></a></span><span> </span><span id="local-6989586621684338072"><span class="annot"><span class="annottext">ConvOp
+</span><a href="#local-6989586621684338072"><span class="hs-identifier hs-var">conv</span></a></span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-81"></span><span>  </span><span class="annot"><span class="annottext">[Type] -&gt; m [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; Type) -&gt; PrimType -&gt; Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(PrimType, PrimType) -&gt; PrimType
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">((PrimType, PrimType) -&gt; PrimType)
+-&gt; (PrimType, PrimType) -&gt; PrimType
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ConvOp -&gt; (PrimType, PrimType)
+</span><a href="Futhark.IR.Primitive.html#convOpType"><span class="hs-identifier hs-var">convOpType</span></a></span><span> </span><span class="annot"><span class="annottext">ConvOp
+</span><a href="#local-6989586621684338072"><span class="hs-identifier hs-var">conv</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-82"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Index"><span class="hs-identifier hs-type">Index</span></a></span><span> </span><span id="local-6989586621684338069"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338069"><span class="hs-identifier hs-var">ident</span></a></span></span><span> </span><span id="local-6989586621684338068"><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684338068"><span class="hs-identifier hs-var">slice</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-83"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+</span><a href="#local-6989586621684338067"><span class="hs-identifier hs-var">result</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338069"><span class="hs-identifier hs-var">ident</span></a></span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-85"></span><span>    </span><span id="local-6989586621684338067"><span class="annot"><span class="annottext">result :: Type -&gt; [Type]
+</span><a href="#local-6989586621684338067"><span class="hs-identifier hs-var hs-var">result</span></a></span></span><span> </span><span id="local-6989586621684338066"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338066"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; PrimType
+forall shape u. TypeBase shape u -&gt; PrimType
+</span><a href="Futhark.IR.Prop.Types.html#elemType"><span class="hs-identifier hs-var">elemType</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338066"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Type -&gt; Shape -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#arrayOfShape"><span class="hs-operator hs-var">`arrayOfShape`</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684338063"><span class="hs-identifier hs-var">shape</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-86"></span><span>    </span><span id="local-6989586621684338063"><span class="annot"><span class="annottext">shape :: Shape
+</span><a href="#local-6989586621684338063"><span class="hs-identifier hs-var hs-var">shape</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Shape
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; Shape) -&gt; [SubExp] -&gt; Shape
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Slice SubExp -&gt; [SubExp]
+forall d. Slice d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#sliceDims"><span class="hs-identifier hs-var">sliceDims</span></a></span><span> </span><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684338068"><span class="hs-identifier hs-var">slice</span></a></span><span>
+</span><span id="line-87"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Update"><span class="hs-identifier hs-type">Update</span></a></span><span> </span><span class="annot"><span class="annottext">Safety
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684338060"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338060"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span class="annot"><span class="annottext">Slice SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-88"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338060"><span class="hs-identifier hs-var">src</span></a></span><span>
+</span><span id="line-89"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FlatIndex"><span class="hs-identifier hs-type">FlatIndex</span></a></span><span> </span><span id="local-6989586621684338058"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338058"><span class="hs-identifier hs-var">ident</span></a></span></span><span> </span><span id="local-6989586621684338057"><span class="annot"><span class="annottext">FlatSlice SubExp
+</span><a href="#local-6989586621684338057"><span class="hs-identifier hs-var">slice</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-90"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+</span><a href="#local-6989586621684338056"><span class="hs-identifier hs-var">result</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338058"><span class="hs-identifier hs-var">ident</span></a></span><span>
+</span><span id="line-91"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-92"></span><span>    </span><span id="local-6989586621684338056"><span class="annot"><span class="annottext">result :: Type -&gt; [Type]
+</span><a href="#local-6989586621684338056"><span class="hs-identifier hs-var hs-var">result</span></a></span></span><span> </span><span id="local-6989586621684338055"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338055"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; PrimType
+forall shape u. TypeBase shape u -&gt; PrimType
+</span><a href="Futhark.IR.Prop.Types.html#elemType"><span class="hs-identifier hs-var">elemType</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338055"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Type -&gt; Shape -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#arrayOfShape"><span class="hs-operator hs-var">`arrayOfShape`</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684338054"><span class="hs-identifier hs-var">shape</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-93"></span><span>    </span><span id="local-6989586621684338054"><span class="annot"><span class="annottext">shape :: Shape
+</span><a href="#local-6989586621684338054"><span class="hs-identifier hs-var hs-var">shape</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Shape
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; Shape) -&gt; [SubExp] -&gt; Shape
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FlatSlice SubExp -&gt; [SubExp]
+forall d. FlatSlice d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#flatSliceDims"><span class="hs-identifier hs-var">flatSliceDims</span></a></span><span> </span><span class="annot"><span class="annottext">FlatSlice SubExp
+</span><a href="#local-6989586621684338057"><span class="hs-identifier hs-var">slice</span></a></span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FlatUpdate"><span class="hs-identifier hs-type">FlatUpdate</span></a></span><span> </span><span id="local-6989586621684338051"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338051"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span class="annot"><span class="annottext">FlatSlice SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-95"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338051"><span class="hs-identifier hs-var">src</span></a></span><span>
+</span><span id="line-96"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Iota"><span class="hs-identifier hs-type">Iota</span></a></span><span> </span><span id="local-6989586621684338049"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338049"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684338048"><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684338048"><span class="hs-identifier hs-var">et</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-97"></span><span>  </span><span class="annot"><span class="annottext">[Type] -&gt; m [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">TypeBase Shape Any -&gt; Shape -&gt; NoUniqueness -&gt; Type
+forall shape u_unused u.
+ArrayShape shape =&gt;
+TypeBase shape u_unused -&gt; shape -&gt; u -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Prop.Types.html#arrayOf"><span class="hs-identifier hs-var">arrayOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimType -&gt; TypeBase Shape Any
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-var">IntType</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="#local-6989586621684338048"><span class="hs-identifier hs-var">et</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; Shape
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338049"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">NoUniqueness
+</span><a href="Futhark.IR.Syntax.Core.html#NoUniqueness"><span class="hs-identifier hs-var">NoUniqueness</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-98"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Replicate"><span class="hs-identifier hs-type">Replicate</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span id="local-6989586621684338045"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338045"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-99"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; m Type
+forall t (m :: * -&gt; *). HasScope t m =&gt; SubExp -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier hs-var">subExpType</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338045"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-100"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Replicate"><span class="hs-identifier hs-type">Replicate</span></a></span><span> </span><span id="local-6989586621684338044"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684338044"><span class="hs-identifier hs-var">shape</span></a></span></span><span> </span><span id="local-6989586621684338043"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338043"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-101"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; (Type -&gt; Type) -&gt; Type -&gt; [Type]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; Shape -&gt; Type) -&gt; Shape -&gt; Type -&gt; Type
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; Shape -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#arrayOfShape"><span class="hs-identifier hs-var">arrayOfShape</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684338044"><span class="hs-identifier hs-var">shape</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; m Type
+forall t (m :: * -&gt; *). HasScope t m =&gt; SubExp -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpType"><span class="hs-identifier hs-var">subExpType</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338043"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-102"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Scratch"><span class="hs-identifier hs-type">Scratch</span></a></span><span> </span><span id="local-6989586621684338040"><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684338040"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621684338039"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684338039"><span class="hs-identifier hs-var">shape</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-103"></span><span>  </span><span class="annot"><span class="annottext">[Type] -&gt; m [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">TypeBase Shape Any -&gt; Shape -&gt; NoUniqueness -&gt; Type
+forall shape u_unused u.
+ArrayShape shape =&gt;
+TypeBase shape u_unused -&gt; shape -&gt; u -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Prop.Types.html#arrayOf"><span class="hs-identifier hs-var">arrayOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimType -&gt; TypeBase Shape Any
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="#local-6989586621684338040"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; Shape
+forall d. [d] -&gt; ShapeBase d
+</span><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-var">Shape</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684338039"><span class="hs-identifier hs-var">shape</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">NoUniqueness
+</span><a href="Futhark.IR.Syntax.Core.html#NoUniqueness"><span class="hs-identifier hs-var">NoUniqueness</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-104"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Reshape"><span class="hs-identifier hs-type">Reshape</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span id="local-6989586621684338037"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338037"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-105"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall {shape} {u} {shape} {u}.
+TypeBase shape u -&gt; [TypeBase shape u]
+</span><a href="#local-6989586621684338036"><span class="hs-identifier hs-var">result</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338037"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-106"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-107"></span><span>    </span><span id="local-6989586621684338036"><span class="annot"><span class="annottext">result :: TypeBase shape u -&gt; [TypeBase shape u]
+</span><a href="#local-6989586621684338036"><span class="hs-identifier hs-var hs-var">result</span></a></span></span><span> </span><span id="local-6989586621684338035"><span class="annot"><span class="annottext">TypeBase shape u
+</span><a href="#local-6989586621684338035"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; TypeBase shape u
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; TypeBase shape u) -&gt; PrimType -&gt; TypeBase shape u
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TypeBase shape u -&gt; PrimType
+forall shape u. TypeBase shape u -&gt; PrimType
+</span><a href="Futhark.IR.Prop.Types.html#elemType"><span class="hs-identifier hs-var">elemType</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase shape u
+</span><a href="#local-6989586621684338035"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-108"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Reshape"><span class="hs-identifier hs-type">Reshape</span></a></span><span> </span><span id="local-6989586621684338034"><span class="annot"><span class="annottext">[DimChange SubExp]
+</span><a href="#local-6989586621684338034"><span class="hs-identifier hs-var">shape</span></a></span></span><span> </span><span id="local-6989586621684338033"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338033"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-109"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+</span><a href="#local-6989586621684338032"><span class="hs-identifier hs-var">result</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338033"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-111"></span><span>    </span><span id="local-6989586621684338032"><span class="annot"><span class="annottext">result :: Type -&gt; [Type]
+</span><a href="#local-6989586621684338032"><span class="hs-identifier hs-var hs-var">result</span></a></span></span><span> </span><span id="local-6989586621684338031"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338031"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338031"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Type -&gt; Shape -&gt; Type
+forall newshape oldshape u.
+ArrayShape newshape =&gt;
+TypeBase oldshape u -&gt; newshape -&gt; TypeBase newshape u
+</span><a href="Futhark.IR.Prop.Types.html#setArrayShape"><span class="hs-operator hs-var">`setArrayShape`</span></a></span><span> </span><span class="annot"><span class="annottext">[DimChange SubExp] -&gt; Shape
+</span><a href="Futhark.IR.Prop.Reshape.html#newShape"><span class="hs-identifier hs-var">newShape</span></a></span><span> </span><span class="annot"><span class="annottext">[DimChange SubExp]
+</span><a href="#local-6989586621684338034"><span class="hs-identifier hs-var">shape</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-112"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Rearrange"><span class="hs-identifier hs-type">Rearrange</span></a></span><span> </span><span id="local-6989586621684338027"><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684338027"><span class="hs-identifier hs-var">perm</span></a></span></span><span> </span><span id="local-6989586621684338026"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338026"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-113"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+</span><a href="#local-6989586621684338025"><span class="hs-identifier hs-var">result</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338026"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-114"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-115"></span><span>    </span><span id="local-6989586621684338025"><span class="annot"><span class="annottext">result :: Type -&gt; [Type]
+</span><a href="#local-6989586621684338025"><span class="hs-identifier hs-var hs-var">result</span></a></span></span><span> </span><span id="local-6989586621684338024"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338024"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">[Int] -&gt; Type -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#rearrangeType"><span class="hs-identifier hs-var">rearrangeType</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684338027"><span class="hs-identifier hs-var">perm</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338024"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-116"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Rotate"><span class="hs-identifier hs-type">Rotate</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684338021"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338021"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-117"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338021"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-118"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Concat"><span class="hs-identifier hs-type">Concat</span></a></span><span> </span><span id="local-6989586621684338019"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684338019"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621684338018"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338018"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684338017"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338017"><span class="hs-identifier hs-var">ressize</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-119"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+</span><a href="#local-6989586621684338016"><span class="hs-identifier hs-var">result</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338018"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-120"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-121"></span><span>    </span><span id="local-6989586621684338016"><span class="annot"><span class="annottext">result :: Type -&gt; [Type]
+</span><a href="#local-6989586621684338016"><span class="hs-identifier hs-var hs-var">result</span></a></span></span><span> </span><span id="local-6989586621684338015"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338015"><span class="hs-identifier hs-var">xt</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int -&gt; Type -&gt; SubExp -&gt; Type
+forall d u.
+ArrayShape (ShapeBase d) =&gt;
+Int -&gt; TypeBase (ShapeBase d) u -&gt; d -&gt; TypeBase (ShapeBase d) u
+</span><a href="Futhark.IR.Prop.Types.html#setDimSize"><span class="hs-identifier hs-var">setDimSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684338019"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684338015"><span class="hs-identifier hs-var">xt</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684338017"><span class="hs-identifier hs-var">ressize</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-122"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Copy"><span class="hs-identifier hs-type">Copy</span></a></span><span> </span><span id="local-6989586621684338012"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338012"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-123"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338012"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-124"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Manifest"><span class="hs-identifier hs-type">Manifest</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684338010"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338010"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-125"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338010"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-126"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Assert"><span class="hs-identifier hs-type">Assert</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-127"></span><span>  </span><span class="annot"><span class="annottext">[Type] -&gt; m [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Primitive.html#Unit"><span class="hs-identifier hs-var">Unit</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-128"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#UpdateAcc"><span class="hs-identifier hs-type">UpdateAcc</span></a></span><span> </span><span id="local-6989586621684338006"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338006"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-129"></span><span>  </span><span class="annot"><span class="annottext">Type -&gt; [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [Type]) -&gt; m Type -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684338006"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- | The type of an expression.</span><span>
+</span><span id="line-132"></span><span id="local-6989586621684338300"><span id="local-6989586621684338301"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier hs-type">expExtType</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-133"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338301"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338300"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#TypedOp"><span class="hs-identifier hs-type">TypedOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338301"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-134"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338301"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-135"></span><span>  </span><span class="annot"><a href="#local-6989586621684338300"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtType"><span class="hs-identifier hs-type">ExtType</span></a></span><span class="hs-special">]</span></span></span><span>
+</span><span id="line-136"></span><span id="expExtType"><span class="annot"><span class="annottext">expExtType :: forall rep (m :: * -&gt; *).
+(HasScope rep m, TypedOp (Op rep)) =&gt;
+Exp rep -&gt; m [ExtType]
+</span><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier hs-var hs-var">expExtType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Apply"><span class="hs-identifier hs-type">Apply</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[(SubExp, Diet)]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684337956"><span class="annot"><span class="annottext">[RetType rep]
+</span><a href="#local-6989586621684337956"><span class="hs-identifier hs-var">rt</span></a></span></span><span> </span><span class="annot"><span class="annottext">(Safety, SrcLoc, [SrcLoc])
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ExtType] -&gt; m [ExtType]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">([ExtType] -&gt; m [ExtType]) -&gt; [ExtType] -&gt; m [ExtType]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(RetType rep -&gt; ExtType) -&gt; [RetType rep] -&gt; [ExtType]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase ExtShape Uniqueness -&gt; ExtType
+forall shape.
+TypeBase shape Uniqueness -&gt; TypeBase shape NoUniqueness
+</span><a href="Futhark.IR.Prop.Types.html#fromDecl"><span class="hs-identifier hs-var">fromDecl</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase ExtShape Uniqueness -&gt; ExtType)
+-&gt; (RetType rep -&gt; TypeBase ExtShape Uniqueness)
+-&gt; RetType rep
+-&gt; ExtType
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">RetType rep -&gt; TypeBase ExtShape Uniqueness
+forall t. DeclExtTyped t =&gt; t -&gt; TypeBase ExtShape Uniqueness
+</span><a href="Futhark.IR.Prop.Types.html#declExtTypeOf"><span class="hs-identifier hs-var">declExtTypeOf</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[RetType rep]
+</span><a href="#local-6989586621684337956"><span class="hs-identifier hs-var">rt</span></a></span><span>
+</span><span id="line-137"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier hs-var">expExtType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684337952"><span class="annot"><span class="annottext">IfDec (BranchType rep)
+</span><a href="#local-6989586621684337952"><span class="hs-identifier hs-var">rt</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ExtType] -&gt; m [ExtType]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">([ExtType] -&gt; m [ExtType]) -&gt; [ExtType] -&gt; m [ExtType]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(BranchType rep -&gt; ExtType) -&gt; [BranchType rep] -&gt; [ExtType]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">BranchType rep -&gt; ExtType
+forall t. ExtTyped t =&gt; t -&gt; ExtType
+</span><a href="Futhark.IR.Prop.Types.html#extTypeOf"><span class="hs-identifier hs-var">extTypeOf</span></a></span><span> </span><span class="annot"><span class="annottext">([BranchType rep] -&gt; [ExtType]) -&gt; [BranchType rep] -&gt; [ExtType]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType rep) -&gt; [BranchType rep]
+forall rt. IfDec rt -&gt; [rt]
+</span><a href="Futhark.IR.Syntax.html#ifReturns"><span class="hs-identifier hs-var hs-var">ifReturns</span></a></span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType rep)
+</span><a href="#local-6989586621684337952"><span class="hs-identifier hs-var">rt</span></a></span><span>
+</span><span id="line-138"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier hs-var">expExtType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-type">DoLoop</span></a></span><span> </span><span id="local-6989586621684337948"><span class="annot"><span class="annottext">[(FParam rep, SubExp)]
+</span><a href="#local-6989586621684337948"><span class="hs-identifier hs-var">merge</span></a></span></span><span> </span><span class="annot"><span class="annottext">LoopForm rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-139"></span><span>  </span><span class="annot"><span class="annottext">[ExtType] -&gt; m [ExtType]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">([ExtType] -&gt; m [ExtType]) -&gt; [ExtType] -&gt; m [ExtType]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[FParam rep] -&gt; [ExtType]
+forall dec. Typed dec =&gt; [Param dec] -&gt; [ExtType]
+</span><a href="Futhark.IR.Prop.TypeOf.html#loopExtType"><span class="hs-identifier hs-var">loopExtType</span></a></span><span> </span><span class="annot"><span class="annottext">([FParam rep] -&gt; [ExtType]) -&gt; [FParam rep] -&gt; [ExtType]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">((FParam rep, SubExp) -&gt; FParam rep)
+-&gt; [(FParam rep, SubExp)] -&gt; [FParam rep]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(FParam rep, SubExp) -&gt; FParam rep
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">[(FParam rep, SubExp)]
+</span><a href="#local-6989586621684337948"><span class="hs-identifier hs-var">merge</span></a></span><span>
+</span><span id="line-140"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier hs-var">expExtType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span id="local-6989586621684337945"><span class="annot"><span class="annottext">BasicOp
+</span><a href="#local-6989586621684337945"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Type] -&gt; [ExtType]
+forall u. [TypeBase Shape u] -&gt; [TypeBase ExtShape u]
+</span><a href="Futhark.IR.Prop.Types.html#staticShapes"><span class="hs-identifier hs-var">staticShapes</span></a></span><span> </span><span class="annot"><span class="annottext">([Type] -&gt; [ExtType]) -&gt; m [Type] -&gt; m [ExtType]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; m [Type]
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; BasicOp -&gt; m [Type]
+</span><a href="Futhark.IR.Prop.TypeOf.html#basicOpType"><span class="hs-identifier hs-var">basicOpType</span></a></span><span> </span><span class="annot"><span class="annottext">BasicOp
+</span><a href="#local-6989586621684337945"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-141"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier hs-var">expExtType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#WithAcc"><span class="hs-identifier hs-type">WithAcc</span></a></span><span> </span><span id="local-6989586621684337942"><span class="annot"><span class="annottext">[WithAccInput rep]
+</span><a href="#local-6989586621684337942"><span class="hs-identifier hs-var">inputs</span></a></span></span><span> </span><span id="local-6989586621684337941"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684337941"><span class="hs-identifier hs-var">lam</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-142"></span><span>  </span><span class="annot"><span class="annottext">([Type] -&gt; [ExtType]) -&gt; m [Type] -&gt; m [ExtType]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">[Type] -&gt; [ExtType]
+forall u. [TypeBase Shape u] -&gt; [TypeBase ExtShape u]
+</span><a href="Futhark.IR.Prop.Types.html#staticShapes"><span class="hs-identifier hs-var">staticShapes</span></a></span><span> </span><span class="annot"><span class="annottext">(m [Type] -&gt; m [ExtType]) -&gt; m [Type] -&gt; m [ExtType]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-143"></span><span>    </span><span class="annot"><span class="annottext">[Type] -&gt; [Type] -&gt; [Type]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(&lt;&gt;)</span></span><span>
+</span><span id="line-144"></span><span>      </span><span class="annot"><span class="annottext">([Type] -&gt; [Type] -&gt; [Type]) -&gt; m [Type] -&gt; m ([Type] -&gt; [Type])
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[[Type]] -&gt; [Type]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">([[Type]] -&gt; [Type]) -&gt; m [[Type]] -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(WithAccInput rep -&gt; m [Type]) -&gt; [WithAccInput rep] -&gt; m [[Type]]
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f (t b)
+</span><span class="hs-identifier hs-var">traverse</span></span><span> </span><span class="annot"><span class="annottext">WithAccInput rep -&gt; m [Type]
+forall {t :: * -&gt; *} {f :: * -&gt; *} {rep} {a} {c}.
+(Traversable t, HasScope rep f) =&gt;
+(a, t VName, c) -&gt; f (t Type)
+</span><a href="#local-6989586621684337938"><span class="hs-identifier hs-var">inputType</span></a></span><span> </span><span class="annot"><span class="annottext">[WithAccInput rep]
+</span><a href="#local-6989586621684337942"><span class="hs-identifier hs-var">inputs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span>      </span><span class="annot"><span class="annottext">m ([Type] -&gt; [Type]) -&gt; m [Type] -&gt; m [Type]
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">[Type] -&gt; m [Type]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; [Type] -&gt; [Type]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">drop</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684337936"><span class="hs-identifier hs-var">num_accs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Lambda rep -&gt; [Type]
+forall rep. LambdaT rep -&gt; [Type]
+</span><a href="Futhark.IR.Syntax.html#lambdaReturnType"><span class="hs-identifier hs-var hs-var">lambdaReturnType</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684337941"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-146"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-147"></span><span>    </span><span id="local-6989586621684337938"><span class="annot"><span class="annottext">inputType :: (a, t VName, c) -&gt; f (t Type)
+</span><a href="#local-6989586621684337938"><span class="hs-identifier hs-var hs-var">inputType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684337929"><span class="annot"><span class="annottext">t VName
+</span><a href="#local-6989586621684337929"><span class="hs-identifier hs-var">arrs</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">c
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VName -&gt; f Type) -&gt; t VName -&gt; f (t Type)
+forall (t :: * -&gt; *) (f :: * -&gt; *) a b.
+(Traversable t, Applicative f) =&gt;
+(a -&gt; f b) -&gt; t a -&gt; f (t b)
+</span><span class="hs-identifier hs-var">traverse</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; f Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">t VName
+</span><a href="#local-6989586621684337929"><span class="hs-identifier hs-var">arrs</span></a></span><span>
+</span><span id="line-148"></span><span>    </span><span id="local-6989586621684337936"><span class="annot"><span class="annottext">num_accs :: Int
+</span><a href="#local-6989586621684337936"><span class="hs-identifier hs-var hs-var">num_accs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[WithAccInput rep] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[WithAccInput rep]
+</span><a href="#local-6989586621684337942"><span class="hs-identifier hs-var">inputs</span></a></span><span>
+</span><span id="line-149"></span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier hs-var">expExtType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span id="local-6989586621684337927"><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684337927"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Op rep -&gt; m [ExtType]
+forall op t (m :: * -&gt; *).
+(TypedOp op, HasScope t m) =&gt;
+op -&gt; m [ExtType]
+</span><a href="Futhark.IR.Prop.TypeOf.html#opType"><span class="hs-identifier hs-var">opType</span></a></span><span> </span><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684337927"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-150"></span><span>
+</span><span id="line-151"></span><span class="hs-comment">-- | The number of values returned by an expression.</span><span>
+</span><span id="line-152"></span><span id="local-6989586621684338238"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#expExtTypeSize"><span class="hs-identifier hs-type">expExtTypeSize</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-153"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338238"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#TypedOp"><span class="hs-identifier hs-type">TypedOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338238"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-154"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338238"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-155"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span></span><span>
+</span><span id="line-156"></span><span id="expExtTypeSize"><span class="annot"><span class="annottext">expExtTypeSize :: forall rep. (RepTypes rep, TypedOp (Op rep)) =&gt; Exp rep -&gt; Int
+</span><a href="Futhark.IR.Prop.TypeOf.html#expExtTypeSize"><span class="hs-identifier hs-var hs-var">expExtTypeSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ExtType] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">([ExtType] -&gt; Int) -&gt; (Exp rep -&gt; [ExtType]) -&gt; Exp rep -&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">FeelBad rep [ExtType] -&gt; [ExtType]
+forall rep a. FeelBad rep a -&gt; a
+</span><a href="Futhark.IR.Prop.TypeOf.html#feelBad"><span class="hs-identifier hs-var hs-var">feelBad</span></a></span><span> </span><span class="annot"><span class="annottext">(FeelBad rep [ExtType] -&gt; [ExtType])
+-&gt; (Exp rep -&gt; FeelBad rep [ExtType]) -&gt; Exp rep -&gt; [ExtType]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Exp rep -&gt; FeelBad rep [ExtType]
+forall rep (m :: * -&gt; *).
+(HasScope rep m, TypedOp (Op rep)) =&gt;
+Exp rep -&gt; m [ExtType]
+</span><a href="Futhark.IR.Prop.TypeOf.html#expExtType"><span class="hs-identifier hs-var">expExtType</span></a></span><span>
+</span><span id="line-157"></span><span>
+</span><span id="line-158"></span><span class="hs-comment">-- FIXME, this is a horrible quick hack.</span><span>
+</span><span id="line-159"></span><span class="hs-keyword">newtype</span><span> </span><span id="FeelBad"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#FeelBad"><span class="hs-identifier hs-var">FeelBad</span></a></span></span><span> </span><span id="local-6989586621684338235"><span class="annot"><a href="#local-6989586621684338235"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684338234"><span class="annot"><a href="#local-6989586621684338234"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="FeelBad"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#FeelBad"><span class="hs-identifier hs-var">FeelBad</span></a></span></span><span> </span><span class="hs-special">{</span><span id="feelBad"><span class="annot"><span class="annottext">forall rep a. FeelBad rep a -&gt; a
+</span><a href="Futhark.IR.Prop.TypeOf.html#feelBad"><span class="hs-identifier hs-var hs-var">feelBad</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621684338234"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span id="local-6989586621684338229"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684337914"><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#FeelBad"><span class="hs-identifier hs-type">FeelBad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338229"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-162"></span><span>  </span><span id="local-6989586621684337912"><span class="annot"><span class="annottext">fmap :: forall a b. (a -&gt; b) -&gt; FeelBad rep a -&gt; FeelBad rep b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">fmap</span></span></span><span> </span><span id="local-6989586621684337911"><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621684337911"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">b -&gt; FeelBad rep b
+forall rep a. a -&gt; FeelBad rep a
+</span><a href="Futhark.IR.Prop.TypeOf.html#FeelBad"><span class="hs-identifier hs-var">FeelBad</span></a></span><span> </span><span class="annot"><span class="annottext">(b -&gt; FeelBad rep b)
+-&gt; (FeelBad rep a -&gt; b) -&gt; FeelBad rep a -&gt; FeelBad rep b
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621684337911"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; (FeelBad rep a -&gt; a) -&gt; FeelBad rep a -&gt; b
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">FeelBad rep a -&gt; a
+forall rep a. FeelBad rep a -&gt; a
+</span><a href="Futhark.IR.Prop.TypeOf.html#feelBad"><span class="hs-identifier hs-var hs-var">feelBad</span></a></span></span><span>
+</span><span id="line-163"></span><span>
+</span><span id="line-164"></span><span id="local-6989586621684338219"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684337901"><span id="local-6989586621684337903"><span id="local-6989586621684337905"><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#FeelBad"><span class="hs-identifier hs-type">FeelBad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338219"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-165"></span><span>  </span><span id="local-6989586621684337899"><span class="annot"><span class="annottext">pure :: forall a. a -&gt; FeelBad rep a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">pure</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; FeelBad rep a
+forall rep a. a -&gt; FeelBad rep a
+</span><a href="Futhark.IR.Prop.TypeOf.html#FeelBad"><span class="hs-identifier hs-var">FeelBad</span></a></span><span>
+</span><span id="line-166"></span><span>  </span><span id="local-6989586621684337898"><span class="annot"><span class="annottext">FeelBad rep (a -&gt; b)
+</span><a href="#local-6989586621684337898"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684337897"><span class="annot"><span class="annottext">&lt;*&gt; :: forall a b. FeelBad rep (a -&gt; b) -&gt; FeelBad rep a -&gt; FeelBad rep b
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;*&gt;</span></span></span><span> </span><span id="local-6989586621684337896"><span class="annot"><span class="annottext">FeelBad rep a
+</span><a href="#local-6989586621684337896"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">b -&gt; FeelBad rep b
+forall rep a. a -&gt; FeelBad rep a
+</span><a href="Futhark.IR.Prop.TypeOf.html#FeelBad"><span class="hs-identifier hs-var">FeelBad</span></a></span><span> </span><span class="annot"><span class="annottext">(b -&gt; FeelBad rep b) -&gt; b -&gt; FeelBad rep b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FeelBad rep (a -&gt; b) -&gt; a -&gt; b
+forall rep a. FeelBad rep a -&gt; a
+</span><a href="Futhark.IR.Prop.TypeOf.html#feelBad"><span class="hs-identifier hs-var hs-var">feelBad</span></a></span><span> </span><span class="annot"><span class="annottext">FeelBad rep (a -&gt; b)
+</span><a href="#local-6989586621684337898"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; a -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FeelBad rep a -&gt; a
+forall rep a. FeelBad rep a -&gt; a
+</span><a href="Futhark.IR.Prop.TypeOf.html#feelBad"><span class="hs-identifier hs-var hs-var">feelBad</span></a></span><span> </span><span class="annot"><span class="annottext">FeelBad rep a
+</span><a href="#local-6989586621684337896"><span class="hs-identifier hs-var">x</span></a></span></span><span>
+</span><span id="line-167"></span><span>
+</span><span id="line-168"></span><span id="local-6989586621684338236"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684337886"><span id="local-6989586621684337889"><span class="annot"><a href="Futhark.IR.Rep.html#RepTypes"><span class="hs-identifier hs-type">RepTypes</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338236"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338236"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#FeelBad"><span class="hs-identifier hs-type">FeelBad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338236"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-169"></span><span>  </span><span id="local-6989586621684337883"><span class="annot"><span class="annottext">lookupType :: VName -&gt; FeelBad rep Type
+</span><a href="#local-6989586621684337883"><span class="hs-identifier hs-var hs-var hs-var hs-var">lookupType</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FeelBad rep Type -&gt; VName -&gt; FeelBad rep Type
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">(FeelBad rep Type -&gt; VName -&gt; FeelBad rep Type)
+-&gt; FeelBad rep Type -&gt; VName -&gt; FeelBad rep Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; FeelBad rep Type
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; FeelBad rep Type) -&gt; Type -&gt; FeelBad rep Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; Type
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">Prim</span></a></span><span> </span><span class="annot"><span class="annottext">(PrimType -&gt; Type) -&gt; PrimType -&gt; Type
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IntType -&gt; PrimType
+</span><a href="Futhark.IR.Primitive.html#IntType"><span class="hs-identifier hs-var">IntType</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span>
+</span><span id="line-170"></span><span>  </span><span id="local-6989586621684337876"><span class="annot"><span class="annottext">askScope :: FeelBad rep (Scope rep)
+</span><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-var hs-var hs-var hs-var">askScope</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; FeelBad rep (Scope rep)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Scope rep
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span></span><span>
+</span><span id="line-171"></span><span>
+</span><span id="line-172"></span><span class="hs-comment">-- | Given the parameters of a loop, produce the return type.</span><span>
+</span><span id="line-173"></span><span id="local-6989586621684338265"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#loopExtType"><span class="hs-identifier hs-type">loopExtType</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Types.html#Typed"><span class="hs-identifier hs-type">Typed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338265"><span class="hs-identifier hs-type">dec</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-type">Param</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338265"><span class="hs-identifier hs-type">dec</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtType"><span class="hs-identifier hs-type">ExtType</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-174"></span><span id="loopExtType"><span class="annot"><span class="annottext">loopExtType :: forall dec. Typed dec =&gt; [Param dec] -&gt; [ExtType]
+</span><a href="Futhark.IR.Prop.TypeOf.html#loopExtType"><span class="hs-identifier hs-var hs-var">loopExtType</span></a></span></span><span> </span><span id="local-6989586621684337871"><span class="annot"><span class="annottext">[Param dec]
+</span><a href="#local-6989586621684337871"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-175"></span><span>  </span><span class="annot"><span class="annottext">[VName] -&gt; [ExtType] -&gt; [ExtType]
+</span><a href="Futhark.IR.Prop.Types.html#existentialiseExtTypes"><span class="hs-identifier hs-var">existentialiseExtTypes</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684337869"><span class="hs-identifier hs-var">inaccessible</span></a></span><span> </span><span class="annot"><span class="annottext">([ExtType] -&gt; [ExtType]) -&gt; [ExtType] -&gt; [ExtType]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Type] -&gt; [ExtType]
+forall u. [TypeBase Shape u] -&gt; [TypeBase ExtShape u]
+</span><a href="Futhark.IR.Prop.Types.html#staticShapes"><span class="hs-identifier hs-var">staticShapes</span></a></span><span> </span><span class="annot"><span class="annottext">([Type] -&gt; [ExtType]) -&gt; [Type] -&gt; [ExtType]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Param dec -&gt; Type) -&gt; [Param dec] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param dec -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">[Param dec]
+</span><a href="#local-6989586621684337871"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-176"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-177"></span><span>    </span><span id="local-6989586621684337869"><span class="annot"><span class="annottext">inaccessible :: [VName]
+</span><a href="#local-6989586621684337869"><span class="hs-identifier hs-var hs-var">inaccessible</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Param dec -&gt; VName) -&gt; [Param dec] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param dec -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span> </span><span class="annot"><span class="annottext">[Param dec]
+</span><a href="#local-6989586621684337871"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span class="hs-comment">-- | Any operation must define an instance of this class, which</span><span>
+</span><span id="line-180"></span><span class="hs-comment">-- describes the type of the operation (at the value level).</span><span>
+</span><span id="line-181"></span><span class="hs-keyword">class</span><span> </span><span id="TypedOp"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#TypedOp"><span class="hs-identifier hs-var">TypedOp</span></a></span></span><span> </span><span id="local-6989586621684338241"><span class="annot"><a href="#local-6989586621684338241"><span class="hs-identifier hs-type">op</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-182"></span><span>  </span><span id="local-6989586621684338239"><span id="local-6989586621684338240"><span id="opType"><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#opType"><span class="hs-identifier hs-type">opType</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338240"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684338239"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684338241"><span class="hs-identifier hs-type">op</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684338239"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtType"><span class="hs-identifier hs-type">ExtType</span></a></span><span class="hs-special">]</span></span></span><span>
+</span><span id="line-183"></span><span>
+</span><span id="line-184"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.TypeOf.html#TypedOp"><span class="hs-identifier hs-type">TypedOp</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-185"></span><span>  </span><span id="local-6989586621684337860"><span class="annot"><span class="annottext">opType :: forall t (m :: * -&gt; *). HasScope t m =&gt; () -&gt; m [ExtType]
+</span><a href="#local-6989586621684337860"><span class="hs-identifier hs-var hs-var hs-var hs-var">opType</span></a></span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ExtType] -&gt; m [ExtType]
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-186"></span></pre></body></html>

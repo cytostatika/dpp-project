@@ -1,0 +1,921 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | This module exports facilities for transforming array accesses in</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- a list of 'Stm's (intended to be the bindings in a body).  The</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- idea is that you can state that some variable @x@ is in fact an</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- array indexing @v[i0,i1,...]@.</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Optimise.InPlaceLowering.SubstituteIndices</span><span>
+</span><span id="line-9"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndices"><span class="hs-identifier">substituteIndices</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitution"><span class="hs-identifier">IndexSubstitution</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier">IndexSubstitutions</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-14"></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Construct.html"><span class="hs-identifier">Futhark.Construct</span></a></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html"><span class="hs-identifier">Futhark.IR.Prop.Aliases</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Transform.Substitute.html"><span class="hs-identifier">Futhark.Transform.Substitute</span></a></span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">type</span><span> </span><span id="IndexSubstitution"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitution"><span class="hs-identifier hs-var">IndexSubstitution</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Certs"><span class="hs-identifier hs-type">Certs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-type">Slice</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">type</span><span> </span><span id="IndexSubstitutions"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-var">IndexSubstitutions</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitution"><span class="hs-identifier hs-type">IndexSubstitution</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span id="local-6989586621684354999"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#typeEnvFromSubstitutions"><span class="hs-identifier hs-type">typeEnvFromSubstitutions</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LParamInfo"><span class="hs-identifier hs-type">LParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354999"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354999"><span class="hs-identifier hs-type">rep</span></a></span></span><span>
+</span><span id="line-27"></span><span id="typeEnvFromSubstitutions"><span class="annot"><span class="annottext">typeEnvFromSubstitutions :: forall rep.
+(LParamInfo rep ~ Type) =&gt;
+IndexSubstitutions -&gt; Scope rep
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#typeEnvFromSubstitutions"><span class="hs-identifier hs-var hs-var">typeEnvFromSubstitutions</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, NameInfo rep)] -&gt; Map VName (NameInfo rep)
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, NameInfo rep)] -&gt; Map VName (NameInfo rep))
+-&gt; (IndexSubstitutions -&gt; [(VName, NameInfo rep)])
+-&gt; IndexSubstitutions
+-&gt; Map VName (NameInfo rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">((VName, IndexSubstitution) -&gt; (VName, NameInfo rep))
+-&gt; IndexSubstitutions -&gt; [(VName, NameInfo rep)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IndexSubstitution -&gt; (VName, NameInfo rep)
+forall {a} {a} {rep} {d}.
+(a, a, LParamInfo rep, d) -&gt; (a, NameInfo rep)
+</span><a href="#local-6989586621684354788"><span class="hs-identifier hs-var">fromSubstitution</span></a></span><span> </span><span class="annot"><span class="annottext">(IndexSubstitution -&gt; (VName, NameInfo rep))
+-&gt; ((VName, IndexSubstitution) -&gt; IndexSubstitution)
+-&gt; (VName, IndexSubstitution)
+-&gt; (VName, NameInfo rep)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(VName, IndexSubstitution) -&gt; IndexSubstitution
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-29"></span><span>    </span><span id="local-6989586621684354788"><span class="annot"><span class="annottext">fromSubstitution :: (a, a, LParamInfo rep, d) -&gt; (a, NameInfo rep)
+</span><a href="#local-6989586621684354788"><span class="hs-identifier hs-var hs-var">fromSubstitution</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354787"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684354787"><span class="hs-identifier hs-var">name</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354786"><span class="annot"><span class="annottext">LParamInfo rep
+</span><a href="#local-6989586621684354786"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">d
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-30"></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684354787"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LParamInfo rep -&gt; NameInfo rep
+forall rep. LParamInfo rep -&gt; NameInfo rep
+</span><a href="Futhark.IR.Prop.Scope.html#LParamName"><span class="hs-identifier hs-var">LParamName</span></a></span><span> </span><span class="annot"><span class="annottext">LParamInfo rep
+</span><a href="#local-6989586621684354786"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- | Perform the substitution.</span><span>
+</span><span id="line-33"></span><span id="local-6989586621684354974"><span id="local-6989586621684354976"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndices"><span class="hs-identifier hs-type">substituteIndices</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-34"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354976"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-35"></span><span>    </span><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-type">BuilderOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354974"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-36"></span><span>    </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354974"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-37"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#Aliased"><span class="hs-identifier hs-type">Aliased</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354974"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-38"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#LParamInfo"><span class="hs-identifier hs-type">LParamInfo</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354974"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-40"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-41"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354974"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-42"></span><span>  </span><span class="annot"><a href="#local-6989586621684354976"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354974"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-43"></span><span id="substituteIndices"><span class="annot"><span class="annottext">substituteIndices :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, BuilderOps rep, Buildable rep, Aliased rep,
+ LParamInfo rep ~ Type) =&gt;
+IndexSubstitutions -&gt; Stms rep -&gt; m (IndexSubstitutions, Stms rep)
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndices"><span class="hs-identifier hs-var hs-var">substituteIndices</span></a></span></span><span> </span><span id="local-6989586621684354767"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354767"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span id="local-6989586621684354766"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684354766"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-44"></span><span>  </span><span class="annot"><span class="annottext">BuilderT rep m IndexSubstitutions
+-&gt; Scope rep -&gt; m (IndexSubstitutions, Stms rep)
+forall (m :: * -&gt; *) rep a.
+MonadFreshNames m =&gt;
+BuilderT rep m a -&gt; Scope rep -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT"><span class="hs-identifier hs-var">runBuilderT</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IndexSubstitutions
+-&gt; Stms (Rep (BuilderT rep m)) -&gt; BuilderT rep m IndexSubstitutions
+forall (m :: * -&gt; *).
+(MonadBuilder m, Buildable (Rep m), Aliased (Rep m)) =&gt;
+IndexSubstitutions -&gt; Stms (Rep m) -&gt; m IndexSubstitutions
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInStms"><span class="hs-identifier hs-var">substituteIndicesInStms</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354767"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+Stms (Rep (BuilderT rep m))
+</span><a href="#local-6989586621684354766"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684354763"><span class="hs-identifier hs-var">types</span></a></span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-46"></span><span>    </span><span id="local-6989586621684354763"><span class="annot"><span class="annottext">types :: Scope rep
+</span><a href="#local-6989586621684354763"><span class="hs-identifier hs-var hs-var">types</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; Scope rep
+forall rep.
+(LParamInfo rep ~ Type) =&gt;
+IndexSubstitutions -&gt; Scope rep
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#typeEnvFromSubstitutions"><span class="hs-identifier hs-var">typeEnvFromSubstitutions</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354767"><span class="hs-identifier hs-var">substs</span></a></span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span id="local-6989586621684354957"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInStms"><span class="hs-identifier hs-type">substituteIndicesInStms</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-49"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354957"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354957"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#Aliased"><span class="hs-identifier hs-type">Aliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354957"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-50"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-51"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354957"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><a href="#local-6989586621684354957"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span></span><span>
+</span><span id="line-53"></span><span id="substituteIndicesInStms"><span class="annot"><span class="annottext">substituteIndicesInStms :: forall (m :: * -&gt; *).
+(MonadBuilder m, Buildable (Rep m), Aliased (Rep m)) =&gt;
+IndexSubstitutions -&gt; Stms (Rep m) -&gt; m IndexSubstitutions
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInStms"><span class="hs-identifier hs-var hs-var">substituteIndicesInStms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(IndexSubstitutions -&gt; Stm (Rep m) -&gt; m IndexSubstitutions)
+-&gt; IndexSubstitutions -&gt; Seq (Stm (Rep m)) -&gt; m IndexSubstitutions
+forall (t :: * -&gt; *) (m :: * -&gt; *) b a.
+(Foldable t, Monad m) =&gt;
+(b -&gt; a -&gt; m b) -&gt; b -&gt; t a -&gt; m b
+</span><span class="hs-identifier hs-var">foldM</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; Stm (Rep m) -&gt; m IndexSubstitutions
+forall (m :: * -&gt; *).
+(MonadBuilder m, Buildable (Rep m), Aliased (Rep m)) =&gt;
+IndexSubstitutions -&gt; Stm (Rep m) -&gt; m IndexSubstitutions
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInStm"><span class="hs-identifier hs-var">substituteIndicesInStm</span></a></span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span id="local-6989586621684354947"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInStm"><span class="hs-identifier hs-type">substituteIndicesInStm</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354947"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354947"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#Aliased"><span class="hs-identifier hs-type">Aliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354947"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-58"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354947"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><a href="#local-6989586621684354947"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span></span><span>
+</span><span id="line-60"></span><span class="hs-comment">-- FIXME: we likely need to do something similar for all expressions</span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- that produce aliases.  Ugh.  See issue #1460.  Or maybe we should</span><span>
+</span><span id="line-62"></span><span class="hs-comment">-- look at/copy all consumed arrays up front, instead of ad-hoc.</span><span>
+</span><span id="line-63"></span><span id="substituteIndicesInStm"><span class="annot"><span class="annottext">substituteIndicesInStm :: forall (m :: * -&gt; *).
+(MonadBuilder m, Buildable (Rep m), Aliased (Rep m)) =&gt;
+IndexSubstitutions -&gt; Stm (Rep m) -&gt; m IndexSubstitutions
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInStm"><span class="hs-identifier hs-var hs-var">substituteIndicesInStm</span></a></span></span><span> </span><span id="local-6989586621684354690"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354690"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684354688"><span class="annot"><span class="annottext">Pat (Rep m)
+</span><a href="#local-6989586621684354688"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec (Rep m))
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Rotate"><span class="hs-identifier hs-type">Rotate</span></a></span><span> </span><span id="local-6989586621684354685"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684354685"><span class="hs-identifier hs-var">rots</span></a></span></span><span> </span><span id="local-6989586621684354684"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354684"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684354683"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354683"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354682"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354682"><span class="hs-identifier hs-var">src</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354681"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354681"><span class="hs-identifier hs-var">src_t</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354680"><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684354680"><span class="hs-identifier hs-var">is</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; IndexSubstitutions -&gt; Maybe IndexSubstitution
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354684"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354690"><span class="hs-identifier hs-var">substs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-special">[</span><span id="local-6989586621684354678"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354678"><span class="hs-identifier hs-var">v'</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Pat (Rep m) -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">Pat (Rep m)
+</span><a href="#local-6989586621684354688"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-66"></span><span>    </span><span id="local-6989586621684354676"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354676"><span class="hs-identifier hs-var">src'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-67"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; ExpT (Rep m) -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354678"><span class="hs-identifier hs-var">v'</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_subst&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ExpT (Rep m) -&gt; m VName) -&gt; ExpT (Rep m) -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-68"></span><span>        </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; BasicOp -&gt; ExpT (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; VName -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Rotate"><span class="hs-identifier hs-var">Rotate</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; SubExp -&gt; [SubExp]
+forall a. Int -&gt; a -&gt; [a]
+</span><span class="hs-identifier hs-var">replicate</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; Int
+forall shape u. ArrayShape shape =&gt; TypeBase shape u -&gt; Int
+</span><a href="Futhark.IR.Prop.Types.html#arrayRank"><span class="hs-identifier hs-var">arrayRank</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354681"><span class="hs-identifier hs-var">src_t</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684354685"><span class="hs-identifier hs-var">rots</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684354670"><span class="hs-identifier hs-var">zero</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; [SubExp]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684354685"><span class="hs-identifier hs-var">rots</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354682"><span class="hs-identifier hs-var">src</span></a></span><span>
+</span><span id="line-69"></span><span>    </span><span id="local-6989586621684354669"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354669"><span class="hs-identifier hs-var">src_t'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354676"><span class="hs-identifier hs-var">src'</span></a></span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; m IndexSubstitutions
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(IndexSubstitutions -&gt; m IndexSubstitutions)
+-&gt; IndexSubstitutions -&gt; m IndexSubstitutions
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354678"><span class="hs-identifier hs-var">v'</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354683"><span class="hs-identifier hs-var">cs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354676"><span class="hs-identifier hs-var">src'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354669"><span class="hs-identifier hs-var">src_t'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684354680"><span class="hs-identifier hs-var">is</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(VName, IndexSubstitution)
+-&gt; IndexSubstitutions -&gt; IndexSubstitutions
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354690"><span class="hs-identifier hs-var">substs</span></a></span><span>
+</span><span id="line-71"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-72"></span><span>    </span><span id="local-6989586621684354670"><span class="annot"><span class="annottext">zero :: SubExp
+</span><a href="#local-6989586621684354670"><span class="hs-identifier hs-var hs-var">zero</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntType -&gt; Integer -&gt; SubExp
+</span><a href="Futhark.IR.Prop.Constants.html#intConst"><span class="hs-identifier hs-var">intConst</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-73"></span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInStm"><span class="hs-identifier hs-var">substituteIndicesInStm</span></a></span><span> </span><span id="local-6989586621684354665"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354665"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684354664"><span class="annot"><span class="annottext">Pat (Rep m)
+</span><a href="#local-6989586621684354664"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec (Rep m))
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Rearrange"><span class="hs-identifier hs-type">Rearrange</span></a></span><span> </span><span id="local-6989586621684354662"><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684354662"><span class="hs-identifier hs-var">perm</span></a></span></span><span> </span><span id="local-6989586621684354661"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354661"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684354660"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354660"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354659"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354659"><span class="hs-identifier hs-var">src</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354658"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354658"><span class="hs-identifier hs-var">src_t</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354657"><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684354657"><span class="hs-identifier hs-var">is</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; IndexSubstitutions -&gt; Maybe IndexSubstitution
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354661"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354665"><span class="hs-identifier hs-var">substs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-75"></span><span>    </span><span class="hs-special">[</span><span id="local-6989586621684354656"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354656"><span class="hs-identifier hs-var">v'</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Pat (Rep m) -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">Pat (Rep m)
+</span><a href="#local-6989586621684354664"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-76"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684354655"><span class="annot"><span class="annottext">extra_dims :: Int
+</span><a href="#local-6989586621684354655"><span class="hs-identifier hs-var hs-var">extra_dims</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Type -&gt; Int
+forall shape u. ArrayShape shape =&gt; TypeBase shape u -&gt; Int
+</span><a href="Futhark.IR.Prop.Types.html#arrayRank"><span class="hs-identifier hs-var">arrayRank</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354658"><span class="hs-identifier hs-var">src_t</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684354662"><span class="hs-identifier hs-var">perm</span></a></span><span>
+</span><span id="line-77"></span><span>        </span><span id="local-6989586621684354654"><span class="annot"><span class="annottext">perm' :: [Int]
+</span><a href="#local-6989586621684354654"><span class="hs-identifier hs-var hs-var">perm'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684354655"><span class="hs-identifier hs-var">extra_dims</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [Int] -&gt; [Int]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Int) -&gt; [Int] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684354655"><span class="hs-identifier hs-var">extra_dims</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684354662"><span class="hs-identifier hs-var">perm</span></a></span><span>
+</span><span id="line-78"></span><span>    </span><span id="local-6989586621684354652"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354652"><span class="hs-identifier hs-var">src'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-79"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; ExpT (Rep m) -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354656"><span class="hs-identifier hs-var">v'</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_subst&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ExpT (Rep m) -&gt; m VName) -&gt; ExpT (Rep m) -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; BasicOp -&gt; ExpT (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; VName -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Rearrange"><span class="hs-identifier hs-var">Rearrange</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684354654"><span class="hs-identifier hs-var">perm'</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354659"><span class="hs-identifier hs-var">src</span></a></span><span>
+</span><span id="line-80"></span><span>    </span><span id="local-6989586621684354651"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354651"><span class="hs-identifier hs-var">src_t'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; m Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354652"><span class="hs-identifier hs-var">src'</span></a></span><span>
+</span><span id="line-81"></span><span>    </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; m IndexSubstitutions
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(IndexSubstitutions -&gt; m IndexSubstitutions)
+-&gt; IndexSubstitutions -&gt; m IndexSubstitutions
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354656"><span class="hs-identifier hs-var">v'</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354660"><span class="hs-identifier hs-var">cs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354652"><span class="hs-identifier hs-var">src'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354651"><span class="hs-identifier hs-var">src_t'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684354657"><span class="hs-identifier hs-var">is</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(VName, IndexSubstitution)
+-&gt; IndexSubstitutions -&gt; IndexSubstitutions
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354665"><span class="hs-identifier hs-var">substs</span></a></span><span>
+</span><span id="line-82"></span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInStm"><span class="hs-identifier hs-var">substituteIndicesInStm</span></a></span><span> </span><span id="local-6989586621684354650"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354650"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684354649"><span class="annot"><span class="annottext">Pat (Rep m)
+</span><a href="#local-6989586621684354649"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684354648"><span class="annot"><span class="annottext">StmAux (ExpDec (Rep m))
+</span><a href="#local-6989586621684354648"><span class="hs-identifier hs-var">rep</span></a></span></span><span> </span><span id="local-6989586621684354647"><span class="annot"><span class="annottext">ExpT (Rep m)
+</span><a href="#local-6989586621684354647"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-83"></span><span>  </span><span id="local-6989586621684354646"><span class="annot"><span class="annottext">ExpT (Rep m)
+</span><a href="#local-6989586621684354646"><span class="hs-identifier hs-var">e'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; ExpT (Rep m) -&gt; m (ExpT (Rep m))
+forall (m :: * -&gt; *).
+(MonadBuilder m, Buildable (Rep m), Aliased (Rep m)) =&gt;
+IndexSubstitutions -&gt; Exp (Rep m) -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInExp"><span class="hs-identifier hs-var">substituteIndicesInExp</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354650"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT (Rep m)
+</span><a href="#local-6989586621684354647"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-84"></span><span>  </span><span class="annot"><span class="annottext">Stm (Rep m) -&gt; m ()
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Stm (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#addStm"><span class="hs-identifier hs-var">addStm</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm (Rep m) -&gt; m ()) -&gt; Stm (Rep m) -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Pat (Rep m)
+-&gt; StmAux (ExpDec (Rep m)) -&gt; ExpT (Rep m) -&gt; Stm (Rep m)
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat (Rep m)
+</span><a href="#local-6989586621684354649"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec (Rep m))
+</span><a href="#local-6989586621684354648"><span class="hs-identifier hs-var">rep</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT (Rep m)
+</span><a href="#local-6989586621684354646"><span class="hs-identifier hs-var">e'</span></a></span><span>
+</span><span id="line-85"></span><span>  </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; m IndexSubstitutions
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354650"><span class="hs-identifier hs-var">substs</span></a></span><span>
+</span><span id="line-86"></span><span>
+</span><span id="line-87"></span><span id="local-6989586621684354904"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInExp"><span class="hs-identifier hs-type">substituteIndicesInExp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-88"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354904"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354904"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#Aliased"><span class="hs-identifier hs-type">Aliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354904"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-90"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354904"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-91"></span><span>  </span><span class="annot"><a href="#local-6989586621684354904"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354904"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span><span>
+</span><span id="line-92"></span><span id="substituteIndicesInExp"><span class="annot"><span class="annottext">substituteIndicesInExp :: forall (m :: * -&gt; *).
+(MonadBuilder m, Buildable (Rep m), Aliased (Rep m)) =&gt;
+IndexSubstitutions -&gt; Exp (Rep m) -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInExp"><span class="hs-identifier hs-var hs-var">substituteIndicesInExp</span></a></span></span><span> </span><span id="local-6989586621684354563"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354563"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span id="local-6989586621684354561"><span class="annot"><span class="annottext">Op (Rep m)
+</span><a href="#local-6989586621684354561"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-93"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684354560"><span class="annot"><span class="annottext">used_in_op :: IndexSubstitutions
+</span><a href="#local-6989586621684354560"><span class="hs-identifier hs-var hs-var">used_in_op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((VName, IndexSubstitution) -&gt; Bool)
+-&gt; IndexSubstitutions -&gt; IndexSubstitutions
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; Bool
+</span><a href="Futhark.IR.Prop.Names.html#nameIn"><span class="hs-operator hs-var">`nameIn`</span></a></span><span> </span><span class="annot"><span class="annottext">Op (Rep m) -&gt; Names
+forall a. FreeIn a =&gt; a -&gt; Names
+</span><a href="Futhark.IR.Prop.Names.html#freeIn"><span class="hs-identifier hs-var">freeIn</span></a></span><span> </span><span class="annot"><span class="annottext">Op (Rep m)
+</span><a href="#local-6989586621684354561"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(VName -&gt; Bool)
+-&gt; ((VName, IndexSubstitution) -&gt; VName)
+-&gt; (VName, IndexSubstitution)
+-&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(VName, IndexSubstitution) -&gt; VName
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354563"><span class="hs-identifier hs-var">substs</span></a></span><span>
+</span><span id="line-94"></span><span>  </span><span id="local-6989586621684354557"><span class="annot"><span class="annottext">Map VName VName
+</span><a href="#local-6989586621684354557"><span class="hs-identifier hs-var">var_substs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">([Map VName VName] -&gt; Map VName VName)
+-&gt; m [Map VName VName] -&gt; m (Map VName VName)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">[Map VName VName] -&gt; Map VName VName
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">(m [Map VName VName] -&gt; m (Map VName VName))
+-&gt; m [Map VName VName] -&gt; m (Map VName VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-95"></span><span>    </span><span class="annot"><span class="annottext">IndexSubstitutions
+-&gt; ((VName, IndexSubstitution) -&gt; m (Map VName VName))
+-&gt; m [Map VName VName]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m (t b)
+</span><span class="hs-identifier hs-var">forM</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354560"><span class="hs-identifier hs-var">used_in_op</span></a></span><span> </span><span class="annot"><span class="annottext">(((VName, IndexSubstitution) -&gt; m (Map VName VName))
+ -&gt; m [Map VName VName])
+-&gt; ((VName, IndexSubstitution) -&gt; m (Map VName VName))
+-&gt; m [Map VName VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684354555"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354555"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684354554"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354554"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354553"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354553"><span class="hs-identifier hs-var">src</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354552"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354552"><span class="hs-identifier hs-var">src_dec</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-type">Slice</span></a></span><span> </span><span id="local-6989586621684354550"><span class="annot"><span class="annottext">[DimIndex SubExp]
+</span><a href="#local-6989586621684354550"><span class="hs-identifier hs-var">is</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-96"></span><span>      </span><span id="local-6989586621684354549"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354549"><span class="hs-identifier hs-var">v'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-97"></span><span>        </span><span class="annot"><span class="annottext">Certs -&gt; m VName -&gt; m VName
+forall (m :: * -&gt; *) a. MonadBuilder m =&gt; Certs -&gt; m a -&gt; m a
+</span><a href="Futhark.Builder.Class.html#certifying"><span class="hs-identifier hs-var">certifying</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354554"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">(m VName -&gt; m VName) -&gt; m VName -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-98"></span><span>          </span><span class="annot"><span class="annottext">String -&gt; ExpT (Rep m) -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354553"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_op_idx&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ExpT (Rep m) -&gt; m VName) -&gt; ExpT (Rep m) -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-99"></span><span>            </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; BasicOp -&gt; ExpT (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Slice SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Index"><span class="hs-identifier hs-var">Index</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354553"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">(Slice SubExp -&gt; BasicOp) -&gt; Slice SubExp -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [DimIndex SubExp] -&gt; Slice SubExp
+</span><a href="Futhark.Construct.html#fullSlice"><span class="hs-identifier hs-var">fullSlice</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354552"><span class="hs-identifier hs-var">src_dec</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[DimIndex SubExp]
+</span><a href="#local-6989586621684354550"><span class="hs-identifier hs-var">is</span></a></span><span>
+</span><span id="line-100"></span><span>      </span><span class="annot"><span class="annottext">Map VName VName -&gt; m (Map VName VName)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Map VName VName -&gt; m (Map VName VName))
+-&gt; Map VName VName -&gt; m (Map VName VName)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; VName -&gt; Map VName VName
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354555"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354549"><span class="hs-identifier hs-var">v'</span></a></span><span>
+</span><span id="line-101"></span><span>  </span><span class="annot"><span class="annottext">ExpT (Rep m) -&gt; m (ExpT (Rep m))
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(ExpT (Rep m) -&gt; m (ExpT (Rep m)))
+-&gt; ExpT (Rep m) -&gt; m (ExpT (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Op (Rep m) -&gt; ExpT (Rep m)
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op (Rep m) -&gt; ExpT (Rep m)) -&gt; Op (Rep m) -&gt; ExpT (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map VName VName -&gt; Op (Rep m) -&gt; Op (Rep m)
+forall a. Substitute a =&gt; Map VName VName -&gt; a -&gt; a
+</span><a href="Futhark.Transform.Substitute.html#substituteNames"><span class="hs-identifier hs-var">substituteNames</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName VName
+</span><a href="#local-6989586621684354557"><span class="hs-identifier hs-var">var_substs</span></a></span><span> </span><span class="annot"><span class="annottext">Op (Rep m)
+</span><a href="#local-6989586621684354561"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-102"></span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInExp"><span class="hs-identifier hs-var">substituteIndicesInExp</span></a></span><span> </span><span id="local-6989586621684354542"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354542"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span id="local-6989586621684354541"><span class="annot"><span class="annottext">ExpT (Rep m)
+</span><a href="#local-6989586621684354541"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-103"></span><span>  </span><span id="local-6989586621684354540"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354540"><span class="hs-identifier hs-var">substs'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ExpT (Rep m) -&gt; m IndexSubstitutions
+</span><a href="#local-6989586621684354539"><span class="hs-identifier hs-var">copyAnyConsumed</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT (Rep m)
+</span><a href="#local-6989586621684354541"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-104"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684354538"><span class="annot"><span class="annottext">substitute :: Mapper (Rep m) (Rep m) m
+</span><a href="#local-6989586621684354538"><span class="hs-identifier hs-var hs-var">substitute</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-105"></span><span>        </span><span class="annot"><span class="annottext">Mapper (Rep m) (Rep m) m
+forall (m :: * -&gt; *) rep. Monad m =&gt; Mapper rep rep m
+</span><a href="Futhark.IR.Traversals.html#identityMapper"><span class="hs-identifier hs-var">identityMapper</span></a></span><span>
+</span><span id="line-106"></span><span>          </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSubExp :: SubExp -&gt; m SubExp
+</span><a href="Futhark.IR.Traversals.html#mapOnSubExp"><span class="hs-identifier hs-var">mapOnSubExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; SubExp -&gt; m SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+IndexSubstitutions -&gt; SubExp -&gt; m SubExp
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInSubExp"><span class="hs-identifier hs-var">substituteIndicesInSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354540"><span class="hs-identifier hs-var">substs'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-107"></span><span>            </span><span class="annot"><span class="annottext">mapOnVName :: VName -&gt; m VName
+</span><a href="Futhark.IR.Traversals.html#mapOnVName"><span class="hs-identifier hs-var">mapOnVName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; VName -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+IndexSubstitutions -&gt; VName -&gt; m VName
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInVar"><span class="hs-identifier hs-var">substituteIndicesInVar</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354540"><span class="hs-identifier hs-var">substs'</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-108"></span><span>            </span><span class="annot"><span class="annottext">mapOnBody :: Scope (Rep m) -&gt; Body (Rep m) -&gt; m (Body (Rep m))
+</span><a href="Futhark.IR.Traversals.html#mapOnBody"><span class="hs-identifier hs-var">mapOnBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Body (Rep m) -&gt; m (Body (Rep m)))
+-&gt; Scope (Rep m) -&gt; Body (Rep m) -&gt; m (Body (Rep m))
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">((Body (Rep m) -&gt; m (Body (Rep m)))
+ -&gt; Scope (Rep m) -&gt; Body (Rep m) -&gt; m (Body (Rep m)))
+-&gt; (Body (Rep m) -&gt; m (Body (Rep m)))
+-&gt; Scope (Rep m)
+-&gt; Body (Rep m)
+-&gt; m (Body (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; Body (Rep m) -&gt; m (Body (Rep m))
+forall (m :: * -&gt; *).
+(MonadBuilder m, Buildable (Rep m), Aliased (Rep m)) =&gt;
+IndexSubstitutions -&gt; Body (Rep m) -&gt; m (Body (Rep m))
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInBody"><span class="hs-identifier hs-var">substituteIndicesInBody</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354540"><span class="hs-identifier hs-var">substs'</span></a></span><span>
+</span><span id="line-109"></span><span>          </span><span class="hs-special">}</span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span>  </span><span class="annot"><span class="annottext">Mapper (Rep m) (Rep m) m -&gt; ExpT (Rep m) -&gt; m (ExpT (Rep m))
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+Mapper frep trep m -&gt; Exp frep -&gt; m (Exp trep)
+</span><a href="Futhark.IR.Traversals.html#mapExpM"><span class="hs-identifier hs-var">mapExpM</span></a></span><span> </span><span class="annot"><span class="annottext">Mapper (Rep m) (Rep m) m
+</span><a href="#local-6989586621684354538"><span class="hs-identifier hs-var">substitute</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT (Rep m)
+</span><a href="#local-6989586621684354541"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-113"></span><span>    </span><span id="local-6989586621684354539"><span class="annot"><span class="annottext">copyAnyConsumed :: ExpT (Rep m) -&gt; m IndexSubstitutions
+</span><a href="#local-6989586621684354539"><span class="hs-identifier hs-var hs-var">copyAnyConsumed</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-114"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684354528"><span class="annot"><span class="annottext">consumingSubst :: IndexSubstitutions -&gt; VName -&gt; m IndexSubstitutions
+</span><a href="#local-6989586621684354528"><span class="hs-identifier hs-var hs-var">consumingSubst</span></a></span></span><span> </span><span id="local-6989586621684354527"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354527"><span class="hs-identifier hs-var">substs'</span></a></span></span><span> </span><span id="local-6989586621684354526"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354526"><span class="hs-identifier hs-var">v</span></a></span></span><span>
+</span><span id="line-115"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684354525"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354525"><span class="hs-identifier hs-var">cs2</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354524"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354524"><span class="hs-identifier hs-var">src2</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354523"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354523"><span class="hs-identifier hs-var">src2dec</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354522"><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684354522"><span class="hs-identifier hs-var">is2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; IndexSubstitutions -&gt; Maybe IndexSubstitution
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354526"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354542"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-116"></span><span>              </span><span id="local-6989586621684354521"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354521"><span class="hs-identifier hs-var">row</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-117"></span><span>                </span><span class="annot"><span class="annottext">Certs -&gt; m VName -&gt; m VName
+forall (m :: * -&gt; *) a. MonadBuilder m =&gt; Certs -&gt; m a -&gt; m a
+</span><a href="Futhark.Builder.Class.html#certifying"><span class="hs-identifier hs-var">certifying</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354525"><span class="hs-identifier hs-var">cs2</span></a></span><span> </span><span class="annot"><span class="annottext">(m VName -&gt; m VName) -&gt; m VName -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-118"></span><span>                  </span><span class="annot"><span class="annottext">String -&gt; ExpT (Rep m) -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354526"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_row&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ExpT (Rep m) -&gt; m VName) -&gt; ExpT (Rep m) -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-119"></span><span>                    </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; BasicOp -&gt; ExpT (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Slice SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Index"><span class="hs-identifier hs-var">Index</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354524"><span class="hs-identifier hs-var">src2</span></a></span><span> </span><span class="annot"><span class="annottext">(Slice SubExp -&gt; BasicOp) -&gt; Slice SubExp -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [DimIndex SubExp] -&gt; Slice SubExp
+</span><a href="Futhark.Construct.html#fullSlice"><span class="hs-identifier hs-var">fullSlice</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354523"><span class="hs-identifier hs-var">src2dec</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Slice SubExp -&gt; [DimIndex SubExp]
+forall d. Slice d -&gt; [DimIndex d]
+</span><a href="Futhark.IR.Syntax.Core.html#unSlice"><span class="hs-identifier hs-var hs-var">unSlice</span></a></span><span> </span><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684354522"><span class="hs-identifier hs-var">is2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-120"></span><span>              </span><span id="local-6989586621684354519"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354519"><span class="hs-identifier hs-var">row_copy</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-121"></span><span>                </span><span class="annot"><span class="annottext">String -&gt; ExpT (Rep m) -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354526"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_row_copy&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ExpT (Rep m) -&gt; m VName) -&gt; ExpT (Rep m) -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT (Rep m)) -&gt; BasicOp -&gt; ExpT (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Copy"><span class="hs-identifier hs-var">Copy</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354521"><span class="hs-identifier hs-var">row</span></a></span><span>
+</span><span id="line-122"></span><span>              </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; m IndexSubstitutions
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(IndexSubstitutions -&gt; m IndexSubstitutions)
+-&gt; IndexSubstitutions -&gt; m IndexSubstitutions
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-123"></span><span>                </span><span class="annot"><span class="annottext">VName
+-&gt; VName
+-&gt; IndexSubstitution
+-&gt; IndexSubstitutions
+-&gt; IndexSubstitutions
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#update"><span class="hs-identifier hs-var">update</span></a></span><span>
+</span><span id="line-124"></span><span>                  </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354526"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-125"></span><span>                  </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354526"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-126"></span><span>                  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Certs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span>
+</span><span id="line-127"></span><span>                    </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354519"><span class="hs-identifier hs-var">row_copy</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-128"></span><span>                    </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354523"><span class="hs-identifier hs-var">src2dec</span></a></span><span>
+</span><span id="line-129"></span><span>                      </span><span class="annot"><span class="annottext">Type -&gt; Type -&gt; Type
+forall a. SetType a =&gt; a -&gt; Type -&gt; a
+</span><a href="Futhark.IR.Prop.Types.html#setType"><span class="hs-operator hs-var">`setType`</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Type -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354523"><span class="hs-identifier hs-var">src2dec</span></a></span><span>
+</span><span id="line-130"></span><span>                                    </span><span class="annot"><span class="annottext">Type -&gt; [SubExp] -&gt; Type
+forall oldshape u.
+TypeBase oldshape u -&gt; [SubExp] -&gt; TypeBase Shape u
+</span><a href="Futhark.IR.Prop.Types.html#setArrayDims"><span class="hs-operator hs-var">`setArrayDims`</span></a></span><span> </span><span class="annot"><span class="annottext">Slice SubExp -&gt; [SubExp]
+forall d. Slice d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#sliceDims"><span class="hs-identifier hs-var">sliceDims</span></a></span><span> </span><span class="annot"><span class="annottext">Slice SubExp
+</span><a href="#local-6989586621684354522"><span class="hs-identifier hs-var">is2</span></a></span><span>
+</span><span id="line-131"></span><span>                                </span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-132"></span><span>                    </span><span class="annot"><span class="annottext">[DimIndex SubExp] -&gt; Slice SubExp
+forall d. [DimIndex d] -&gt; Slice d
+</span><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-var">Slice</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-133"></span><span>                  </span><span class="hs-special">)</span><span>
+</span><span id="line-134"></span><span>                  </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354527"><span class="hs-identifier hs-var">substs'</span></a></span><span>
+</span><span id="line-135"></span><span>          </span><span class="annot"><a href="#local-6989586621684354528"><span class="hs-identifier hs-var">consumingSubst</span></a></span><span> </span><span id="local-6989586621684354513"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354513"><span class="hs-identifier hs-var">substs'</span></a></span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-136"></span><span>            </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; m IndexSubstitutions
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354513"><span class="hs-identifier hs-var">substs'</span></a></span><span>
+</span><span id="line-137"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">(IndexSubstitutions -&gt; VName -&gt; m IndexSubstitutions)
+-&gt; IndexSubstitutions -&gt; [VName] -&gt; m IndexSubstitutions
+forall (t :: * -&gt; *) (m :: * -&gt; *) b a.
+(Foldable t, Monad m) =&gt;
+(b -&gt; a -&gt; m b) -&gt; b -&gt; t a -&gt; m b
+</span><span class="hs-identifier hs-var">foldM</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; VName -&gt; m IndexSubstitutions
+</span><a href="#local-6989586621684354528"><span class="hs-identifier hs-var">consumingSubst</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354542"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="annot"><span class="annottext">([VName] -&gt; m IndexSubstitutions)
+-&gt; (ExpT (Rep m) -&gt; [VName])
+-&gt; ExpT (Rep m)
+-&gt; m IndexSubstitutions
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Names -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Names.html#namesToList"><span class="hs-identifier hs-var">namesToList</span></a></span><span> </span><span class="annot"><span class="annottext">(Names -&gt; [VName])
+-&gt; (ExpT (Rep m) -&gt; Names) -&gt; ExpT (Rep m) -&gt; [VName]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ExpT (Rep m) -&gt; Names
+forall rep. Aliased rep =&gt; Exp rep -&gt; Names
+</span><a href="Futhark.IR.Prop.Aliases.html#consumedInExp"><span class="hs-identifier hs-var">consumedInExp</span></a></span><span>
+</span><span id="line-138"></span><span>
+</span><span id="line-139"></span><span id="local-6989586621684354848"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInSubExp"><span class="hs-identifier hs-type">substituteIndicesInSubExp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-140"></span><span>  </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354848"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-141"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-142"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-143"></span><span>  </span><span class="annot"><a href="#local-6989586621684354848"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span></span><span>
+</span><span id="line-144"></span><span id="substituteIndicesInSubExp"><span class="annot"><span class="annottext">substituteIndicesInSubExp :: forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+IndexSubstitutions -&gt; SubExp -&gt; m SubExp
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInSubExp"><span class="hs-identifier hs-var hs-var">substituteIndicesInSubExp</span></a></span></span><span> </span><span id="local-6989586621684354502"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354502"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684354500"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354500"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-145"></span><span>  </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; m VName -&gt; m SubExp
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; VName -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+IndexSubstitutions -&gt; VName -&gt; m VName
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInVar"><span class="hs-identifier hs-var">substituteIndicesInVar</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354502"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354500"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-146"></span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInSubExp"><span class="hs-identifier hs-var">substituteIndicesInSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684354498"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684354498"><span class="hs-identifier hs-var">se</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-147"></span><span>  </span><span class="annot"><span class="annottext">SubExp -&gt; m SubExp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684354498"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span id="local-6989586621684354847"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInVar"><span class="hs-identifier hs-type">substituteIndicesInVar</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-150"></span><span>  </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354847"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-151"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-152"></span><span>  </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-153"></span><span>  </span><span class="annot"><a href="#local-6989586621684354847"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span></span><span>
+</span><span id="line-154"></span><span id="substituteIndicesInVar"><span class="annot"><span class="annottext">substituteIndicesInVar :: forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+IndexSubstitutions -&gt; VName -&gt; m VName
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInVar"><span class="hs-identifier hs-var hs-var">substituteIndicesInVar</span></a></span></span><span> </span><span id="local-6989586621684354483"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354483"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span id="local-6989586621684354482"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354482"><span class="hs-identifier hs-var">v</span></a></span></span><span>
+</span><span id="line-155"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684354481"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354481"><span class="hs-identifier hs-var">cs2</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354480"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354480"><span class="hs-identifier hs-var">src2</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Type
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-type">Slice</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; IndexSubstitutions -&gt; Maybe IndexSubstitution
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354482"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354483"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-156"></span><span>    </span><span class="annot"><span class="annottext">Certs -&gt; m VName -&gt; m VName
+forall (m :: * -&gt; *) a. MonadBuilder m =&gt; Certs -&gt; m a -&gt; m a
+</span><a href="Futhark.Builder.Class.html#certifying"><span class="hs-identifier hs-var">certifying</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354481"><span class="hs-identifier hs-var">cs2</span></a></span><span> </span><span class="annot"><span class="annottext">(m VName -&gt; m VName) -&gt; m VName -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-157"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; Exp (Rep m) -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354480"><span class="hs-identifier hs-var">src2</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m VName) -&gt; Exp (Rep m) -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; Exp (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; Exp (Rep m)) -&gt; BasicOp -&gt; Exp (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#SubExp"><span class="hs-identifier hs-var">SubExp</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; BasicOp) -&gt; SubExp -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354480"><span class="hs-identifier hs-var">src2</span></a></span><span>
+</span><span id="line-158"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684354478"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354478"><span class="hs-identifier hs-var">cs2</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354477"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354477"><span class="hs-identifier hs-var">src2</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354476"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354476"><span class="hs-identifier hs-var">src2_dec</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Slice"><span class="hs-identifier hs-type">Slice</span></a></span><span> </span><span id="local-6989586621684354475"><span class="annot"><span class="annottext">[DimIndex SubExp]
+</span><a href="#local-6989586621684354475"><span class="hs-identifier hs-var">is2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; IndexSubstitutions -&gt; Maybe IndexSubstitution
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354482"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354483"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-159"></span><span>    </span><span class="annot"><span class="annottext">Certs -&gt; m VName -&gt; m VName
+forall (m :: * -&gt; *) a. MonadBuilder m =&gt; Certs -&gt; m a -&gt; m a
+</span><a href="Futhark.Builder.Class.html#certifying"><span class="hs-identifier hs-var">certifying</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354478"><span class="hs-identifier hs-var">cs2</span></a></span><span> </span><span class="annot"><span class="annottext">(m VName -&gt; m VName) -&gt; m VName -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-160"></span><span>      </span><span class="annot"><span class="annottext">String -&gt; Exp (Rep m) -&gt; m VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; String
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354477"><span class="hs-identifier hs-var">src2</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_v_idx&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m VName) -&gt; Exp (Rep m) -&gt; m VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-161"></span><span>        </span><span class="annot"><span class="annottext">BasicOp -&gt; Exp (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; Exp (Rep m)) -&gt; BasicOp -&gt; Exp (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Slice SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#Index"><span class="hs-identifier hs-var">Index</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354477"><span class="hs-identifier hs-var">src2</span></a></span><span> </span><span class="annot"><span class="annottext">(Slice SubExp -&gt; BasicOp) -&gt; Slice SubExp -&gt; BasicOp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [DimIndex SubExp] -&gt; Slice SubExp
+</span><a href="Futhark.Construct.html#fullSlice"><span class="hs-identifier hs-var">fullSlice</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; Type
+forall t. Typed t =&gt; t -&gt; Type
+</span><a href="Futhark.IR.Prop.Types.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684354476"><span class="hs-identifier hs-var">src2_dec</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[DimIndex SubExp]
+</span><a href="#local-6989586621684354475"><span class="hs-identifier hs-var">is2</span></a></span><span>
+</span><span id="line-162"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-163"></span><span>    </span><span class="annot"><span class="annottext">VName -&gt; m VName
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354482"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span id="local-6989586621684354843"><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInBody"><span class="hs-identifier hs-type">substituteIndicesInBody</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-166"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354843"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Buildable"><span class="hs-identifier hs-type">Buildable</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354843"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#Aliased"><span class="hs-identifier hs-type">Aliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354843"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-167"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-168"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354843"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-169"></span><span>  </span><span class="annot"><a href="#local-6989586621684354843"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684354843"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span><span>
+</span><span id="line-170"></span><span id="substituteIndicesInBody"><span class="annot"><span class="annottext">substituteIndicesInBody :: forall (m :: * -&gt; *).
+(MonadBuilder m, Buildable (Rep m), Aliased (Rep m)) =&gt;
+IndexSubstitutions -&gt; Body (Rep m) -&gt; m (Body (Rep m))
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInBody"><span class="hs-identifier hs-var hs-var">substituteIndicesInBody</span></a></span></span><span> </span><span id="local-6989586621684354446"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354446"><span class="hs-identifier hs-var">substs</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><span class="annottext">BodyDec (Rep m)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684354444"><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684354444"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span id="local-6989586621684354443"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684354443"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-171"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684354442"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354442"><span class="hs-identifier hs-var">substs'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354441"><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684354441"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-172"></span><span>    </span><span class="annot"><span class="annottext">Stms (Rep m)
+-&gt; m (IndexSubstitutions, Stms (Rep m))
+-&gt; m (IndexSubstitutions, Stms (Rep m))
+forall rep a (m :: * -&gt; *) b.
+(Scoped rep a, LocalScope rep m) =&gt;
+a -&gt; m b -&gt; m b
+</span><a href="Futhark.IR.Prop.Scope.html#inScopeOf"><span class="hs-identifier hs-var">inScopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684354444"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">(m (IndexSubstitutions, Stms (Rep m))
+ -&gt; m (IndexSubstitutions, Stms (Rep m)))
+-&gt; m (IndexSubstitutions, Stms (Rep m))
+-&gt; m (IndexSubstitutions, Stms (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-173"></span><span>      </span><span class="annot"><span class="annottext">m IndexSubstitutions -&gt; m (IndexSubstitutions, Stms (Rep m))
+forall (m :: * -&gt; *) a.
+MonadBuilder m =&gt;
+m a -&gt; m (a, Stms (Rep m))
+</span><a href="Futhark.Builder.Class.html#collectStms"><span class="hs-identifier hs-var">collectStms</span></a></span><span> </span><span class="annot"><span class="annottext">(m IndexSubstitutions -&gt; m (IndexSubstitutions, Stms (Rep m)))
+-&gt; m IndexSubstitutions -&gt; m (IndexSubstitutions, Stms (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; Stms (Rep m) -&gt; m IndexSubstitutions
+forall (m :: * -&gt; *).
+(MonadBuilder m, Buildable (Rep m), Aliased (Rep m)) =&gt;
+IndexSubstitutions -&gt; Stms (Rep m) -&gt; m IndexSubstitutions
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInStms"><span class="hs-identifier hs-var">substituteIndicesInStms</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354446"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684354444"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-174"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684354438"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684354438"><span class="hs-identifier hs-var">res'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354437"><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684354437"><span class="hs-identifier hs-var">res_stms</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-175"></span><span>    </span><span class="annot"><span class="annottext">Stms (Rep m)
+-&gt; m (Result, Stms (Rep m)) -&gt; m (Result, Stms (Rep m))
+forall rep a (m :: * -&gt; *) b.
+(Scoped rep a, LocalScope rep m) =&gt;
+a -&gt; m b -&gt; m b
+</span><a href="Futhark.IR.Prop.Scope.html#inScopeOf"><span class="hs-identifier hs-var">inScopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684354441"><span class="hs-identifier hs-var">stms'</span></a></span><span> </span><span class="annot"><span class="annottext">(m (Result, Stms (Rep m)) -&gt; m (Result, Stms (Rep m)))
+-&gt; m (Result, Stms (Rep m)) -&gt; m (Result, Stms (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-176"></span><span>      </span><span class="annot"><span class="annottext">m Result -&gt; m (Result, Stms (Rep m))
+forall (m :: * -&gt; *) a.
+MonadBuilder m =&gt;
+m a -&gt; m (a, Stms (Rep m))
+</span><a href="Futhark.Builder.Class.html#collectStms"><span class="hs-identifier hs-var">collectStms</span></a></span><span> </span><span class="annot"><span class="annottext">(m Result -&gt; m (Result, Stms (Rep m)))
+-&gt; m Result -&gt; m (Result, Stms (Rep m))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(SubExpRes -&gt; m SubExpRes) -&gt; Result -&gt; m Result
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; SubExpRes -&gt; m SubExpRes
+forall {f :: * -&gt; *}.
+MonadBuilder f =&gt;
+IndexSubstitutions -&gt; SubExpRes -&gt; f SubExpRes
+</span><a href="#local-6989586621684354435"><span class="hs-identifier hs-var">onSubExpRes</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354442"><span class="hs-identifier hs-var">substs'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684354443"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-177"></span><span>  </span><span class="annot"><span class="annottext">Stms (Rep m) -&gt; Result -&gt; m (BodyT (Rep m))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Stms (Rep m) -&gt; Result -&gt; m (Body (Rep m))
+</span><a href="Futhark.Builder.Class.html#mkBodyM"><span class="hs-identifier hs-var">mkBodyM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684354441"><span class="hs-identifier hs-var">stms'</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (Rep m) -&gt; Stms (Rep m) -&gt; Stms (Rep m)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Stms (Rep m)
+</span><a href="#local-6989586621684354437"><span class="hs-identifier hs-var">res_stms</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684354438"><span class="hs-identifier hs-var">res'</span></a></span><span>
+</span><span id="line-178"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-179"></span><span>    </span><span id="local-6989586621684354435"><span class="annot"><span class="annottext">onSubExpRes :: IndexSubstitutions -&gt; SubExpRes -&gt; f SubExpRes
+</span><a href="#local-6989586621684354435"><span class="hs-identifier hs-var hs-var">onSubExpRes</span></a></span></span><span> </span><span id="local-6989586621684354427"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354427"><span class="hs-identifier hs-var">substs'</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#SubExpRes"><span class="hs-identifier hs-type">SubExpRes</span></a></span><span> </span><span id="local-6989586621684354425"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354425"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span id="local-6989586621684354424"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684354424"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-180"></span><span>      </span><span class="annot"><span class="annottext">Certs -&gt; SubExp -&gt; SubExpRes
+</span><a href="Futhark.IR.Syntax.html#SubExpRes"><span class="hs-identifier hs-var">SubExpRes</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684354425"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; SubExpRes) -&gt; f SubExp -&gt; f SubExpRes
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions -&gt; SubExp -&gt; f SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+IndexSubstitutions -&gt; SubExp -&gt; m SubExp
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#substituteIndicesInSubExp"><span class="hs-identifier hs-var">substituteIndicesInSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354427"><span class="hs-identifier hs-var">substs'</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684354424"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-181"></span><span>
+</span><span id="line-182"></span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#update"><span class="hs-identifier hs-type">update</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-183"></span><span>  </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-184"></span><span>  </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-185"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitution"><span class="hs-identifier hs-type">IndexSubstitution</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-186"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-187"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#IndexSubstitutions"><span class="hs-identifier hs-type">IndexSubstitutions</span></a></span><span>
+</span><span id="line-188"></span><span id="update"><span class="annot"><span class="annottext">update :: VName
+-&gt; VName
+-&gt; IndexSubstitution
+-&gt; IndexSubstitutions
+-&gt; IndexSubstitutions
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#update"><span class="hs-identifier hs-var hs-var">update</span></a></span></span><span> </span><span id="local-6989586621684354423"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354423"><span class="hs-identifier hs-var">needle</span></a></span></span><span> </span><span id="local-6989586621684354422"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354422"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621684354421"><span class="annot"><span class="annottext">IndexSubstitution
+</span><a href="#local-6989586621684354421"><span class="hs-identifier hs-var">subst</span></a></span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684354420"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354420"><span class="hs-identifier hs-var">othername</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684354419"><span class="annot"><span class="annottext">IndexSubstitution
+</span><a href="#local-6989586621684354419"><span class="hs-identifier hs-var">othersubst</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684354418"><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354418"><span class="hs-identifier hs-var">substs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-189"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354423"><span class="hs-identifier hs-var">needle</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; VName -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354420"><span class="hs-identifier hs-var">othername</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354422"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IndexSubstitution
+</span><a href="#local-6989586621684354421"><span class="hs-identifier hs-var">subst</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(VName, IndexSubstitution)
+-&gt; IndexSubstitutions -&gt; IndexSubstitutions
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354418"><span class="hs-identifier hs-var">substs</span></a></span><span>
+</span><span id="line-190"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354420"><span class="hs-identifier hs-var">othername</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IndexSubstitution
+</span><a href="#local-6989586621684354419"><span class="hs-identifier hs-var">othersubst</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(VName, IndexSubstitution)
+-&gt; IndexSubstitutions -&gt; IndexSubstitutions
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">VName
+-&gt; VName
+-&gt; IndexSubstitution
+-&gt; IndexSubstitutions
+-&gt; IndexSubstitutions
+</span><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#update"><span class="hs-identifier hs-var">update</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354423"><span class="hs-identifier hs-var">needle</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354422"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitution
+</span><a href="#local-6989586621684354421"><span class="hs-identifier hs-var">subst</span></a></span><span> </span><span class="annot"><span class="annottext">IndexSubstitutions
+</span><a href="#local-6989586621684354418"><span class="hs-identifier hs-var">substs</span></a></span><span>
+</span><span id="line-191"></span><span class="annot"><a href="Futhark.Optimise.InPlaceLowering.SubstituteIndices.html#update"><span class="hs-identifier hs-var">update</span></a></span><span> </span><span id="local-6989586621684354417"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354417"><span class="hs-identifier hs-var">needle</span></a></span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">IndexSubstitution
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; IndexSubstitutions
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; IndexSubstitutions) -&gt; String -&gt; IndexSubstitutions
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Cannot find substitution for &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684354417"><span class="hs-identifier hs-var">needle</span></a></span><span>
+</span><span id="line-192"></span></pre></body></html>

@@ -1,0 +1,657 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Internalise.AccurateSizes</span><span>
+</span><span id="line-4"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#argShapes"><span class="hs-identifier">argShapes</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-5"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureResultShape"><span class="hs-identifier">ensureResultShape</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureResultExtShape"><span class="hs-identifier">ensureResultExtShape</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureExtShape"><span class="hs-identifier">ensureExtShape</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureShape"><span class="hs-identifier">ensureShape</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureArgShapes"><span class="hs-identifier">ensureArgShapes</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-11"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Construct.html"><span class="hs-identifier">Futhark.Construct</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html"><span class="hs-identifier">Futhark.IR.SOACS</span></a></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html"><span class="hs-identifier">Futhark.Internalise.Monad</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.html"><span class="hs-identifier">Futhark.Util</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.html#takeLast"><span class="hs-identifier">takeLast</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span id="local-6989586621684381802"><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#shapeMapping"><span class="hs-identifier hs-type">shapeMapping</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-22"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684381802"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684381802"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-23"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SOACS.html#FParam"><span class="hs-identifier hs-type">FParam</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-24"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-25"></span><span>  </span><span class="annot"><a href="#local-6989586621684381802"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-26"></span><span id="shapeMapping"><span class="annot"><span class="annottext">shapeMapping :: forall (m :: * -&gt; *).
+(HasScope SOACS m, Monad m) =&gt;
+[FParam] -&gt; [Type] -&gt; m (Map VName SubExp)
+</span><a href="Futhark.Internalise.AccurateSizes.html#shapeMapping"><span class="hs-identifier hs-var hs-var">shapeMapping</span></a></span></span><span> </span><span id="local-6989586621684381603"><span class="annot"><span class="annottext">[FParam]
+</span><a href="#local-6989586621684381603"><span class="hs-identifier hs-var">all_params</span></a></span></span><span> </span><span id="local-6989586621684381602"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381602"><span class="hs-identifier hs-var">value_arg_types</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-27"></span><span>  </span><span class="annot"><span class="annottext">[Map VName SubExp] -&gt; Map VName SubExp
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([Map VName SubExp] -&gt; Map VName SubExp)
+-&gt; m [Map VName SubExp] -&gt; m (Map VName SubExp)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; Type -&gt; m (Map VName SubExp))
+-&gt; [Type] -&gt; [Type] -&gt; m [Map VName SubExp]
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m [c]
+</span><span class="hs-identifier hs-var">zipWithM</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; Type -&gt; m (Map VName SubExp)
+forall {f :: * -&gt; *}.
+Monad f =&gt;
+Type -&gt; Type -&gt; f (Map VName SubExp)
+</span><a href="#local-6989586621684381599"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Param DeclType -&gt; Type) -&gt; [Param DeclType] -&gt; [Type]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param DeclType -&gt; Type
+forall dec. Typed dec =&gt; Param dec -&gt; Type
+</span><a href="Futhark.IR.Prop.Patterns.html#paramType"><span class="hs-identifier hs-var">paramType</span></a></span><span> </span><span class="annot"><span class="annottext">[Param DeclType]
+</span><a href="#local-6989586621684381597"><span class="hs-identifier hs-var">value_params</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381602"><span class="hs-identifier hs-var">value_arg_types</span></a></span><span>
+</span><span id="line-28"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-29"></span><span>    </span><span id="local-6989586621684381597"><span class="annot"><span class="annottext">value_params :: [Param DeclType]
+</span><a href="#local-6989586621684381597"><span class="hs-identifier hs-var hs-var">value_params</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [Param DeclType] -&gt; [Param DeclType]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><a href="Futhark.Util.html#takeLast"><span class="hs-identifier hs-var">takeLast</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Type] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381602"><span class="hs-identifier hs-var">value_arg_types</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Param DeclType]
+[FParam]
+</span><a href="#local-6989586621684381603"><span class="hs-identifier hs-var">all_params</span></a></span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span>    </span><span id="local-6989586621684381599"><span class="annot"><span class="annottext">f :: Type -&gt; Type -&gt; f (Map VName SubExp)
+</span><a href="#local-6989586621684381599"><span class="hs-identifier hs-var hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684381577"><span class="annot"><span class="annottext">t1 :: Type
+</span><a href="#local-6989586621684381577"><span class="hs-identifier hs-var">t1</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Array"><span class="hs-identifier hs-type">Array</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span id="local-6989586621684381575"><span class="annot"><span class="annottext">t2 :: Type
+</span><a href="#local-6989586621684381575"><span class="hs-identifier hs-var">t2</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Array"><span class="hs-identifier hs-type">Array</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-32"></span><span>      </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; f (Map VName SubExp)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Map VName SubExp -&gt; f (Map VName SubExp))
+-&gt; Map VName SubExp -&gt; f (Map VName SubExp)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; Map VName SubExp
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; Map VName SubExp)
+-&gt; [(VName, SubExp)] -&gt; Map VName SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">((SubExp, SubExp) -&gt; Maybe (VName, SubExp))
+-&gt; [(SubExp, SubExp)] -&gt; [(VName, SubExp)]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="annot"><span class="annottext">(SubExp, SubExp) -&gt; Maybe (VName, SubExp)
+forall {b}. (SubExp, b) -&gt; Maybe (VName, b)
+</span><a href="#local-6989586621684381572"><span class="hs-identifier hs-var">match</span></a></span><span> </span><span class="annot"><span class="annottext">([(SubExp, SubExp)] -&gt; [(VName, SubExp)])
+-&gt; [(SubExp, SubExp)] -&gt; [(VName, SubExp)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; [(SubExp, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684381577"><span class="hs-identifier hs-var">t1</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684381575"><span class="hs-identifier hs-var">t2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-33"></span><span>    </span><span class="annot"><a href="#local-6989586621684381599"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Acc"><span class="hs-identifier hs-type">Acc</span></a></span><span> </span><span id="local-6989586621684381569"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381569"><span class="hs-identifier hs-var">acc1</span></a></span></span><span> </span><span id="local-6989586621684381568"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684381568"><span class="hs-identifier hs-var">ispace1</span></a></span></span><span> </span><span id="local-6989586621684381567"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381567"><span class="hs-identifier hs-var">ts1</span></a></span></span><span> </span><span class="annot"><span class="annottext">NoUniqueness
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Acc"><span class="hs-identifier hs-type">Acc</span></a></span><span> </span><span id="local-6989586621684381566"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381566"><span class="hs-identifier hs-var">acc2</span></a></span></span><span> </span><span id="local-6989586621684381565"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684381565"><span class="hs-identifier hs-var">ispace2</span></a></span></span><span> </span><span id="local-6989586621684381564"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381564"><span class="hs-identifier hs-var">ts2</span></a></span></span><span> </span><span class="annot"><span class="annottext">NoUniqueness
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-34"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684381562"><span class="annot"><span class="annottext">ispace_m :: Map VName SubExp
+</span><a href="#local-6989586621684381562"><span class="hs-identifier hs-var hs-var">ispace_m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-35"></span><span>            </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; Map VName SubExp
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; Map VName SubExp)
+-&gt; ([(SubExp, SubExp)] -&gt; [(VName, SubExp)])
+-&gt; [(SubExp, SubExp)]
+-&gt; Map VName SubExp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">((SubExp, SubExp) -&gt; Maybe (VName, SubExp))
+-&gt; [(SubExp, SubExp)] -&gt; [(VName, SubExp)]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="annot"><span class="annottext">(SubExp, SubExp) -&gt; Maybe (VName, SubExp)
+forall {b}. (SubExp, b) -&gt; Maybe (VName, b)
+</span><a href="#local-6989586621684381572"><span class="hs-identifier hs-var">match</span></a></span><span> </span><span class="annot"><span class="annottext">([(SubExp, SubExp)] -&gt; Map VName SubExp)
+-&gt; [(SubExp, SubExp)] -&gt; Map VName SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-36"></span><span>              </span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; [(SubExp, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape -&gt; [SubExp]
+forall d. ShapeBase d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#shapeDims"><span class="hs-identifier hs-var hs-var">shapeDims</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684381568"><span class="hs-identifier hs-var">ispace1</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Shape -&gt; [SubExp]
+forall d. ShapeBase d -&gt; [d]
+</span><a href="Futhark.IR.Syntax.Core.html#shapeDims"><span class="hs-identifier hs-var hs-var">shapeDims</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684381565"><span class="hs-identifier hs-var">ispace2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span>      </span><span id="local-6989586621684381559"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684381559"><span class="hs-identifier hs-var">arr_sizes_m</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Map VName SubExp] -&gt; Map VName SubExp
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([Map VName SubExp] -&gt; Map VName SubExp)
+-&gt; f [Map VName SubExp] -&gt; f (Map VName SubExp)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; Type -&gt; f (Map VName SubExp))
+-&gt; [Type] -&gt; [Type] -&gt; f [Map VName SubExp]
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m [c]
+</span><span class="hs-identifier hs-var">zipWithM</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; Type -&gt; f (Map VName SubExp)
+</span><a href="#local-6989586621684381599"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381567"><span class="hs-identifier hs-var">ts1</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381564"><span class="hs-identifier hs-var">ts2</span></a></span><span>
+</span><span id="line-38"></span><span>      </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; f (Map VName SubExp)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Map VName SubExp -&gt; f (Map VName SubExp))
+-&gt; Map VName SubExp -&gt; f (Map VName SubExp)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp -&gt; Map VName SubExp
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381569"><span class="hs-identifier hs-var">acc1</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381566"><span class="hs-identifier hs-var">acc2</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Map VName SubExp -&gt; Map VName SubExp
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684381562"><span class="hs-identifier hs-var">ispace_m</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Map VName SubExp -&gt; Map VName SubExp
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684381559"><span class="hs-identifier hs-var">arr_sizes_m</span></a></span><span>
+</span><span id="line-39"></span><span>    </span><span class="annot"><a href="#local-6989586621684381599"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Type
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-40"></span><span>      </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; f (Map VName SubExp)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span>    </span><span id="local-6989586621684381572"><span class="annot"><span class="annottext">match :: (SubExp, b) -&gt; Maybe (VName, b)
+</span><a href="#local-6989586621684381572"><span class="hs-identifier hs-var hs-var">match</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684381556"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381556"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684381555"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621684381555"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VName, b) -&gt; Maybe (VName, b)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381556"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621684381555"><span class="hs-identifier hs-var">se</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>    </span><span class="annot"><a href="#local-6989586621684381572"><span class="hs-identifier hs-var">match</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp, b)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (VName, b)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#argShapes"><span class="hs-identifier hs-type">argShapes</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SOACS.html#FParam"><span class="hs-identifier hs-type">FParam</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-46"></span><span id="argShapes"><span class="annot"><span class="annottext">argShapes :: [VName] -&gt; [FParam] -&gt; [Type] -&gt; InternaliseM [SubExp]
+</span><a href="Futhark.Internalise.AccurateSizes.html#argShapes"><span class="hs-identifier hs-var hs-var">argShapes</span></a></span></span><span> </span><span id="local-6989586621684381554"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684381554"><span class="hs-identifier hs-var">shapes</span></a></span></span><span> </span><span id="local-6989586621684381553"><span class="annot"><span class="annottext">[FParam]
+</span><a href="#local-6989586621684381553"><span class="hs-identifier hs-var">all_params</span></a></span></span><span> </span><span id="local-6989586621684381552"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381552"><span class="hs-identifier hs-var">valargts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-47"></span><span>  </span><span id="local-6989586621684381551"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684381551"><span class="hs-identifier hs-var">mapping</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[FParam] -&gt; [Type] -&gt; InternaliseM (Map VName SubExp)
+forall (m :: * -&gt; *).
+(HasScope SOACS m, Monad m) =&gt;
+[FParam] -&gt; [Type] -&gt; m (Map VName SubExp)
+</span><a href="Futhark.Internalise.AccurateSizes.html#shapeMapping"><span class="hs-identifier hs-var">shapeMapping</span></a></span><span> </span><span class="annot"><span class="annottext">[FParam]
+</span><a href="#local-6989586621684381553"><span class="hs-identifier hs-var">all_params</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381552"><span class="hs-identifier hs-var">valargts</span></a></span><span>
+</span><span id="line-48"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684381545"><span class="annot"><span class="annottext">addShape :: VName -&gt; SubExp
+</span><a href="#local-6989586621684381545"><span class="hs-identifier hs-var hs-var">addShape</span></a></span></span><span> </span><span id="local-6989586621684381544"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381544"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-49"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Map VName SubExp -&gt; Maybe SubExp
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381544"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684381551"><span class="hs-identifier hs-var">mapping</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-50"></span><span>          </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684381542"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381542"><span class="hs-identifier hs-var">se</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381542"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-51"></span><span>          </span><span class="annot"><span class="annottext">Maybe SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; SubExp
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; SubExp) -&gt; [Char] -&gt; SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;argShapes: &quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; [Char]
+forall a. Pretty a =&gt; a -&gt; [Char]
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381544"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><span class="annottext">[SubExp] -&gt; InternaliseM [SubExp]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; InternaliseM [SubExp])
+-&gt; [SubExp] -&gt; InternaliseM [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; [VName] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="#local-6989586621684381545"><span class="hs-identifier hs-var">addShape</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684381554"><span class="hs-identifier hs-var">shapes</span></a></span><span>
+</span><span id="line-53"></span><span>
+</span><span id="line-54"></span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureResultShape"><span class="hs-identifier hs-type">ensureResultShape</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-55"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ErrorMsg"><span class="hs-identifier hs-type">ErrorMsg</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">SrcLoc</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-57"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-58"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Result"><span class="hs-identifier hs-type">Result</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Result"><span class="hs-identifier hs-type">Result</span></a></span><span>
+</span><span id="line-60"></span><span id="ensureResultShape"><span class="annot"><span class="annottext">ensureResultShape :: ErrorMsg SubExp
+-&gt; SrcLoc -&gt; [Type] -&gt; Result -&gt; InternaliseM Result
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureResultShape"><span class="hs-identifier hs-var hs-var">ensureResultShape</span></a></span></span><span> </span><span id="local-6989586621684381539"><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381539"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span id="local-6989586621684381538"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381538"><span class="hs-identifier hs-var">loc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-61"></span><span>  </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+-&gt; SrcLoc -&gt; [ExtType] -&gt; Result -&gt; InternaliseM Result
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureResultExtShape"><span class="hs-identifier hs-var">ensureResultExtShape</span></a></span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381539"><span class="hs-identifier hs-var">msg</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381538"><span class="hs-identifier hs-var">loc</span></a></span><span> </span><span class="annot"><span class="annottext">([ExtType] -&gt; Result -&gt; InternaliseM Result)
+-&gt; ([Type] -&gt; [ExtType]) -&gt; [Type] -&gt; Result -&gt; InternaliseM Result
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[Type] -&gt; [ExtType]
+forall u. [TypeBase Shape u] -&gt; [TypeBase ExtShape u]
+</span><a href="Futhark.IR.Prop.Types.html#staticShapes"><span class="hs-identifier hs-var">staticShapes</span></a></span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureResultExtShape"><span class="hs-identifier hs-type">ensureResultExtShape</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-64"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ErrorMsg"><span class="hs-identifier hs-type">ErrorMsg</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-65"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">SrcLoc</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtType"><span class="hs-identifier hs-type">ExtType</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-67"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Result"><span class="hs-identifier hs-type">Result</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Result"><span class="hs-identifier hs-type">Result</span></a></span><span>
+</span><span id="line-69"></span><span id="ensureResultExtShape"><span class="annot"><span class="annottext">ensureResultExtShape :: ErrorMsg SubExp
+-&gt; SrcLoc -&gt; [ExtType] -&gt; Result -&gt; InternaliseM Result
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureResultExtShape"><span class="hs-identifier hs-var hs-var">ensureResultExtShape</span></a></span></span><span> </span><span id="local-6989586621684381536"><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381536"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span id="local-6989586621684381535"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381535"><span class="hs-identifier hs-var">loc</span></a></span></span><span> </span><span id="local-6989586621684381534"><span class="annot"><span class="annottext">[ExtType]
+</span><a href="#local-6989586621684381534"><span class="hs-identifier hs-var">rettype</span></a></span></span><span> </span><span id="local-6989586621684381533"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684381533"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-70"></span><span>  </span><span id="local-6989586621684381532"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684381532"><span class="hs-identifier hs-var">res'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+-&gt; SrcLoc -&gt; [ExtType] -&gt; Result -&gt; InternaliseM Result
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureResultExtShapeNoCtx"><span class="hs-identifier hs-var">ensureResultExtShapeNoCtx</span></a></span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381536"><span class="hs-identifier hs-var">msg</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381535"><span class="hs-identifier hs-var">loc</span></a></span><span> </span><span class="annot"><span class="annottext">[ExtType]
+</span><a href="#local-6989586621684381534"><span class="hs-identifier hs-var">rettype</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684381533"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-71"></span><span>  </span><span id="local-6989586621684381530"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381530"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(SubExpRes -&gt; InternaliseM Type) -&gt; Result -&gt; InternaliseM [Type]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">SubExpRes -&gt; InternaliseM Type
+forall t (m :: * -&gt; *). HasScope t m =&gt; SubExpRes -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpResType"><span class="hs-identifier hs-var">subExpResType</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684381532"><span class="hs-identifier hs-var">res'</span></a></span><span>
+</span><span id="line-72"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684381527"><span class="annot"><span class="annottext">ctx :: [SubExp]
+</span><a href="#local-6989586621684381527"><span class="hs-identifier hs-var hs-var">ctx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ExtType] -&gt; [[SubExp]] -&gt; [SubExp]
+forall u a. [TypeBase ExtShape u] -&gt; [[a]] -&gt; [a]
+</span><a href="Futhark.IR.Prop.Types.html#extractShapeContext"><span class="hs-identifier hs-var">extractShapeContext</span></a></span><span> </span><span class="annot"><span class="annottext">[ExtType]
+</span><a href="#local-6989586621684381534"><span class="hs-identifier hs-var">rettype</span></a></span><span> </span><span class="annot"><span class="annottext">([[SubExp]] -&gt; [SubExp]) -&gt; [[SubExp]] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [SubExp]) -&gt; [Type] -&gt; [[SubExp]]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381530"><span class="hs-identifier hs-var">ts</span></a></span><span>
+</span><span id="line-73"></span><span>  </span><span class="annot"><span class="annottext">Result -&gt; InternaliseM Result
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Result -&gt; InternaliseM Result) -&gt; Result -&gt; InternaliseM Result
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Result
+</span><a href="Futhark.IR.Syntax.html#subExpsRes"><span class="hs-identifier hs-var">subExpsRes</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381527"><span class="hs-identifier hs-var">ctx</span></a></span><span> </span><span class="annot"><span class="annottext">Result -&gt; Result -&gt; Result
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684381532"><span class="hs-identifier hs-var">res'</span></a></span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureResultExtShapeNoCtx"><span class="hs-identifier hs-type">ensureResultExtShapeNoCtx</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-76"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ErrorMsg"><span class="hs-identifier hs-type">ErrorMsg</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-77"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">SrcLoc</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtType"><span class="hs-identifier hs-type">ExtType</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-79"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Result"><span class="hs-identifier hs-type">Result</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-80"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Result"><span class="hs-identifier hs-type">Result</span></a></span><span>
+</span><span id="line-81"></span><span id="ensureResultExtShapeNoCtx"><span class="annot"><span class="annottext">ensureResultExtShapeNoCtx :: ErrorMsg SubExp
+-&gt; SrcLoc -&gt; [ExtType] -&gt; Result -&gt; InternaliseM Result
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureResultExtShapeNoCtx"><span class="hs-identifier hs-var hs-var">ensureResultExtShapeNoCtx</span></a></span></span><span> </span><span id="local-6989586621684381524"><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381524"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span id="local-6989586621684381523"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381523"><span class="hs-identifier hs-var">loc</span></a></span></span><span> </span><span id="local-6989586621684381522"><span class="annot"><span class="annottext">[ExtType]
+</span><a href="#local-6989586621684381522"><span class="hs-identifier hs-var">rettype</span></a></span></span><span> </span><span id="local-6989586621684381521"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684381521"><span class="hs-identifier hs-var">es</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-82"></span><span>  </span><span id="local-6989586621684381520"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381520"><span class="hs-identifier hs-var">es_ts</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(SubExpRes -&gt; InternaliseM Type) -&gt; Result -&gt; InternaliseM [Type]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">SubExpRes -&gt; InternaliseM Type
+forall t (m :: * -&gt; *). HasScope t m =&gt; SubExpRes -&gt; m Type
+</span><a href="Futhark.IR.Prop.TypeOf.html#subExpResType"><span class="hs-identifier hs-var">subExpResType</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684381521"><span class="hs-identifier hs-var">es</span></a></span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684381519"><span class="annot"><span class="annottext">ext_mapping :: Map Int SubExp
+</span><a href="#local-6989586621684381519"><span class="hs-identifier hs-var hs-var">ext_mapping</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[ExtType] -&gt; [Type] -&gt; Map Int SubExp
+forall u u1.
+[TypeBase ExtShape u] -&gt; [TypeBase Shape u1] -&gt; Map Int SubExp
+</span><a href="Futhark.IR.Prop.Types.html#shapeExtMapping"><span class="hs-identifier hs-var">shapeExtMapping</span></a></span><span> </span><span class="annot"><span class="annottext">[ExtType]
+</span><a href="#local-6989586621684381522"><span class="hs-identifier hs-var">rettype</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684381520"><span class="hs-identifier hs-var">es_ts</span></a></span><span>
+</span><span id="line-84"></span><span>      </span><span id="local-6989586621684381506"><span class="annot"><span class="annottext">rettype' :: [ExtType]
+</span><a href="#local-6989586621684381506"><span class="hs-identifier hs-var hs-var">rettype'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((Int, SubExp) -&gt; [ExtType] -&gt; [ExtType])
+-&gt; [ExtType] -&gt; [(Int, SubExp)] -&gt; [ExtType]
+forall (t :: * -&gt; *) a b.
+Foldable t =&gt;
+(a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Int -&gt; SubExp -&gt; [ExtType] -&gt; [ExtType])
+-&gt; (Int, SubExp) -&gt; [ExtType] -&gt; [ExtType]
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; SubExp -&gt; [ExtType] -&gt; [ExtType]
+forall t. FixExt t =&gt; Int -&gt; SubExp -&gt; t -&gt; t
+</span><a href="Futhark.IR.Prop.Types.html#fixExt"><span class="hs-identifier hs-var">fixExt</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[ExtType]
+</span><a href="#local-6989586621684381522"><span class="hs-identifier hs-var">rettype</span></a></span><span> </span><span class="annot"><span class="annottext">([(Int, SubExp)] -&gt; [ExtType]) -&gt; [(Int, SubExp)] -&gt; [ExtType]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Int SubExp -&gt; [(Int, SubExp)]
+forall k a. Map k a -&gt; [(k, a)]
+</span><span class="hs-identifier hs-var">M.toList</span></span><span> </span><span class="annot"><span class="annottext">Map Int SubExp
+</span><a href="#local-6989586621684381519"><span class="hs-identifier hs-var">ext_mapping</span></a></span><span>
+</span><span id="line-85"></span><span>      </span><span id="local-6989586621684381500"><span class="annot"><span class="annottext">assertProperShape :: ExtType -&gt; SubExpRes -&gt; InternaliseM SubExpRes
+</span><a href="#local-6989586621684381500"><span class="hs-identifier hs-var hs-var">assertProperShape</span></a></span></span><span> </span><span id="local-6989586621684381499"><span class="annot"><span class="annottext">ExtType
+</span><a href="#local-6989586621684381499"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#SubExpRes"><span class="hs-identifier hs-type">SubExpRes</span></a></span><span> </span><span id="local-6989586621684381497"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684381497"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span id="local-6989586621684381496"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381496"><span class="hs-identifier hs-var">se</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-86"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684381495"><span class="annot"><span class="annottext">name :: [Char]
+</span><a href="#local-6989586621684381495"><span class="hs-identifier hs-var hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;result_proper_shape&quot;</span></span><span>
+</span><span id="line-87"></span><span>         </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Certs -&gt; SubExp -&gt; SubExpRes
+</span><a href="Futhark.IR.Syntax.html#SubExpRes"><span class="hs-identifier hs-var">SubExpRes</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684381497"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; SubExpRes)
+-&gt; InternaliseM SubExp -&gt; InternaliseM SubExpRes
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+-&gt; SrcLoc -&gt; ExtType -&gt; [Char] -&gt; SubExp -&gt; InternaliseM SubExp
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureExtShape"><span class="hs-identifier hs-var">ensureExtShape</span></a></span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381524"><span class="hs-identifier hs-var">msg</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381523"><span class="hs-identifier hs-var">loc</span></a></span><span> </span><span class="annot"><span class="annottext">ExtType
+</span><a href="#local-6989586621684381499"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684381495"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381496"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-88"></span><span>  </span><span class="annot"><span class="annottext">(ExtType -&gt; SubExpRes -&gt; InternaliseM SubExpRes)
+-&gt; [ExtType] -&gt; Result -&gt; InternaliseM Result
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m [c]
+</span><span class="hs-identifier hs-var">zipWithM</span></span><span> </span><span class="annot"><span class="annottext">ExtType -&gt; SubExpRes -&gt; InternaliseM SubExpRes
+</span><a href="#local-6989586621684381500"><span class="hs-identifier hs-var">assertProperShape</span></a></span><span> </span><span class="annot"><span class="annottext">[ExtType]
+</span><a href="#local-6989586621684381506"><span class="hs-identifier hs-var">rettype'</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684381521"><span class="hs-identifier hs-var">es</span></a></span><span>
+</span><span id="line-89"></span><span>
+</span><span id="line-90"></span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureExtShape"><span class="hs-identifier hs-type">ensureExtShape</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-91"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ErrorMsg"><span class="hs-identifier hs-type">ErrorMsg</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-92"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">SrcLoc</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-93"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtType"><span class="hs-identifier hs-type">ExtType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-94"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-95"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-96"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span>
+</span><span id="line-97"></span><span id="ensureExtShape"><span class="annot"><span class="annottext">ensureExtShape :: ErrorMsg SubExp
+-&gt; SrcLoc -&gt; ExtType -&gt; [Char] -&gt; SubExp -&gt; InternaliseM SubExp
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureExtShape"><span class="hs-identifier hs-var hs-var">ensureExtShape</span></a></span></span><span> </span><span id="local-6989586621684381494"><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381494"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span id="local-6989586621684381493"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381493"><span class="hs-identifier hs-var">loc</span></a></span></span><span> </span><span id="local-6989586621684381492"><span class="annot"><span class="annottext">ExtType
+</span><a href="#local-6989586621684381492"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621684381491"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684381491"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621684381490"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381490"><span class="hs-identifier hs-var">orig</span></a></span></span><span>
+</span><span id="line-98"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Array"><span class="hs-identifier hs-type">Array</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ExtType
+</span><a href="#local-6989586621684381492"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-99"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684381489"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381489"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381490"><span class="hs-identifier hs-var">orig</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-100"></span><span>    </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; InternaliseM VName -&gt; InternaliseM SubExp
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+-&gt; SrcLoc -&gt; ExtType -&gt; [Char] -&gt; VName -&gt; InternaliseM VName
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureShapeVar"><span class="hs-identifier hs-var">ensureShapeVar</span></a></span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381494"><span class="hs-identifier hs-var">msg</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381493"><span class="hs-identifier hs-var">loc</span></a></span><span> </span><span class="annot"><span class="annottext">ExtType
+</span><a href="#local-6989586621684381492"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684381491"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381489"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; InternaliseM SubExp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381490"><span class="hs-identifier hs-var">orig</span></a></span><span>
+</span><span id="line-102"></span><span>
+</span><span id="line-103"></span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureShape"><span class="hs-identifier hs-type">ensureShape</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-104"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ErrorMsg"><span class="hs-identifier hs-type">ErrorMsg</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-105"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">SrcLoc</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-106"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-107"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-108"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-109"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span>
+</span><span id="line-110"></span><span id="ensureShape"><span class="annot"><span class="annottext">ensureShape :: ErrorMsg SubExp
+-&gt; SrcLoc -&gt; Type -&gt; [Char] -&gt; SubExp -&gt; InternaliseM SubExp
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureShape"><span class="hs-identifier hs-var hs-var">ensureShape</span></a></span></span><span> </span><span id="local-6989586621684381487"><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381487"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span id="local-6989586621684381486"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381486"><span class="hs-identifier hs-var">loc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+-&gt; SrcLoc -&gt; ExtType -&gt; [Char] -&gt; SubExp -&gt; InternaliseM SubExp
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureExtShape"><span class="hs-identifier hs-var">ensureExtShape</span></a></span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381487"><span class="hs-identifier hs-var">msg</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381486"><span class="hs-identifier hs-var">loc</span></a></span><span> </span><span class="annot"><span class="annottext">(ExtType -&gt; [Char] -&gt; SubExp -&gt; InternaliseM SubExp)
+-&gt; (Type -&gt; ExtType)
+-&gt; Type
+-&gt; [Char]
+-&gt; SubExp
+-&gt; InternaliseM SubExp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; ExtType
+forall u. TypeBase Shape u -&gt; TypeBase ExtShape u
+</span><a href="Futhark.IR.Prop.Types.html#staticShapes1"><span class="hs-identifier hs-var">staticShapes1</span></a></span><span>
+</span><span id="line-111"></span><span>
+</span><span id="line-112"></span><span class="hs-comment">-- | Reshape the arguments to a function so that they fit the expected</span><span>
+</span><span id="line-113"></span><span class="hs-comment">-- shape declarations.  Not used to change rank of arguments.  Assumes</span><span>
+</span><span id="line-114"></span><span class="hs-comment">-- everything is otherwise type-correct.</span><span>
+</span><span id="line-115"></span><span id="local-6989586621684381700"><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureArgShapes"><span class="hs-identifier hs-type">ensureArgShapes</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-116"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Types.html#Typed"><span class="hs-identifier hs-type">Typed</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684381700"><span class="hs-identifier hs-type">u</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-117"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ErrorMsg"><span class="hs-identifier hs-type">ErrorMsg</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-118"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">SrcLoc</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-119"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-120"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#TypeBase"><span class="hs-identifier hs-type">TypeBase</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Shape"><span class="hs-identifier hs-type">Shape</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684381700"><span class="hs-identifier hs-type">u</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-121"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-122"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-123"></span><span id="ensureArgShapes"><span class="annot"><span class="annottext">ensureArgShapes :: forall u.
+Typed (TypeBase Shape u) =&gt;
+ErrorMsg SubExp
+-&gt; SrcLoc
+-&gt; [VName]
+-&gt; [TypeBase Shape u]
+-&gt; [SubExp]
+-&gt; InternaliseM [SubExp]
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureArgShapes"><span class="hs-identifier hs-var hs-var">ensureArgShapes</span></a></span></span><span> </span><span id="local-6989586621684381481"><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381481"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span id="local-6989586621684381480"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381480"><span class="hs-identifier hs-var">loc</span></a></span></span><span> </span><span id="local-6989586621684381479"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684381479"><span class="hs-identifier hs-var">shapes</span></a></span></span><span> </span><span id="local-6989586621684381478"><span class="annot"><span class="annottext">[TypeBase Shape u]
+</span><a href="#local-6989586621684381478"><span class="hs-identifier hs-var">paramts</span></a></span></span><span> </span><span id="local-6989586621684381477"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381477"><span class="hs-identifier hs-var">args</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-124"></span><span>  </span><span class="annot"><span class="annottext">(Type -&gt; SubExp -&gt; InternaliseM SubExp)
+-&gt; [Type] -&gt; [SubExp] -&gt; InternaliseM [SubExp]
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m [c]
+</span><span class="hs-identifier hs-var">zipWithM</span></span><span> </span><span class="annot"><span class="annottext">Type -&gt; SubExp -&gt; InternaliseM SubExp
+</span><a href="#local-6989586621684381476"><span class="hs-identifier hs-var">ensureArgShape</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [TypeBase Shape u] -&gt; [SubExp] -&gt; [Type]
+forall t. Typed t =&gt; [VName] -&gt; [t] -&gt; [SubExp] -&gt; [Type]
+</span><a href="Futhark.IR.RetType.html#expectedTypes"><span class="hs-identifier hs-var">expectedTypes</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684381479"><span class="hs-identifier hs-var">shapes</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase Shape u]
+</span><a href="#local-6989586621684381478"><span class="hs-identifier hs-var">paramts</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381477"><span class="hs-identifier hs-var">args</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381477"><span class="hs-identifier hs-var">args</span></a></span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-126"></span><span>    </span><span id="local-6989586621684381476"><span class="annot"><span class="annottext">ensureArgShape :: Type -&gt; SubExp -&gt; InternaliseM SubExp
+</span><a href="#local-6989586621684381476"><span class="hs-identifier hs-var hs-var">ensureArgShape</span></a></span></span><span> </span><span class="annot"><span class="annottext">Type
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Constant"><span class="hs-identifier hs-type">Constant</span></a></span><span> </span><span id="local-6989586621684381465"><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684381465"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; InternaliseM SubExp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; InternaliseM SubExp) -&gt; SubExp -&gt; InternaliseM SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimValue -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Constant"><span class="hs-identifier hs-var">Constant</span></a></span><span> </span><span class="annot"><span class="annottext">PrimValue
+</span><a href="#local-6989586621684381465"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-127"></span><span>    </span><span class="annot"><a href="#local-6989586621684381476"><span class="hs-identifier hs-var">ensureArgShape</span></a></span><span> </span><span id="local-6989586621684381464"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684381464"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684381463"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381463"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-128"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Type -&gt; Int
+forall shape u. ArrayShape shape =&gt; TypeBase shape u -&gt; Int
+</span><a href="Futhark.IR.Prop.Types.html#arrayRank"><span class="hs-identifier hs-var">arrayRank</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684381464"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; InternaliseM SubExp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; InternaliseM SubExp) -&gt; SubExp -&gt; InternaliseM SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381463"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-129"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-130"></span><span>        </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+-&gt; SrcLoc -&gt; Type -&gt; [Char] -&gt; SubExp -&gt; InternaliseM SubExp
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureShape"><span class="hs-identifier hs-var">ensureShape</span></a></span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381481"><span class="hs-identifier hs-var">msg</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381480"><span class="hs-identifier hs-var">loc</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621684381464"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; [Char]
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381463"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; InternaliseM SubExp) -&gt; SubExp -&gt; InternaliseM SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381463"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-131"></span><span>
+</span><span id="line-132"></span><span class="annot"><a href="Futhark.Internalise.AccurateSizes.html#ensureShapeVar"><span class="hs-identifier hs-type">ensureShapeVar</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-133"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ErrorMsg"><span class="hs-identifier hs-type">ErrorMsg</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-134"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">SrcLoc</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-135"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#ExtType"><span class="hs-identifier hs-type">ExtType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-136"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-137"></span><span>  </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-138"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span>
+</span><span id="line-139"></span><span id="ensureShapeVar"><span class="annot"><span class="annottext">ensureShapeVar :: ErrorMsg SubExp
+-&gt; SrcLoc -&gt; ExtType -&gt; [Char] -&gt; VName -&gt; InternaliseM VName
+</span><a href="Futhark.Internalise.AccurateSizes.html#ensureShapeVar"><span class="hs-identifier hs-var hs-var">ensureShapeVar</span></a></span></span><span> </span><span id="local-6989586621684381459"><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381459"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span id="local-6989586621684381458"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381458"><span class="hs-identifier hs-var">loc</span></a></span></span><span> </span><span id="local-6989586621684381457"><span class="annot"><span class="annottext">ExtType
+</span><a href="#local-6989586621684381457"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621684381456"><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684381456"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621684381455"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381455"><span class="hs-identifier hs-var">v</span></a></span></span><span>
+</span><span id="line-140"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Array"><span class="hs-identifier hs-type">Array</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ExtType
+</span><a href="#local-6989586621684381457"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-141"></span><span>    </span><span id="local-6989586621684381454"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381454"><span class="hs-identifier hs-var">newdims</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [SubExp]) -&gt; (Type -&gt; Type) -&gt; Type -&gt; [SubExp]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ExtType -&gt; Type -&gt; Type
+</span><a href="Futhark.Construct.html#removeExistentials"><span class="hs-identifier hs-var">removeExistentials</span></a></span><span> </span><span class="annot"><span class="annottext">ExtType
+</span><a href="#local-6989586621684381457"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [SubExp]) -&gt; InternaliseM Type -&gt; InternaliseM [SubExp]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; InternaliseM Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381455"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-142"></span><span>    </span><span id="local-6989586621684381451"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381451"><span class="hs-identifier hs-var">olddims</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Type -&gt; [SubExp]
+forall u. TypeBase Shape u -&gt; [SubExp]
+</span><a href="Futhark.IR.Prop.Types.html#arrayDims"><span class="hs-identifier hs-var">arrayDims</span></a></span><span> </span><span class="annot"><span class="annottext">(Type -&gt; [SubExp]) -&gt; InternaliseM Type -&gt; InternaliseM [SubExp]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; InternaliseM Type
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; VName -&gt; m Type
+</span><a href="Futhark.IR.Prop.Scope.html#lookupType"><span class="hs-identifier hs-var">lookupType</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381455"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-143"></span><span>    </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381454"><span class="hs-identifier hs-var">newdims</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; [SubExp] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381451"><span class="hs-identifier hs-var">olddims</span></a></span><span>
+</span><span id="line-144"></span><span>      </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">VName -&gt; InternaliseM VName
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381455"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-145"></span><span>      </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-146"></span><span>        </span><span id="local-6989586621684381450"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381450"><span class="hs-identifier hs-var">matches</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; SubExp -&gt; InternaliseM SubExp)
+-&gt; [SubExp] -&gt; [SubExp] -&gt; InternaliseM [SubExp]
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m [c]
+</span><span class="hs-identifier hs-var">zipWithM</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; SubExp -&gt; InternaliseM SubExp
+forall {m :: * -&gt; *}.
+MonadBuilder m =&gt;
+SubExp -&gt; SubExp -&gt; m SubExp
+</span><a href="#local-6989586621684381449"><span class="hs-identifier hs-var">checkDim</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381454"><span class="hs-identifier hs-var">newdims</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381451"><span class="hs-identifier hs-var">olddims</span></a></span><span>
+</span><span id="line-147"></span><span>        </span><span id="local-6989586621684381448"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381448"><span class="hs-identifier hs-var">all_match</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Exp (Rep InternaliseM) -&gt; InternaliseM SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[Char] -&gt; Exp (Rep m) -&gt; m SubExp
+</span><a href="Futhark.Construct.html#letSubExp"><span class="hs-identifier hs-var">letSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;match&quot;</span></span><span> </span><span class="annot"><span class="annottext">(ExpT SOACS -&gt; InternaliseM SubExp)
+-&gt; InternaliseM (ExpT SOACS) -&gt; InternaliseM SubExp
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; InternaliseM (Exp (Rep InternaliseM))
+forall (m :: * -&gt; *). MonadBuilder m =&gt; [SubExp] -&gt; m (Exp (Rep m))
+</span><a href="Futhark.Construct.html#eAll"><span class="hs-identifier hs-var">eAll</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381450"><span class="hs-identifier hs-var">matches</span></a></span><span>
+</span><span id="line-148"></span><span>        </span><span id="local-6989586621684381444"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684381444"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; SubExp -&gt; ErrorMsg SubExp -&gt; SrcLoc -&gt; InternaliseM Certs
+</span><a href="Futhark.Internalise.Monad.html#assert"><span class="hs-identifier hs-var">assert</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;empty_or_match_cert&quot;</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381448"><span class="hs-identifier hs-var">all_match</span></a></span><span> </span><span class="annot"><span class="annottext">ErrorMsg SubExp
+</span><a href="#local-6989586621684381459"><span class="hs-identifier hs-var">msg</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684381458"><span class="hs-identifier hs-var">loc</span></a></span><span>
+</span><span id="line-149"></span><span>        </span><span class="annot"><span class="annottext">Certs -&gt; InternaliseM VName -&gt; InternaliseM VName
+forall (m :: * -&gt; *) a. MonadBuilder m =&gt; Certs -&gt; m a -&gt; m a
+</span><a href="Futhark.Builder.Class.html#certifying"><span class="hs-identifier hs-var">certifying</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684381444"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseM VName -&gt; InternaliseM VName)
+-&gt; InternaliseM VName -&gt; InternaliseM VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Exp (Rep InternaliseM) -&gt; InternaliseM VName
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[Char] -&gt; Exp (Rep m) -&gt; m VName
+</span><a href="Futhark.Construct.html#letExp"><span class="hs-identifier hs-var">letExp</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><a href="#local-6989586621684381456"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep InternaliseM) -&gt; InternaliseM VName)
+-&gt; Exp (Rep InternaliseM) -&gt; InternaliseM VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; VName -&gt; ExpT SOACS
+forall rep. [SubExp] -&gt; VName -&gt; Exp rep
+</span><a href="Futhark.IR.Prop.Reshape.html#shapeCoerce"><span class="hs-identifier hs-var">shapeCoerce</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684381454"><span class="hs-identifier hs-var">newdims</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381455"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-150"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; InternaliseM VName
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684381455"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-151"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-152"></span><span>    </span><span id="local-6989586621684381449"><span class="annot"><span class="annottext">checkDim :: SubExp -&gt; SubExp -&gt; m SubExp
+</span><a href="#local-6989586621684381449"><span class="hs-identifier hs-var hs-var">checkDim</span></a></span></span><span> </span><span id="local-6989586621684381437"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381437"><span class="hs-identifier hs-var">desired</span></a></span></span><span> </span><span id="local-6989586621684381436"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381436"><span class="hs-identifier hs-var">has</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-153"></span><span>      </span><span class="annot"><span class="annottext">[Char] -&gt; Exp (Rep m) -&gt; m SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[Char] -&gt; Exp (Rep m) -&gt; m SubExp
+</span><a href="Futhark.Construct.html#letSubExp"><span class="hs-identifier hs-var">letSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;dim_match&quot;</span></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m SubExp) -&gt; Exp (Rep m) -&gt; m SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; Exp (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; Exp (Rep m)) -&gt; BasicOp -&gt; Exp (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">CmpOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#CmpOp"><span class="hs-identifier hs-var">CmpOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PrimType -&gt; CmpOp
+</span><a href="Futhark.IR.Primitive.html#CmpEq"><span class="hs-identifier hs-var">CmpEq</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int64"><span class="hs-identifier hs-var">int64</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381437"><span class="hs-identifier hs-var">desired</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684381436"><span class="hs-identifier hs-var">has</span></a></span><span>
+</span><span id="line-154"></span></pre></body></html>

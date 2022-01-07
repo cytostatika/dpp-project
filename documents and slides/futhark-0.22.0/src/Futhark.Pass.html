@@ -1,0 +1,408 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE Strict #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- | Definition of a polymorphic (generic) pass that can work with</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- programs of any rep.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Pass</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier">PassM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Pass.html#runPassM"><span class="hs-identifier">runPassM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Pass.html#liftEither"><span class="hs-identifier">liftEither</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.Pass.html#liftEitherM"><span class="hs-identifier">liftEitherM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier">Pass</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>    </span><span class="annot"><a href="Futhark.Pass.html#passLongOption"><span class="hs-identifier">passLongOption</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><a href="Futhark.Pass.html#parPass"><span class="hs-identifier">parPass</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>    </span><span class="annot"><a href="Futhark.Pass.html#intraproceduralTransformation"><span class="hs-identifier">intraproceduralTransformation</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><a href="Futhark.Pass.html#intraproceduralTransformationWithConsts"><span class="hs-identifier">intraproceduralTransformationWithConsts</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-19"></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State.Strict</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Writer.Strict</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Parallel.Strategies</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Char</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Either</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Error.html"><span class="hs-identifier">Futhark.Error</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html"><span class="hs-identifier">Futhark.MonadFreshNames</span></a></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Log.html"><span class="hs-identifier">Futhark.Util.Log</span></a></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">log</span></span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- | The monad in which passes execute.</span><span>
+</span><span id="line-32"></span><span class="hs-keyword">newtype</span><span> </span><span id="PassM"><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-var">PassM</span></a></span></span><span> </span><span id="local-6989586621684347935"><span class="annot"><a href="#local-6989586621684347935"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="PassM"><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-var">PassM</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">WriterT</span></span><span> </span><span class="annot"><a href="Futhark.Util.Log.html#Log"><span class="hs-identifier hs-type">Log</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">State</span></span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684347935"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-33"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684347814"><span id="local-6989586621684347820"><span class="annot"><span class="annottext">(forall a b. (a -&gt; b) -&gt; PassM a -&gt; PassM b)
+-&gt; (forall a b. a -&gt; PassM b -&gt; PassM a) -&gt; Functor PassM
+forall a b. a -&gt; PassM b -&gt; PassM a
+forall a b. (a -&gt; b) -&gt; PassM a -&gt; PassM b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+&lt;$ :: forall a b. a -&gt; PassM b -&gt; PassM a
+$c&lt;$ :: forall a b. a -&gt; PassM b -&gt; PassM a
+fmap :: forall a b. (a -&gt; b) -&gt; PassM a -&gt; PassM b
+$cfmap :: forall a b. (a -&gt; b) -&gt; PassM a -&gt; PassM b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684347776"><span id="local-6989586621684347782"><span id="local-6989586621684347788"><span id="local-6989586621684347794"><span id="local-6989586621684347801"><span class="annot"><span class="annottext">Functor PassM
+Functor PassM
+-&gt; (forall a. a -&gt; PassM a)
+-&gt; (forall a b. PassM (a -&gt; b) -&gt; PassM a -&gt; PassM b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; PassM a -&gt; PassM b -&gt; PassM c)
+-&gt; (forall a b. PassM a -&gt; PassM b -&gt; PassM b)
+-&gt; (forall a b. PassM a -&gt; PassM b -&gt; PassM a)
+-&gt; Applicative PassM
+forall a. a -&gt; PassM a
+forall a b. PassM a -&gt; PassM b -&gt; PassM a
+forall a b. PassM a -&gt; PassM b -&gt; PassM b
+forall a b. PassM (a -&gt; b) -&gt; PassM a -&gt; PassM b
+forall a b c. (a -&gt; b -&gt; c) -&gt; PassM a -&gt; PassM b -&gt; PassM c
+forall (f :: * -&gt; *).
+Functor f
+-&gt; (forall a. a -&gt; f a)
+-&gt; (forall a b. f (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c)
+-&gt; (forall a b. f a -&gt; f b -&gt; f b)
+-&gt; (forall a b. f a -&gt; f b -&gt; f a)
+-&gt; Applicative f
+&lt;* :: forall a b. PassM a -&gt; PassM b -&gt; PassM a
+$c&lt;* :: forall a b. PassM a -&gt; PassM b -&gt; PassM a
+*&gt; :: forall a b. PassM a -&gt; PassM b -&gt; PassM b
+$c*&gt; :: forall a b. PassM a -&gt; PassM b -&gt; PassM b
+liftA2 :: forall a b c. (a -&gt; b -&gt; c) -&gt; PassM a -&gt; PassM b -&gt; PassM c
+$cliftA2 :: forall a b c. (a -&gt; b -&gt; c) -&gt; PassM a -&gt; PassM b -&gt; PassM c
+&lt;*&gt; :: forall a b. PassM (a -&gt; b) -&gt; PassM a -&gt; PassM b
+$c&lt;*&gt; :: forall a b. PassM (a -&gt; b) -&gt; PassM a -&gt; PassM b
+pure :: forall a. a -&gt; PassM a
+$cpure :: forall a. a -&gt; PassM a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Applicative</span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684347740"><span id="local-6989586621684347746"><span id="local-6989586621684347753"><span class="annot"><span class="annottext">Applicative PassM
+Applicative PassM
+-&gt; (forall a b. PassM a -&gt; (a -&gt; PassM b) -&gt; PassM b)
+-&gt; (forall a b. PassM a -&gt; PassM b -&gt; PassM b)
+-&gt; (forall a. a -&gt; PassM a)
+-&gt; Monad PassM
+forall a. a -&gt; PassM a
+forall a b. PassM a -&gt; PassM b -&gt; PassM b
+forall a b. PassM a -&gt; (a -&gt; PassM b) -&gt; PassM b
+forall (m :: * -&gt; *).
+Applicative m
+-&gt; (forall a b. m a -&gt; (a -&gt; m b) -&gt; m b)
+-&gt; (forall a b. m a -&gt; m b -&gt; m b)
+-&gt; (forall a. a -&gt; m a)
+-&gt; Monad m
+return :: forall a. a -&gt; PassM a
+$creturn :: forall a. a -&gt; PassM a
+&gt;&gt; :: forall a b. PassM a -&gt; PassM b -&gt; PassM b
+$c&gt;&gt; :: forall a b. PassM a -&gt; PassM b -&gt; PassM b
+&gt;&gt;= :: forall a b. PassM a -&gt; (a -&gt; PassM b) -&gt; PassM b
+$c&gt;&gt;= :: forall a b. PassM a -&gt; (a -&gt; PassM b) -&gt; PassM b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monad</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684347724"><span class="annot"><a href="Futhark.Util.Log.html#MonadLogger"><span class="hs-identifier hs-type">MonadLogger</span></a></span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-36"></span><span>  </span><span id="local-6989586621684347716"><span class="annot"><span class="annottext">addLog :: Log -&gt; PassM ()
+</span><a href="Futhark.Util.Log.html#addLog"><span class="hs-identifier hs-var hs-var hs-var hs-var">addLog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">WriterT Log (State VNameSource) () -&gt; PassM ()
+forall a. WriterT Log (State VNameSource) a -&gt; PassM a
+</span><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-var">PassM</span></a></span><span> </span><span class="annot"><span class="annottext">(WriterT Log (State VNameSource) () -&gt; PassM ())
+-&gt; (Log -&gt; WriterT Log (State VNameSource) ()) -&gt; Log -&gt; PassM ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Log -&gt; WriterT Log (State VNameSource) ()
+forall w (m :: * -&gt; *). MonadWriter w m =&gt; w -&gt; m ()
+</span><span class="hs-identifier hs-var">tell</span></span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-39"></span><span>  </span><span id="local-6989586621684347698"><span class="annot"><span class="annottext">putNameSource :: VNameSource -&gt; PassM ()
+</span><a href="Futhark.MonadFreshNames.html#putNameSource"><span class="hs-identifier hs-var hs-var hs-var hs-var">putNameSource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">WriterT Log (State VNameSource) () -&gt; PassM ()
+forall a. WriterT Log (State VNameSource) a -&gt; PassM a
+</span><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-var">PassM</span></a></span><span> </span><span class="annot"><span class="annottext">(WriterT Log (State VNameSource) () -&gt; PassM ())
+-&gt; (VNameSource -&gt; WriterT Log (State VNameSource) ())
+-&gt; VNameSource
+-&gt; PassM ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">VNameSource -&gt; WriterT Log (State VNameSource) ()
+forall s (m :: * -&gt; *). MonadState s m =&gt; s -&gt; m ()
+</span><span class="hs-identifier hs-var">put</span></span><span>
+</span><span id="line-40"></span><span>  </span><span id="local-6989586621684347691"><span class="annot"><span class="annottext">getNameSource :: PassM VNameSource
+</span><a href="Futhark.MonadFreshNames.html#getNameSource"><span class="hs-identifier hs-var hs-var hs-var hs-var">getNameSource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">WriterT Log (State VNameSource) VNameSource -&gt; PassM VNameSource
+forall a. WriterT Log (State VNameSource) a -&gt; PassM a
+</span><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-var">PassM</span></a></span><span> </span><span class="annot"><span class="annottext">WriterT Log (State VNameSource) VNameSource
+forall s (m :: * -&gt; *). MonadState s m =&gt; m s
+</span><span class="hs-identifier hs-var">get</span></span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- | Execute a 'PassM' action, yielding logging information and either</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- an error text or a result.</span><span>
+</span><span id="line-44"></span><span id="local-6989586621684347918"><span id="local-6989586621684347919"><span class="annot"><a href="Futhark.Pass.html#runPassM"><span class="hs-identifier hs-type">runPassM</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-45"></span><span>  </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347919"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-46"></span><span>  </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347918"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-47"></span><span>  </span><span class="annot"><a href="#local-6989586621684347919"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684347918"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Util.Log.html#Log"><span class="hs-identifier hs-type">Log</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-48"></span><span id="runPassM"><span class="annot"><span class="annottext">runPassM :: forall (m :: * -&gt; *) a. MonadFreshNames m =&gt; PassM a -&gt; m (a, Log)
+</span><a href="Futhark.Pass.html#runPassM"><span class="hs-identifier hs-var hs-var">runPassM</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span id="local-6989586621684347686"><span class="annot"><span class="annottext">WriterT Log (State VNameSource) a
+</span><a href="#local-6989586621684347686"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VNameSource -&gt; ((a, Log), VNameSource)) -&gt; m (a, Log)
+forall (m :: * -&gt; *) a.
+MonadFreshNames m =&gt;
+(VNameSource -&gt; (a, VNameSource)) -&gt; m a
+</span><a href="Futhark.MonadFreshNames.html#modifyNameSource"><span class="hs-identifier hs-var">modifyNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">((VNameSource -&gt; ((a, Log), VNameSource)) -&gt; m (a, Log))
+-&gt; (VNameSource -&gt; ((a, Log), VNameSource)) -&gt; m (a, Log)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">State VNameSource (a, Log)
+-&gt; VNameSource -&gt; ((a, Log), VNameSource)
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><span class="hs-identifier hs-var">runState</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">WriterT Log (State VNameSource) a -&gt; State VNameSource (a, Log)
+forall w (m :: * -&gt; *) a. WriterT w m a -&gt; m (a, w)
+</span><span class="hs-identifier hs-var hs-var">runWriterT</span></span><span> </span><span class="annot"><span class="annottext">WriterT Log (State VNameSource) a
+</span><a href="#local-6989586621684347686"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- | Turn an 'Either' computation into a 'PassM'.  If the 'Either' is</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- 'Left', the result is a 'CompilerBug'.</span><span>
+</span><span id="line-52"></span><span id="local-6989586621684347904"><span id="local-6989586621684347905"><span class="annot"><a href="Futhark.Pass.html#liftEither"><span class="hs-identifier hs-type">liftEither</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="annot"><a href="#local-6989586621684347905"><span class="hs-identifier hs-type">err</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><a href="#local-6989586621684347905"><span class="hs-identifier hs-type">err</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347904"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347904"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-53"></span><span id="liftEither"><span class="annot"><span class="annottext">liftEither :: forall err a. Show err =&gt; Either err a -&gt; PassM a
+</span><a href="Futhark.Pass.html#liftEither"><span class="hs-identifier hs-var hs-var">liftEither</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621684347679"><span class="annot"><span class="annottext">err
+</span><a href="#local-6989586621684347679"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; PassM a
+forall a. String -&gt; a
+</span><a href="Futhark.Error.html#compilerBugS"><span class="hs-identifier hs-var">compilerBugS</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; PassM a) -&gt; String -&gt; PassM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">err -&gt; String
+forall a. Show a =&gt; a -&gt; String
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="annot"><span class="annottext">err
+</span><a href="#local-6989586621684347679"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-54"></span><span class="annot"><a href="Futhark.Pass.html#liftEither"><span class="hs-identifier hs-var">liftEither</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621684347676"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684347676"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; PassM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684347676"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- | Turn an 'Either' monadic computation into a 'PassM'.  If the 'Either' is</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- 'Left', the result is an exception.</span><span>
+</span><span id="line-58"></span><span id="local-6989586621684347898"><span id="local-6989586621684347899"><span class="annot"><a href="Futhark.Pass.html#liftEitherM"><span class="hs-identifier hs-type">liftEitherM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="annot"><a href="#local-6989586621684347899"><span class="hs-identifier hs-type">err</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><a href="#local-6989586621684347899"><span class="hs-identifier hs-type">err</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347898"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347898"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-59"></span><span id="liftEitherM"><span class="annot"><span class="annottext">liftEitherM :: forall err a. Show err =&gt; PassM (Either err a) -&gt; PassM a
+</span><a href="Futhark.Pass.html#liftEitherM"><span class="hs-identifier hs-var hs-var">liftEitherM</span></a></span></span><span> </span><span id="local-6989586621684347672"><span class="annot"><span class="annottext">PassM (Either err a)
+</span><a href="#local-6989586621684347672"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Either err a -&gt; PassM a
+forall err a. Show err =&gt; Either err a -&gt; PassM a
+</span><a href="Futhark.Pass.html#liftEither"><span class="hs-identifier hs-var">liftEither</span></a></span><span> </span><span class="annot"><span class="annottext">(Either err a -&gt; PassM a) -&gt; PassM (Either err a) -&gt; PassM a
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">PassM (Either err a)
+</span><a href="#local-6989586621684347672"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- | A compiler pass transforming a 'Prog' of a given rep to a 'Prog'</span><span>
+</span><span id="line-62"></span><span class="hs-comment">-- of another rep.</span><span>
+</span><span id="line-63"></span><span class="hs-keyword">data</span><span> </span><span id="Pass"><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-var">Pass</span></a></span></span><span> </span><span id="local-6989586621684347892"><span class="annot"><a href="#local-6989586621684347892"><span class="hs-identifier hs-type">fromrep</span></a></span></span><span> </span><span id="local-6989586621684347891"><span class="annot"><a href="#local-6989586621684347891"><span class="hs-identifier hs-type">torep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Pass"><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-var">Pass</span></a></span></span><span>
+</span><span id="line-64"></span><span>  </span><span class="hs-special">{</span><span> </span><span class="hs-comment">-- | Name of the pass.  Keep this short and simple.  It will</span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-comment">-- be used to automatically generate a command-line option</span><span>
+</span><span id="line-66"></span><span>    </span><span class="hs-comment">-- name via 'passLongOption'.</span><span>
+</span><span id="line-67"></span><span>    </span><span id="passName"><span class="annot"><span class="annottext">forall fromrep torep. Pass fromrep torep -&gt; String
+</span><a href="Futhark.Pass.html#passName"><span class="hs-identifier hs-var hs-var">passName</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">,</span><span>
+</span><span id="line-68"></span><span>    </span><span class="hs-comment">-- | A slightly longer description, which will show up in the</span><span>
+</span><span id="line-69"></span><span>    </span><span class="hs-comment">-- command-line help text.</span><span>
+</span><span id="line-70"></span><span>    </span><span id="passDescription"><span class="annot"><span class="annottext">forall fromrep torep. Pass fromrep torep -&gt; String
+</span><a href="Futhark.Pass.html#passDescription"><span class="hs-identifier hs-var hs-var">passDescription</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span class="hs-special">,</span><span>
+</span><span id="line-71"></span><span>    </span><span id="passFunction"><span class="annot"><span class="annottext">forall fromrep torep.
+Pass fromrep torep -&gt; Prog fromrep -&gt; PassM (Prog torep)
+</span><a href="Futhark.Pass.html#passFunction"><span class="hs-identifier hs-var hs-var">passFunction</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347892"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347891"><span class="hs-identifier hs-type">torep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- | Take the name of the pass, turn spaces into dashes, and make all</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- characters lowercase.</span><span>
+</span><span id="line-76"></span><span id="local-6989586621684347665"><span id="local-6989586621684347666"><span class="annot"><a href="Futhark.Pass.html#passLongOption"><span class="hs-identifier hs-type">passLongOption</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347666"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347665"><span class="hs-identifier hs-type">torep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">String</span></span></span></span><span>
+</span><span id="line-77"></span><span id="passLongOption"><span class="annot"><span class="annottext">passLongOption :: forall fromrep torep. Pass fromrep torep -&gt; String
+</span><a href="Futhark.Pass.html#passLongOption"><span class="hs-identifier hs-var hs-var">passLongOption</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Char) -&gt; String -&gt; String
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char -&gt; Char
+</span><a href="#local-6989586621684347664"><span class="hs-identifier hs-var">spaceToDash</span></a></span><span> </span><span class="annot"><span class="annottext">(Char -&gt; Char) -&gt; (Char -&gt; Char) -&gt; Char -&gt; Char
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; Char
+</span><span class="hs-identifier hs-var">toLower</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(String -&gt; String)
+-&gt; (Pass fromrep torep -&gt; String) -&gt; Pass fromrep torep -&gt; String
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Pass fromrep torep -&gt; String
+forall fromrep torep. Pass fromrep torep -&gt; String
+</span><a href="Futhark.Pass.html#passName"><span class="hs-identifier hs-var hs-var">passName</span></a></span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-79"></span><span>    </span><span id="local-6989586621684347664"><span class="annot"><span class="annottext">spaceToDash :: Char -&gt; Char
+</span><a href="#local-6989586621684347664"><span class="hs-identifier hs-var hs-var">spaceToDash</span></a></span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">' '</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'-'</span></span><span>
+</span><span id="line-80"></span><span>    </span><span class="annot"><a href="#local-6989586621684347664"><span class="hs-identifier hs-var">spaceToDash</span></a></span><span> </span><span id="local-6989586621684347662"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621684347662"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621684347662"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-81"></span><span>
+</span><span id="line-82"></span><span class="hs-comment">-- | Apply a 'PassM' operation in parallel to multiple elements,</span><span>
+</span><span id="line-83"></span><span class="hs-comment">-- joining together the name sources and logs, and propagating any</span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- error properly.</span><span>
+</span><span id="line-85"></span><span id="local-6989586621684347877"><span id="local-6989586621684347878"><span class="annot"><a href="Futhark.Pass.html#parPass"><span class="hs-identifier hs-type">parPass</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621684347878"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347877"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684347878"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684347877"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">]</span></span></span><span>
+</span><span id="line-86"></span><span id="parPass"><span class="annot"><span class="annottext">parPass :: forall a b. (a -&gt; PassM b) -&gt; [a] -&gt; PassM [b]
+</span><a href="Futhark.Pass.html#parPass"><span class="hs-identifier hs-var hs-var">parPass</span></a></span></span><span> </span><span id="local-6989586621684347653"><span class="annot"><span class="annottext">a -&gt; PassM b
+</span><a href="#local-6989586621684347653"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684347652"><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684347652"><span class="hs-keyword hs-var">as</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-87"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684347651"><span class="annot"><span class="annottext">[b]
+</span><a href="#local-6989586621684347651"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684347650"><span class="annot"><span class="annottext">Log
+</span><a href="#local-6989586621684347650"><span class="hs-identifier hs-var">log</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(VNameSource -&gt; (([b], Log), VNameSource)) -&gt; PassM ([b], Log)
+forall (m :: * -&gt; *) a.
+MonadFreshNames m =&gt;
+(VNameSource -&gt; (a, VNameSource)) -&gt; m a
+</span><a href="Futhark.MonadFreshNames.html#modifyNameSource"><span class="hs-identifier hs-var">modifyNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">((VNameSource -&gt; (([b], Log), VNameSource)) -&gt; PassM ([b], Log))
+-&gt; (VNameSource -&gt; (([b], Log), VNameSource)) -&gt; PassM ([b], Log)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684347649"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684347649"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-88"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684347643"><span class="annot"><span class="annottext">[b]
+</span><a href="#local-6989586621684347643"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684347642"><span class="annot"><span class="annottext">[Log]
+</span><a href="#local-6989586621684347642"><span class="hs-identifier hs-var">logs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684347641"><span class="annot"><span class="annottext">[VNameSource]
+</span><a href="#local-6989586621684347641"><span class="hs-identifier hs-var">srcs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(b, Log, VNameSource)] -&gt; ([b], [Log], [VNameSource])
+forall a b c. [(a, b, c)] -&gt; ([a], [b], [c])
+</span><span class="hs-identifier hs-var">unzip3</span></span><span> </span><span class="annot"><span class="annottext">([(b, Log, VNameSource)] -&gt; ([b], [Log], [VNameSource]))
+-&gt; [(b, Log, VNameSource)] -&gt; ([b], [Log], [VNameSource])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Strategy (b, Log, VNameSource)
+-&gt; (a -&gt; (b, Log, VNameSource)) -&gt; [a] -&gt; [(b, Log, VNameSource)]
+forall b a. Strategy b -&gt; (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">parMap</span></span><span> </span><span class="annot"><span class="annottext">Strategy (b, Log, VNameSource)
+forall a. Strategy a
+</span><span class="hs-identifier hs-var">rpar</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VNameSource -&gt; a -&gt; (b, Log, VNameSource)
+forall {p}.
+MonadFreshNames (StateT p Identity) =&gt;
+p -&gt; a -&gt; (b, Log, p)
+</span><a href="#local-6989586621684347637"><span class="hs-identifier hs-var">f'</span></a></span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684347649"><span class="hs-identifier hs-var">src</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684347652"><span class="hs-keyword hs-var">as</span></a></span><span>
+</span><span id="line-89"></span><span>     </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">[b]
+</span><a href="#local-6989586621684347643"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Log] -&gt; Log
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">[Log]
+</span><a href="#local-6989586621684347642"><span class="hs-identifier hs-var">logs</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[VNameSource] -&gt; VNameSource
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">[VNameSource]
+</span><a href="#local-6989586621684347641"><span class="hs-identifier hs-var">srcs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span>  </span><span class="annot"><span class="annottext">Log -&gt; PassM ()
+forall (m :: * -&gt; *). MonadLogger m =&gt; Log -&gt; m ()
+</span><a href="Futhark.Util.Log.html#addLog"><span class="hs-identifier hs-var">addLog</span></a></span><span> </span><span class="annot"><span class="annottext">Log
+</span><a href="#local-6989586621684347650"><span class="hs-identifier hs-var">log</span></a></span><span>
+</span><span id="line-92"></span><span>  </span><span class="annot"><span class="annottext">[b] -&gt; PassM [b]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">[b]
+</span><a href="#local-6989586621684347651"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-93"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-94"></span><span>    </span><span id="local-6989586621684347637"><span class="annot"><span class="annottext">f' :: p -&gt; a -&gt; (b, Log, p)
+</span><a href="#local-6989586621684347637"><span class="hs-identifier hs-var hs-var">f'</span></a></span></span><span> </span><span id="local-6989586621684347635"><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621684347635"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span id="local-6989586621684347634"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684347634"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-95"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684347632"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621684347632"><span class="hs-identifier hs-var">x'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684347631"><span class="annot"><span class="annottext">Log
+</span><a href="#local-6989586621684347631"><span class="hs-identifier hs-var">log</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684347630"><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621684347630"><span class="hs-identifier hs-var">src'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State p (b, Log) -&gt; p -&gt; ((b, Log), p)
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><span class="hs-identifier hs-var">runState</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PassM b -&gt; State p (b, Log)
+forall (m :: * -&gt; *) a. MonadFreshNames m =&gt; PassM a -&gt; m (a, Log)
+</span><a href="Futhark.Pass.html#runPassM"><span class="hs-identifier hs-var">runPassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; PassM b
+</span><a href="#local-6989586621684347653"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684347634"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621684347635"><span class="hs-identifier hs-var">src</span></a></span><span>
+</span><span id="line-96"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621684347632"><span class="hs-identifier hs-var">x'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Log
+</span><a href="#local-6989586621684347631"><span class="hs-identifier hs-var">log</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621684347630"><span class="hs-identifier hs-var">src'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>
+</span><span id="line-98"></span><span class="hs-comment">-- | Apply some operation to the top-level constants.  Then applies an</span><span>
+</span><span id="line-99"></span><span class="hs-comment">-- operation to all the function function definitions, which are also</span><span>
+</span><span id="line-100"></span><span class="hs-comment">-- given the transformed constants so they can be brought into scope.</span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- The function definition transformations are run in parallel (with</span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- 'parPass'), since they cannot affect each other.</span><span>
+</span><span id="line-103"></span><span id="local-6989586621684347862"><span id="local-6989586621684347864"><span class="annot"><a href="Futhark.Pass.html#intraproceduralTransformationWithConsts"><span class="hs-identifier hs-type">intraproceduralTransformationWithConsts</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-104"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347864"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347862"><span class="hs-identifier hs-type">torep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-105"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347862"><span class="hs-identifier hs-type">torep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347864"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347862"><span class="hs-identifier hs-type">torep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-106"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347864"><span class="hs-identifier hs-type">fromrep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-107"></span><span>  </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347862"><span class="hs-identifier hs-type">torep</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-108"></span><span id="intraproceduralTransformationWithConsts"><span class="annot"><span class="annottext">intraproceduralTransformationWithConsts :: forall fromrep torep.
+(Stms fromrep -&gt; PassM (Stms torep))
+-&gt; (Stms torep -&gt; FunDef fromrep -&gt; PassM (FunDef torep))
+-&gt; Prog fromrep
+-&gt; PassM (Prog torep)
+</span><a href="Futhark.Pass.html#intraproceduralTransformationWithConsts"><span class="hs-identifier hs-var hs-var">intraproceduralTransformationWithConsts</span></a></span></span><span> </span><span id="local-6989586621684347626"><span class="annot"><span class="annottext">Stms fromrep -&gt; PassM (Stms torep)
+</span><a href="#local-6989586621684347626"><span class="hs-identifier hs-var">ct</span></a></span></span><span> </span><span id="local-6989586621684347625"><span class="annot"><span class="annottext">Stms torep -&gt; FunDef fromrep -&gt; PassM (FunDef torep)
+</span><a href="#local-6989586621684347625"><span class="hs-identifier hs-var">ft</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span id="local-6989586621684347623"><span class="annot"><span class="annottext">Stms fromrep
+</span><a href="#local-6989586621684347623"><span class="hs-identifier hs-var">consts</span></a></span></span><span> </span><span id="local-6989586621684347622"><span class="annot"><span class="annottext">[FunDef fromrep]
+</span><a href="#local-6989586621684347622"><span class="hs-identifier hs-var">funs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-109"></span><span>  </span><span id="local-6989586621684347621"><span class="annot"><span class="annottext">Stms torep
+</span><a href="#local-6989586621684347621"><span class="hs-identifier hs-var">consts'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Stms fromrep -&gt; PassM (Stms torep)
+</span><a href="#local-6989586621684347626"><span class="hs-identifier hs-var">ct</span></a></span><span> </span><span class="annot"><span class="annottext">Stms fromrep
+</span><a href="#local-6989586621684347623"><span class="hs-identifier hs-var">consts</span></a></span><span>
+</span><span id="line-110"></span><span>  </span><span id="local-6989586621684347620"><span class="annot"><span class="annottext">[FunDef torep]
+</span><a href="#local-6989586621684347620"><span class="hs-identifier hs-var">funs'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(FunDef fromrep -&gt; PassM (FunDef torep))
+-&gt; [FunDef fromrep] -&gt; PassM [FunDef torep]
+forall a b. (a -&gt; PassM b) -&gt; [a] -&gt; PassM [b]
+</span><a href="Futhark.Pass.html#parPass"><span class="hs-identifier hs-var">parPass</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms torep -&gt; FunDef fromrep -&gt; PassM (FunDef torep)
+</span><a href="#local-6989586621684347625"><span class="hs-identifier hs-var">ft</span></a></span><span> </span><span class="annot"><span class="annottext">Stms torep
+</span><a href="#local-6989586621684347621"><span class="hs-identifier hs-var">consts'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[FunDef fromrep]
+</span><a href="#local-6989586621684347622"><span class="hs-identifier hs-var">funs</span></a></span><span>
+</span><span id="line-111"></span><span>  </span><span class="annot"><span class="annottext">Prog torep -&gt; PassM (Prog torep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Prog torep -&gt; PassM (Prog torep))
+-&gt; Prog torep -&gt; PassM (Prog torep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stms torep -&gt; [FunDef torep] -&gt; Prog torep
+forall rep. Stms rep -&gt; [FunDef rep] -&gt; Prog rep
+</span><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-var">Prog</span></a></span><span> </span><span class="annot"><span class="annottext">Stms torep
+</span><a href="#local-6989586621684347621"><span class="hs-identifier hs-var">consts'</span></a></span><span> </span><span class="annot"><span class="annottext">[FunDef torep]
+</span><a href="#local-6989586621684347620"><span class="hs-identifier hs-var">funs'</span></a></span><span>
+</span><span id="line-112"></span><span>
+</span><span id="line-113"></span><span class="hs-comment">-- | Like 'intraproceduralTransformationWithConsts', but do not change</span><span>
+</span><span id="line-114"></span><span class="hs-comment">-- the top-level constants, and simply pass along their 'Scope'.</span><span>
+</span><span id="line-115"></span><span id="local-6989586621684347857"><span class="annot"><a href="Futhark.Pass.html#intraproceduralTransformation"><span class="hs-identifier hs-type">intraproceduralTransformation</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-116"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347857"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347857"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347857"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-117"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347857"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-118"></span><span>  </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684347857"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-119"></span><span id="intraproceduralTransformation"><span class="annot"><span class="annottext">intraproceduralTransformation :: forall rep.
+(Scope rep -&gt; Stms rep -&gt; PassM (Stms rep))
+-&gt; Prog rep -&gt; PassM (Prog rep)
+</span><a href="Futhark.Pass.html#intraproceduralTransformation"><span class="hs-identifier hs-var hs-var">intraproceduralTransformation</span></a></span></span><span> </span><span id="local-6989586621684347613"><span class="annot"><span class="annottext">Scope rep -&gt; Stms rep -&gt; PassM (Stms rep)
+</span><a href="#local-6989586621684347613"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-120"></span><span>  </span><span class="annot"><span class="annottext">(Stms rep -&gt; PassM (Stms rep))
+-&gt; (Stms rep -&gt; FunDef rep -&gt; PassM (FunDef rep))
+-&gt; Prog rep
+-&gt; PassM (Prog rep)
+forall fromrep torep.
+(Stms fromrep -&gt; PassM (Stms torep))
+-&gt; (Stms torep -&gt; FunDef fromrep -&gt; PassM (FunDef torep))
+-&gt; Prog fromrep
+-&gt; PassM (Prog torep)
+</span><a href="Futhark.Pass.html#intraproceduralTransformationWithConsts"><span class="hs-identifier hs-var">intraproceduralTransformationWithConsts</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Scope rep -&gt; Stms rep -&gt; PassM (Stms rep)
+</span><a href="#local-6989586621684347613"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; FunDef rep -&gt; PassM (FunDef rep)
+forall {a}. Scoped rep a =&gt; a -&gt; FunDef rep -&gt; PassM (FunDef rep)
+</span><a href="#local-6989586621684347612"><span class="hs-identifier hs-var">f'</span></a></span><span>
+</span><span id="line-121"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-122"></span><span>    </span><span id="local-6989586621684347612"><span class="annot"><span class="annottext">f' :: a -&gt; FunDef rep -&gt; PassM (FunDef rep)
+</span><a href="#local-6989586621684347612"><span class="hs-identifier hs-var hs-var">f'</span></a></span></span><span> </span><span id="local-6989586621684347602"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684347602"><span class="hs-identifier hs-var">consts</span></a></span></span><span> </span><span id="local-6989586621684347601"><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684347601"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-123"></span><span>      </span><span id="local-6989586621684347600"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684347600"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-124"></span><span>        </span><span class="annot"><span class="annottext">Scope rep -&gt; Stms rep -&gt; PassM (Stms rep)
+</span><a href="#local-6989586621684347613"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-125"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Scope rep
+forall rep a. Scoped rep a =&gt; a -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOf"><span class="hs-identifier hs-var">scopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684347602"><span class="hs-identifier hs-var">consts</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep -&gt; Scope rep -&gt; Scope rep
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[Param (FParamInfo rep)] -&gt; Scope rep
+forall rep dec. (FParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfFParams"><span class="hs-identifier hs-var">scopeOfFParams</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FunDef rep -&gt; [Param (FParamInfo rep)]
+forall rep. FunDef rep -&gt; [FParam rep]
+</span><a href="Futhark.IR.Syntax.html#funDefParams"><span class="hs-identifier hs-var hs-var">funDefParams</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684347601"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT rep -&gt; Stms rep
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">(BodyT rep -&gt; Stms rep) -&gt; BodyT rep -&gt; Stms rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FunDef rep -&gt; BodyT rep
+forall rep. FunDef rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var hs-var">funDefBody</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684347601"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>      </span><span class="annot"><span class="annottext">FunDef rep -&gt; PassM (FunDef rep)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684347601"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">funDefBody :: BodyT rep
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var">funDefBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FunDef rep -&gt; BodyT rep
+forall rep. FunDef rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var hs-var">funDefBody</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684347601"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">bodyStms :: Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var">bodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684347600"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">}</span><span class="hs-special">}</span><span>
+</span><span id="line-128"></span></pre></body></html>

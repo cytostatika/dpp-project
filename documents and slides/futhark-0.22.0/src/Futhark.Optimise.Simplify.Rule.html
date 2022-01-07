@@ -1,0 +1,933 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE Trustworthy #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE UndecidableInstances #-}</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- | This module defines the concept of a simplification rule for</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- bindings.  The intent is that you pass some context (such as symbol</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- table) and a binding, and is given back a sequence of bindings that</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- compute the same result, but are &quot;better&quot; in some sense.</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- These rewrite rules are &quot;local&quot;, in that they do not maintain any</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- state or look at the program as a whole.  Compare this to the</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- fusion algorithm in @Futhark.Optimise.Fusion.Fusion@, which must be implemented</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- as its own pass.</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Optimise.Simplify.Rule</span><span>
+</span><span id="line-17"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * The rule monad</span></span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier">RuleM</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#cannotSimplify"><span class="hs-identifier">cannotSimplify</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#liftMaybe"><span class="hs-identifier">liftMaybe</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Rule definition</span></span><span>
+</span><span id="line-23"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rule"><span class="hs-identifier">Rule</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-24"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier">SimplificationRule</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier">RuleGeneric</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBasicOp"><span class="hs-identifier">RuleBasicOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-27"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleIf"><span class="hs-identifier">RuleIf</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-28"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleDoLoop"><span class="hs-identifier">RuleDoLoop</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Top-down rules</span></span><span>
+</span><span id="line-31"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDown"><span class="hs-identifier">TopDown</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-32"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRule"><span class="hs-identifier">TopDownRule</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-33"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleGeneric"><span class="hs-identifier">TopDownRuleGeneric</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-34"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleBasicOp"><span class="hs-identifier">TopDownRuleBasicOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-35"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleIf"><span class="hs-identifier">TopDownRuleIf</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-36"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleDoLoop"><span class="hs-identifier">TopDownRuleDoLoop</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-37"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleOp"><span class="hs-identifier">TopDownRuleOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Bottom-up rules</span></span><span>
+</span><span id="line-40"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUp"><span class="hs-identifier">BottomUp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-41"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRule"><span class="hs-identifier">BottomUpRule</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-42"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleGeneric"><span class="hs-identifier">BottomUpRuleGeneric</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-43"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleBasicOp"><span class="hs-identifier">BottomUpRuleBasicOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-44"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleIf"><span class="hs-identifier">BottomUpRuleIf</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-45"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleDoLoop"><span class="hs-identifier">BottomUpRuleDoLoop</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-46"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleOp"><span class="hs-identifier">BottomUpRuleOp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Assembling rules</span></span><span>
+</span><span id="line-49"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier">RuleBook</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-50"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#ruleBook"><span class="hs-identifier">ruleBook</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-51"></span><span>
+</span><span id="line-52"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Applying rules</span></span><span>
+</span><span id="line-53"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#topDownSimplifyStm"><span class="hs-identifier">topDownSimplifyStm</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-54"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#bottomUpSimplifyStm"><span class="hs-identifier">bottomUpSimplifyStm</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-55"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State</span></span><span>
+</span><span id="line-59"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html"><span class="hs-identifier">Futhark.Analysis.SymbolTable</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">ST</span></span><span>
+</span><span id="line-60"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.UsageTable.html"><span class="hs-identifier">Futhark.Analysis.UsageTable</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">UT</span></span><span>
+</span><span id="line-61"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Builder.html"><span class="hs-identifier">Futhark.Builder</span></a></span><span>
+</span><span id="line-62"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- | The monad in which simplification rules are evaluated.</span><span>
+</span><span id="line-65"></span><span class="hs-keyword">newtype</span><span> </span><span id="RuleM"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-var">RuleM</span></a></span></span><span> </span><span id="local-6989586621684364671"><span class="annot"><a href="#local-6989586621684364671"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684364593"><span class="annot"><a href="#local-6989586621684364593"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="RuleM"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-var">RuleM</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.html#BuilderT"><span class="hs-identifier hs-type">BuilderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364671"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">StateT</span></span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684364593"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-keyword">deriving</span><span>
+</span><span id="line-67"></span><span>    </span><span class="hs-special">(</span><span> </span><span id="local-6989586621684364424"><span id="local-6989586621684364430"><span class="annot"><span class="annottext">(forall a b. (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b)
+-&gt; (forall a b. a -&gt; RuleM rep b -&gt; RuleM rep a)
+-&gt; Functor (RuleM rep)
+forall a b. a -&gt; RuleM rep b -&gt; RuleM rep a
+forall a b. (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b
+forall rep a b. a -&gt; RuleM rep b -&gt; RuleM rep a
+forall rep a b. (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+&lt;$ :: forall a b. a -&gt; RuleM rep b -&gt; RuleM rep a
+$c&lt;$ :: forall rep a b. a -&gt; RuleM rep b -&gt; RuleM rep a
+fmap :: forall a b. (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b
+$cfmap :: forall rep a b. (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-68"></span><span>      </span><span id="local-6989586621684364390"><span id="local-6989586621684364395"><span id="local-6989586621684364400"><span id="local-6989586621684364405"><span id="local-6989586621684364411"><span class="annot"><span class="annottext">Functor (RuleM rep)
+Functor (RuleM rep)
+-&gt; (forall a. a -&gt; RuleM rep a)
+-&gt; (forall a b. RuleM rep (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b)
+-&gt; (forall a b c.
+    (a -&gt; b -&gt; c) -&gt; RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep c)
+-&gt; (forall a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b)
+-&gt; (forall a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep a)
+-&gt; Applicative (RuleM rep)
+forall rep. Functor (RuleM rep)
+forall a. a -&gt; RuleM rep a
+forall rep a. a -&gt; RuleM rep a
+forall a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep a
+forall a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b
+forall a b. RuleM rep (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b
+forall rep a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep a
+forall rep a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b
+forall rep a b. RuleM rep (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b
+forall a b c.
+(a -&gt; b -&gt; c) -&gt; RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep c
+forall rep a b c.
+(a -&gt; b -&gt; c) -&gt; RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep c
+forall (f :: * -&gt; *).
+Functor f
+-&gt; (forall a. a -&gt; f a)
+-&gt; (forall a b. f (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c)
+-&gt; (forall a b. f a -&gt; f b -&gt; f b)
+-&gt; (forall a b. f a -&gt; f b -&gt; f a)
+-&gt; Applicative f
+&lt;* :: forall a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep a
+$c&lt;* :: forall rep a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep a
+*&gt; :: forall a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b
+$c*&gt; :: forall rep a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b
+liftA2 :: forall a b c.
+(a -&gt; b -&gt; c) -&gt; RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep c
+$cliftA2 :: forall rep a b c.
+(a -&gt; b -&gt; c) -&gt; RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep c
+&lt;*&gt; :: forall a b. RuleM rep (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b
+$c&lt;*&gt; :: forall rep a b. RuleM rep (a -&gt; b) -&gt; RuleM rep a -&gt; RuleM rep b
+pure :: forall a. a -&gt; RuleM rep a
+$cpure :: forall rep a. a -&gt; RuleM rep a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Applicative</span></span></span></span></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-69"></span><span>      </span><span id="local-6989586621684364363"><span id="local-6989586621684364368"><span id="local-6989586621684364374"><span class="annot"><span class="annottext">Applicative (RuleM rep)
+Applicative (RuleM rep)
+-&gt; (forall a b. RuleM rep a -&gt; (a -&gt; RuleM rep b) -&gt; RuleM rep b)
+-&gt; (forall a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b)
+-&gt; (forall a. a -&gt; RuleM rep a)
+-&gt; Monad (RuleM rep)
+forall rep. Applicative (RuleM rep)
+forall a. a -&gt; RuleM rep a
+forall rep a. a -&gt; RuleM rep a
+forall a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b
+forall a b. RuleM rep a -&gt; (a -&gt; RuleM rep b) -&gt; RuleM rep b
+forall rep a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b
+forall rep a b. RuleM rep a -&gt; (a -&gt; RuleM rep b) -&gt; RuleM rep b
+forall (m :: * -&gt; *).
+Applicative m
+-&gt; (forall a b. m a -&gt; (a -&gt; m b) -&gt; m b)
+-&gt; (forall a b. m a -&gt; m b -&gt; m b)
+-&gt; (forall a. a -&gt; m a)
+-&gt; Monad m
+return :: forall a. a -&gt; RuleM rep a
+$creturn :: forall rep a. a -&gt; RuleM rep a
+&gt;&gt; :: forall a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b
+$c&gt;&gt; :: forall rep a b. RuleM rep a -&gt; RuleM rep b -&gt; RuleM rep b
+&gt;&gt;= :: forall a b. RuleM rep a -&gt; (a -&gt; RuleM rep b) -&gt; RuleM rep b
+$c&gt;&gt;= :: forall rep a b. RuleM rep a -&gt; (a -&gt; RuleM rep b) -&gt; RuleM rep b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monad</span></span></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-70"></span><span>      </span><span id="local-6989586621684364343"><span id="local-6989586621684364349"><span class="annot"><span class="annottext">Monad (RuleM rep)
+Applicative (RuleM rep)
+RuleM rep VNameSource
+Applicative (RuleM rep)
+-&gt; Monad (RuleM rep)
+-&gt; RuleM rep VNameSource
+-&gt; (VNameSource -&gt; RuleM rep ())
+-&gt; MonadFreshNames (RuleM rep)
+VNameSource -&gt; RuleM rep ()
+forall rep. Monad (RuleM rep)
+forall rep. Applicative (RuleM rep)
+forall rep. RuleM rep VNameSource
+forall rep. VNameSource -&gt; RuleM rep ()
+forall (m :: * -&gt; *).
+Applicative m
+-&gt; Monad m
+-&gt; m VNameSource
+-&gt; (VNameSource -&gt; m ())
+-&gt; MonadFreshNames m
+putNameSource :: VNameSource -&gt; RuleM rep ()
+$cputNameSource :: forall rep. VNameSource -&gt; RuleM rep ()
+getNameSource :: RuleM rep VNameSource
+$cgetNameSource :: forall rep. RuleM rep VNameSource
+</span><a href="Futhark.MonadFreshNames.html#C%3AMonadFreshNames"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">MonadFreshNames</span></a></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-71"></span><span>      </span><span id="local-6989586621684364308"><span id="local-6989586621684364313"><span id="local-6989586621684364318"><span id="local-6989586621684364324"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364671"><span class="hs-identifier hs-type">rep</span></a></span></span></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-72"></span><span>      </span><span id="local-6989586621684364291"><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364671"><span class="hs-identifier hs-type">rep</span></a></span></span><span>
+</span><span id="line-73"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span id="local-6989586621684364596"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684364264"><span id="local-6989586621684364268"><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364596"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.html#BuilderOps"><span class="hs-identifier hs-type">BuilderOps</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364596"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364596"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-76"></span><span>  </span><span class="hs-keyword">type</span><span> </span><span id="Rep"><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-var">Rep</span></a></span></span><span> </span><span id="local-6989586621684364596"><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364596"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621684364596"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-77"></span><span>  </span><span id="local-6989586621684364257"><span class="annot"><span class="annottext">mkExpDecM :: Pat (Rep (RuleM rep))
+-&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep (ExpDec (Rep (RuleM rep)))
+</span><a href="Futhark.Builder.Class.html#mkExpDecM"><span class="hs-identifier hs-var hs-var hs-var hs-var">mkExpDecM</span></a></span></span><span> </span><span id="local-6989586621684364255"><span class="annot"><span class="annottext">Pat (Rep (RuleM rep))
+</span><a href="#local-6989586621684364255"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684364254"><span class="annot"><span class="annottext">Exp (Rep (RuleM rep))
+</span><a href="#local-6989586621684364254"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) (ExpDec rep)
+-&gt; RuleM rep (ExpDec rep)
+forall rep a.
+BuilderT rep (StateT VNameSource Maybe) a -&gt; RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-var">RuleM</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT rep (StateT VNameSource Maybe) (ExpDec rep)
+ -&gt; RuleM rep (ExpDec rep))
+-&gt; BuilderT rep (StateT VNameSource Maybe) (ExpDec rep)
+-&gt; RuleM rep (ExpDec rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT rep (StateT VNameSource Maybe)))
+-&gt; Exp (Rep (BuilderT rep (StateT VNameSource Maybe)))
+-&gt; BuilderT
+     rep
+     (StateT VNameSource Maybe)
+     (ExpDec (Rep (BuilderT rep (StateT VNameSource Maybe))))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Pat (Rep m) -&gt; Exp (Rep m) -&gt; m (ExpDec (Rep m))
+</span><a href="Futhark.Builder.Class.html#mkExpDecM"><span class="hs-identifier hs-var">mkExpDecM</span></a></span><span> </span><span class="annot"><span class="annottext">Pat (Rep (BuilderT rep (StateT VNameSource Maybe)))
+Pat (Rep (RuleM rep))
+</span><a href="#local-6989586621684364255"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">Exp (Rep (BuilderT rep (StateT VNameSource Maybe)))
+Exp (Rep (RuleM rep))
+</span><a href="#local-6989586621684364254"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-78"></span><span>  </span><span id="local-6989586621684364249"><span class="annot"><span class="annottext">mkBodyM :: Stms (Rep (RuleM rep))
+-&gt; Result -&gt; RuleM rep (Body (Rep (RuleM rep)))
+</span><a href="Futhark.Builder.Class.html#mkBodyM"><span class="hs-identifier hs-var hs-var hs-var hs-var">mkBodyM</span></a></span></span><span> </span><span id="local-6989586621684364247"><span class="annot"><span class="annottext">Stms (Rep (RuleM rep))
+</span><a href="#local-6989586621684364247"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span id="local-6989586621684364246"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684364246"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) (Body rep)
+-&gt; RuleM rep (Body rep)
+forall rep a.
+BuilderT rep (StateT VNameSource Maybe) a -&gt; RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-var">RuleM</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT rep (StateT VNameSource Maybe) (Body rep)
+ -&gt; RuleM rep (Body rep))
+-&gt; BuilderT rep (StateT VNameSource Maybe) (Body rep)
+-&gt; RuleM rep (Body rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stms (Rep (BuilderT rep (StateT VNameSource Maybe)))
+-&gt; Result
+-&gt; BuilderT
+     rep
+     (StateT VNameSource Maybe)
+     (Body (Rep (BuilderT rep (StateT VNameSource Maybe))))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+Stms (Rep m) -&gt; Result -&gt; m (Body (Rep m))
+</span><a href="Futhark.Builder.Class.html#mkBodyM"><span class="hs-identifier hs-var">mkBodyM</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (Rep (BuilderT rep (StateT VNameSource Maybe)))
+Stms (Rep (RuleM rep))
+</span><a href="#local-6989586621684364247"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684364246"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-79"></span><span>  </span><span id="local-6989586621684364241"><span class="annot"><span class="annottext">mkLetNamesM :: [VName]
+-&gt; Exp (Rep (RuleM rep)) -&gt; RuleM rep (Stm (Rep (RuleM rep)))
+</span><a href="Futhark.Builder.Class.html#mkLetNamesM"><span class="hs-identifier hs-var hs-var hs-var hs-var">mkLetNamesM</span></a></span></span><span> </span><span id="local-6989586621684364239"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364239"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684364238"><span class="annot"><span class="annottext">Exp (Rep (RuleM rep))
+</span><a href="#local-6989586621684364238"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) (Stm rep)
+-&gt; RuleM rep (Stm rep)
+forall rep a.
+BuilderT rep (StateT VNameSource Maybe) a -&gt; RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-var">RuleM</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT rep (StateT VNameSource Maybe) (Stm rep)
+ -&gt; RuleM rep (Stm rep))
+-&gt; BuilderT rep (StateT VNameSource Maybe) (Stm rep)
+-&gt; RuleM rep (Stm rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+-&gt; Exp (Rep (BuilderT rep (StateT VNameSource Maybe)))
+-&gt; BuilderT
+     rep
+     (StateT VNameSource Maybe)
+     (Stm (Rep (BuilderT rep (StateT VNameSource Maybe))))
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[VName] -&gt; Exp (Rep m) -&gt; m (Stm (Rep m))
+</span><a href="Futhark.Builder.Class.html#mkLetNamesM"><span class="hs-identifier hs-var">mkLetNamesM</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684364239"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">Exp (Rep (BuilderT rep (StateT VNameSource Maybe)))
+Exp (Rep (RuleM rep))
+</span><a href="#local-6989586621684364238"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span>  </span><span id="local-6989586621684364233"><span class="annot"><span class="annottext">addStms :: Stms (Rep (RuleM rep)) -&gt; RuleM rep ()
+</span><a href="Futhark.Builder.Class.html#addStms"><span class="hs-identifier hs-var hs-var hs-var hs-var">addStms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) () -&gt; RuleM rep ()
+forall rep a.
+BuilderT rep (StateT VNameSource Maybe) a -&gt; RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-var">RuleM</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT rep (StateT VNameSource Maybe) () -&gt; RuleM rep ())
+-&gt; (Stms rep -&gt; BuilderT rep (StateT VNameSource Maybe) ())
+-&gt; Stms rep
+-&gt; RuleM rep ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; BuilderT rep (StateT VNameSource Maybe) ()
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Stms (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#addStms"><span class="hs-identifier hs-var">addStms</span></a></span><span>
+</span><span id="line-82"></span><span>  </span><span id="local-6989586621684364226"><span class="annot"><span class="annottext">collectStms :: forall a. RuleM rep a -&gt; RuleM rep (a, Stms (Rep (RuleM rep)))
+</span><a href="Futhark.Builder.Class.html#collectStms"><span class="hs-identifier hs-var hs-var hs-var hs-var">collectStms</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span id="local-6989586621684364224"><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) a
+</span><a href="#local-6989586621684364224"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) (a, Stms rep)
+-&gt; RuleM rep (a, Stms rep)
+forall rep a.
+BuilderT rep (StateT VNameSource Maybe) a -&gt; RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-var">RuleM</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT rep (StateT VNameSource Maybe) (a, Stms rep)
+ -&gt; RuleM rep (a, Stms rep))
+-&gt; BuilderT rep (StateT VNameSource Maybe) (a, Stms rep)
+-&gt; RuleM rep (a, Stms rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) a
+-&gt; BuilderT
+     rep
+     (StateT VNameSource Maybe)
+     (a, Stms (Rep (BuilderT rep (StateT VNameSource Maybe))))
+forall (m :: * -&gt; *) a.
+MonadBuilder m =&gt;
+m a -&gt; m (a, Stms (Rep m))
+</span><a href="Futhark.Builder.Class.html#collectStms"><span class="hs-identifier hs-var">collectStms</span></a></span><span> </span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) a
+</span><a href="#local-6989586621684364224"><span class="hs-identifier hs-var">m</span></a></span></span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- | Execute a 'RuleM' action.  If succesful, returns the result and a</span><span>
+</span><span id="line-85"></span><span class="hs-comment">-- list of new bindings.</span><span>
+</span><span id="line-86"></span><span id="local-6989586621684364585"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#simplify"><span class="hs-identifier hs-type">simplify</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-87"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364585"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-88"></span><span>  </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rule"><span class="hs-identifier hs-type">Rule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364585"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-90"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364585"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.FreshNames.html#VNameSource"><span class="hs-identifier hs-type">VNameSource</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-91"></span><span id="simplify"><span class="annot"><span class="annottext">simplify :: forall rep.
+Scope rep
+-&gt; VNameSource -&gt; Rule rep -&gt; Maybe (Stms rep, VNameSource)
+</span><a href="Futhark.Optimise.Simplify.Rule.html#simplify"><span class="hs-identifier hs-var hs-var">simplify</span></a></span></span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Rule rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#Skip"><span class="hs-identifier hs-var">Skip</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (Stms rep, VNameSource)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-92"></span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#simplify"><span class="hs-identifier hs-var">simplify</span></a></span><span> </span><span id="local-6989586621684364218"><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684364218"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span id="local-6989586621684364217"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684364217"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Simplify"><span class="hs-identifier hs-type">Simplify</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span id="local-6989586621684364215"><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) ()
+</span><a href="#local-6989586621684364215"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-93"></span><span>  </span><span class="annot"><span class="annottext">StateT VNameSource Maybe (Stms rep)
+-&gt; VNameSource -&gt; Maybe (Stms rep, VNameSource)
+forall s (m :: * -&gt; *) a. StateT s m a -&gt; s -&gt; m (a, s)
+</span><span class="hs-identifier hs-var hs-var">runStateT</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) ()
+-&gt; Scope rep -&gt; StateT VNameSource Maybe (Stms rep)
+forall (m :: * -&gt; *) rep.
+MonadFreshNames m =&gt;
+BuilderT rep m () -&gt; Scope rep -&gt; m (Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT_"><span class="hs-identifier hs-var">runBuilderT_</span></a></span><span> </span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) ()
+</span><a href="#local-6989586621684364215"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684364218"><span class="hs-identifier hs-var">scope</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684364217"><span class="hs-identifier hs-var">src</span></a></span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span id="local-6989586621684364575"><span id="local-6989586621684364576"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#cannotSimplify"><span class="hs-identifier hs-type">cannotSimplify</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364576"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364575"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-96"></span><span id="cannotSimplify"><span class="annot"><span class="annottext">cannotSimplify :: forall rep a. RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#cannotSimplify"><span class="hs-identifier hs-var hs-var">cannotSimplify</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BuilderT rep (StateT VNameSource Maybe) a -&gt; RuleM rep a
+forall rep a.
+BuilderT rep (StateT VNameSource Maybe) a -&gt; RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-var">RuleM</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT rep (StateT VNameSource Maybe) a -&gt; RuleM rep a)
+-&gt; BuilderT rep (StateT VNameSource Maybe) a -&gt; RuleM rep a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">StateT VNameSource Maybe a
+-&gt; BuilderT rep (StateT VNameSource Maybe) a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">(StateT VNameSource Maybe a
+ -&gt; BuilderT rep (StateT VNameSource Maybe) a)
+-&gt; StateT VNameSource Maybe a
+-&gt; BuilderT rep (StateT VNameSource Maybe) a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Maybe a -&gt; StateT VNameSource Maybe a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><span class="hs-identifier hs-var">lift</span></span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-97"></span><span>
+</span><span id="line-98"></span><span id="local-6989586621684364565"><span id="local-6989586621684364566"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#liftMaybe"><span class="hs-identifier hs-type">liftMaybe</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621684364566"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364565"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364566"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-99"></span><span id="liftMaybe"><span class="annot"><span class="annottext">liftMaybe :: forall a rep. Maybe a -&gt; RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#liftMaybe"><span class="hs-identifier hs-var hs-var">liftMaybe</span></a></span></span><span> </span><span class="annot"><span class="annottext">Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RuleM rep a
+forall rep a. RuleM rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#cannotSimplify"><span class="hs-identifier hs-var">cannotSimplify</span></a></span><span>
+</span><span id="line-100"></span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#liftMaybe"><span class="hs-identifier hs-var">liftMaybe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684364203"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364203"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; RuleM rep a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364203"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- | An efficient way of encoding whether a simplification rule should even be attempted.</span><span>
+</span><span id="line-103"></span><span class="hs-keyword">data</span><span> </span><span id="Rule"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rule"><span class="hs-identifier hs-var">Rule</span></a></span></span><span> </span><span id="local-6989586621684364476"><span class="annot"><a href="#local-6989586621684364476"><span class="hs-identifier hs-type">rep</span></a></span></span><span>
+</span><span id="line-104"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-comment">-- | Give it a shot.</span><span>
+</span><span id="line-105"></span><span>    </span><span id="Simplify"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Simplify"><span class="hs-identifier hs-var">Simplify</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleM"><span class="hs-identifier hs-type">RuleM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364476"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-106"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="hs-comment">-- | Don't bother.</span><span>
+</span><span id="line-107"></span><span>    </span><span id="Skip"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Skip"><span class="hs-identifier hs-var">Skip</span></a></span></span><span>
+</span><span id="line-108"></span><span>
+</span><span id="line-109"></span><span class="hs-keyword">type</span><span> </span><span id="RuleGeneric"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-var">RuleGeneric</span></a></span></span><span> </span><span id="local-6989586621684364202"><span class="annot"><a href="#local-6989586621684364202"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684364201"><span class="annot"><a href="#local-6989586621684364201"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621684364201"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364202"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rule"><span class="hs-identifier hs-type">Rule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364202"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span class="hs-keyword">type</span><span> </span><span id="RuleBasicOp"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBasicOp"><span class="hs-identifier hs-var">RuleBasicOp</span></a></span></span><span> </span><span id="local-6989586621684364200"><span class="annot"><a href="#local-6989586621684364200"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684364199"><span class="annot"><a href="#local-6989586621684364199"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="#local-6989586621684364199"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-113"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364200"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-114"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364200"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-115"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-116"></span><span>    </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rule"><span class="hs-identifier hs-type">Rule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364200"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-117"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span class="hs-keyword">type</span><span> </span><span id="RuleIf"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleIf"><span class="hs-identifier hs-var">RuleIf</span></a></span></span><span> </span><span id="local-6989586621684364198"><span class="annot"><a href="#local-6989586621684364198"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684364197"><span class="annot"><a href="#local-6989586621684364197"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-120"></span><span>  </span><span class="annot"><a href="#local-6989586621684364197"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-121"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364198"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-122"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364198"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-123"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-124"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#BodyT"><span class="hs-identifier hs-type">BodyT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364198"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-125"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#BodyT"><span class="hs-identifier hs-type">BodyT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364198"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-126"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#IfDec"><span class="hs-identifier hs-type">IfDec</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#BranchType"><span class="hs-identifier hs-type">BranchType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364198"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-128"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rule"><span class="hs-identifier hs-type">Rule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364198"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span class="hs-keyword">type</span><span> </span><span id="RuleDoLoop"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleDoLoop"><span class="hs-identifier hs-var">RuleDoLoop</span></a></span></span><span> </span><span id="local-6989586621684364196"><span class="annot"><a href="#local-6989586621684364196"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684364195"><span class="annot"><a href="#local-6989586621684364195"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-131"></span><span>  </span><span class="annot"><a href="#local-6989586621684364195"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-132"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364196"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-133"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364196"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-134"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FParam"><span class="hs-identifier hs-type">FParam</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364196"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-135"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#LoopForm"><span class="hs-identifier hs-type">LoopForm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364196"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-136"></span><span>    </span><span class="annot"><a href="Futhark.IR.Syntax.html#BodyT"><span class="hs-identifier hs-type">BodyT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364196"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-137"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-138"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rule"><span class="hs-identifier hs-type">Rule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364196"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-139"></span><span>
+</span><span id="line-140"></span><span class="hs-keyword">type</span><span> </span><span id="RuleOp"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-var">RuleOp</span></a></span></span><span> </span><span id="local-6989586621684364194"><span class="annot"><a href="#local-6989586621684364194"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684364193"><span class="annot"><a href="#local-6989586621684364193"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-141"></span><span>  </span><span class="annot"><a href="#local-6989586621684364193"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-142"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364194"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-143"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364194"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-144"></span><span>  </span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364194"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-145"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rule"><span class="hs-identifier hs-type">Rule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364194"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-146"></span><span>
+</span><span id="line-147"></span><span class="hs-comment">-- | A simplification rule takes some argument and a statement, and</span><span>
+</span><span id="line-148"></span><span class="hs-comment">-- tries to simplify the statement.</span><span>
+</span><span id="line-149"></span><span class="hs-keyword">data</span><span> </span><span id="SimplificationRule"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-var">SimplificationRule</span></a></span></span><span> </span><span id="local-6989586621684364192"><span class="annot"><a href="#local-6989586621684364192"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684364191"><span class="annot"><a href="#local-6989586621684364191"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-150"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="RuleGeneric"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-var">RuleGeneric</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-type">RuleGeneric</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364192"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364191"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="RuleBasicOp"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBasicOp"><span class="hs-identifier hs-var">RuleBasicOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBasicOp"><span class="hs-identifier hs-type">RuleBasicOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364192"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364191"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-152"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="RuleIf"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleIf"><span class="hs-identifier hs-var">RuleIf</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleIf"><span class="hs-identifier hs-type">RuleIf</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364192"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364191"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-153"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="RuleDoLoop"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleDoLoop"><span class="hs-identifier hs-var">RuleDoLoop</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleDoLoop"><span class="hs-identifier hs-type">RuleDoLoop</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364192"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364191"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-154"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="RuleOp"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-var">RuleOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-type">RuleOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364192"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364191"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-155"></span><span>
+</span><span id="line-156"></span><span class="hs-comment">-- | A collection of rules grouped by which forms of statements they</span><span>
+</span><span id="line-157"></span><span class="hs-comment">-- may apply to.</span><span>
+</span><span id="line-158"></span><span class="hs-keyword">data</span><span> </span><span id="Rules"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-var">Rules</span></a></span></span><span> </span><span id="local-6989586621684364562"><span class="annot"><a href="#local-6989586621684364562"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span id="local-6989586621684364561"><span class="annot"><a href="#local-6989586621684364561"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Rules"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-var">Rules</span></a></span></span><span>
+</span><span id="line-159"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="rulesAny"><span class="annot"><span class="annottext">forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesAny"><span class="hs-identifier hs-var hs-var">rulesAny</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364562"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364561"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-160"></span><span>    </span><span id="rulesBasicOp"><span class="annot"><span class="annottext">forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesBasicOp"><span class="hs-identifier hs-var hs-var">rulesBasicOp</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364562"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364561"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-161"></span><span>    </span><span id="rulesIf"><span class="annot"><span class="annottext">forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesIf"><span class="hs-identifier hs-var hs-var">rulesIf</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364562"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364561"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-162"></span><span>    </span><span id="rulesDoLoop"><span class="annot"><span class="annottext">forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesDoLoop"><span class="hs-identifier hs-var hs-var">rulesDoLoop</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364562"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364561"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span>
+</span><span id="line-163"></span><span>    </span><span id="rulesOp"><span class="annot"><span class="annottext">forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesOp"><span class="hs-identifier hs-var hs-var">rulesOp</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364562"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364561"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-164"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-165"></span><span>
+</span><span id="line-166"></span><span id="local-6989586621684364545"><span id="local-6989586621684364546"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684364175"><span id="local-6989586621684364177"><span class="annot"><span class="hs-identifier hs-type">Semigroup</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-type">Rules</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364546"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364545"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-167"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-type">Rules</span></a></span><span> </span><span id="local-6989586621684364167"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364167"><span class="hs-identifier hs-var">as1</span></a></span></span><span> </span><span id="local-6989586621684364166"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364166"><span class="hs-identifier hs-var">bs1</span></a></span></span><span> </span><span id="local-6989586621684364165"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364165"><span class="hs-identifier hs-var">cs1</span></a></span></span><span> </span><span id="local-6989586621684364164"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364164"><span class="hs-identifier hs-var">ds1</span></a></span></span><span> </span><span id="local-6989586621684364163"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364163"><span class="hs-identifier hs-var">es1</span></a></span></span><span> </span><span id="local-6989586621684364162"><span class="annot"><span class="annottext">&lt;&gt; :: Rules rep a -&gt; Rules rep a -&gt; Rules rep a
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;&gt;</span></span></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-type">Rules</span></a></span><span> </span><span id="local-6989586621684364161"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364161"><span class="hs-identifier hs-var">as2</span></a></span></span><span> </span><span id="local-6989586621684364160"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364160"><span class="hs-identifier hs-var">bs2</span></a></span></span><span> </span><span id="local-6989586621684364159"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364159"><span class="hs-identifier hs-var">cs2</span></a></span></span><span> </span><span id="local-6989586621684364158"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364158"><span class="hs-identifier hs-var">ds2</span></a></span></span><span> </span><span id="local-6989586621684364157"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364157"><span class="hs-identifier hs-var">es2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-168"></span><span>    </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; Rules rep a
+forall rep a.
+[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; Rules rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-var">Rules</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364167"><span class="hs-identifier hs-var">as1</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a] -&gt; [SimplificationRule rep a]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364161"><span class="hs-identifier hs-var">as2</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364166"><span class="hs-identifier hs-var">bs1</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a] -&gt; [SimplificationRule rep a]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364160"><span class="hs-identifier hs-var">bs2</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364165"><span class="hs-identifier hs-var">cs1</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a] -&gt; [SimplificationRule rep a]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364159"><span class="hs-identifier hs-var">cs2</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364164"><span class="hs-identifier hs-var">ds1</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a] -&gt; [SimplificationRule rep a]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364158"><span class="hs-identifier hs-var">ds2</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364163"><span class="hs-identifier hs-var">es1</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a] -&gt; [SimplificationRule rep a]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364157"><span class="hs-identifier hs-var">es2</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-169"></span><span>
+</span><span id="line-170"></span><span id="local-6989586621684364541"><span id="local-6989586621684364542"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684364150"><span id="local-6989586621684364152"><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-type">Rules</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364542"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364541"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-171"></span><span>  </span><span id="local-6989586621684364142"><span class="annot"><span class="annottext">mempty :: Rules rep a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mempty</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; Rules rep a
+forall rep a.
+[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; Rules rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-var">Rules</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span></span></span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="hs-comment">-- | Context for a rule applied during top-down traversal of the</span><span>
+</span><span id="line-174"></span><span class="hs-comment">-- program.  Takes a symbol table as argument.</span><span>
+</span><span id="line-175"></span><span class="hs-keyword">type</span><span> </span><span id="TopDown"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDown"><span class="hs-identifier hs-var">TopDown</span></a></span></span><span> </span><span id="local-6989586621684364141"><span class="annot"><a href="#local-6989586621684364141"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#SymbolTable"><span class="hs-identifier hs-type">ST.SymbolTable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364141"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-176"></span><span>
+</span><span id="line-177"></span><span class="hs-keyword">type</span><span> </span><span id="TopDownRuleGeneric"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleGeneric"><span class="hs-identifier hs-var">TopDownRuleGeneric</span></a></span></span><span> </span><span id="local-6989586621684364140"><span class="annot"><a href="#local-6989586621684364140"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-type">RuleGeneric</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364140"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDown"><span class="hs-identifier hs-type">TopDown</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364140"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span class="hs-keyword">type</span><span> </span><span id="TopDownRuleBasicOp"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleBasicOp"><span class="hs-identifier hs-var">TopDownRuleBasicOp</span></a></span></span><span> </span><span id="local-6989586621684364139"><span class="annot"><a href="#local-6989586621684364139"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBasicOp"><span class="hs-identifier hs-type">RuleBasicOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364139"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDown"><span class="hs-identifier hs-type">TopDown</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364139"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-180"></span><span>
+</span><span id="line-181"></span><span class="hs-keyword">type</span><span> </span><span id="TopDownRuleIf"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleIf"><span class="hs-identifier hs-var">TopDownRuleIf</span></a></span></span><span> </span><span id="local-6989586621684364138"><span class="annot"><a href="#local-6989586621684364138"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleIf"><span class="hs-identifier hs-type">RuleIf</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364138"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDown"><span class="hs-identifier hs-type">TopDown</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364138"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span class="hs-keyword">type</span><span> </span><span id="TopDownRuleDoLoop"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleDoLoop"><span class="hs-identifier hs-var">TopDownRuleDoLoop</span></a></span></span><span> </span><span id="local-6989586621684364137"><span class="annot"><a href="#local-6989586621684364137"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleDoLoop"><span class="hs-identifier hs-type">RuleDoLoop</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364137"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDown"><span class="hs-identifier hs-type">TopDown</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364137"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-184"></span><span>
+</span><span id="line-185"></span><span class="hs-keyword">type</span><span> </span><span id="TopDownRuleOp"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRuleOp"><span class="hs-identifier hs-var">TopDownRuleOp</span></a></span></span><span> </span><span id="local-6989586621684364136"><span class="annot"><a href="#local-6989586621684364136"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-type">RuleOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364136"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDown"><span class="hs-identifier hs-type">TopDown</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364136"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-186"></span><span>
+</span><span id="line-187"></span><span class="hs-keyword">type</span><span> </span><span id="TopDownRule"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRule"><span class="hs-identifier hs-var">TopDownRule</span></a></span></span><span> </span><span id="local-6989586621684364135"><span class="annot"><a href="#local-6989586621684364135"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364135"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDown"><span class="hs-identifier hs-type">TopDown</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364135"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-188"></span><span>
+</span><span id="line-189"></span><span class="hs-comment">-- | Context for a rule applied during bottom-up traversal of the</span><span>
+</span><span id="line-190"></span><span class="hs-comment">-- program.  Takes a symbol table and usage table as arguments.</span><span>
+</span><span id="line-191"></span><span class="hs-keyword">type</span><span> </span><span id="BottomUp"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUp"><span class="hs-identifier hs-var">BottomUp</span></a></span></span><span> </span><span id="local-6989586621684364134"><span class="annot"><a href="#local-6989586621684364134"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#SymbolTable"><span class="hs-identifier hs-type">ST.SymbolTable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364134"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Analysis.UsageTable.html#UsageTable"><span class="hs-identifier hs-type">UT.UsageTable</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-192"></span><span>
+</span><span id="line-193"></span><span class="hs-keyword">type</span><span> </span><span id="BottomUpRuleGeneric"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleGeneric"><span class="hs-identifier hs-var">BottomUpRuleGeneric</span></a></span></span><span> </span><span id="local-6989586621684364133"><span class="annot"><a href="#local-6989586621684364133"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-type">RuleGeneric</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364133"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUp"><span class="hs-identifier hs-type">BottomUp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364133"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-194"></span><span>
+</span><span id="line-195"></span><span class="hs-keyword">type</span><span> </span><span id="BottomUpRuleBasicOp"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleBasicOp"><span class="hs-identifier hs-var">BottomUpRuleBasicOp</span></a></span></span><span> </span><span id="local-6989586621684364132"><span class="annot"><a href="#local-6989586621684364132"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBasicOp"><span class="hs-identifier hs-type">RuleBasicOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364132"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUp"><span class="hs-identifier hs-type">BottomUp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364132"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-196"></span><span>
+</span><span id="line-197"></span><span class="hs-keyword">type</span><span> </span><span id="BottomUpRuleIf"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleIf"><span class="hs-identifier hs-var">BottomUpRuleIf</span></a></span></span><span> </span><span id="local-6989586621684364131"><span class="annot"><a href="#local-6989586621684364131"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleIf"><span class="hs-identifier hs-type">RuleIf</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364131"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUp"><span class="hs-identifier hs-type">BottomUp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364131"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-198"></span><span>
+</span><span id="line-199"></span><span class="hs-keyword">type</span><span> </span><span id="BottomUpRuleDoLoop"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleDoLoop"><span class="hs-identifier hs-var">BottomUpRuleDoLoop</span></a></span></span><span> </span><span id="local-6989586621684364130"><span class="annot"><a href="#local-6989586621684364130"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleDoLoop"><span class="hs-identifier hs-type">RuleDoLoop</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364130"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUp"><span class="hs-identifier hs-type">BottomUp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364130"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-200"></span><span>
+</span><span id="line-201"></span><span class="hs-keyword">type</span><span> </span><span id="BottomUpRuleOp"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRuleOp"><span class="hs-identifier hs-var">BottomUpRuleOp</span></a></span></span><span> </span><span id="local-6989586621684364129"><span class="annot"><a href="#local-6989586621684364129"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-type">RuleOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364129"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUp"><span class="hs-identifier hs-type">BottomUp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364129"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-202"></span><span>
+</span><span id="line-203"></span><span class="hs-keyword">type</span><span> </span><span id="BottomUpRule"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRule"><span class="hs-identifier hs-var">BottomUpRule</span></a></span></span><span> </span><span id="local-6989586621684364128"><span class="annot"><a href="#local-6989586621684364128"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364128"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUp"><span class="hs-identifier hs-type">BottomUp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364128"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-204"></span><span>
+</span><span id="line-205"></span><span class="hs-comment">-- | A collection of top-down rules.</span><span>
+</span><span id="line-206"></span><span class="hs-keyword">type</span><span> </span><span id="TopDownRules"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRules"><span class="hs-identifier hs-var">TopDownRules</span></a></span></span><span> </span><span id="local-6989586621684364127"><span class="annot"><a href="#local-6989586621684364127"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-type">Rules</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364127"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDown"><span class="hs-identifier hs-type">TopDown</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364127"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-207"></span><span>
+</span><span id="line-208"></span><span class="hs-comment">-- | A collection of bottom-up rules.</span><span>
+</span><span id="line-209"></span><span class="hs-keyword">type</span><span> </span><span id="BottomUpRules"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRules"><span class="hs-identifier hs-var">BottomUpRules</span></a></span></span><span> </span><span id="local-6989586621684364126"><span class="annot"><a href="#local-6989586621684364126"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-type">Rules</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364126"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUp"><span class="hs-identifier hs-type">BottomUp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364126"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-210"></span><span>
+</span><span id="line-211"></span><span class="hs-comment">-- | A collection of both top-down and bottom-up rules.</span><span>
+</span><span id="line-212"></span><span class="hs-keyword">data</span><span> </span><span id="RuleBook"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-var">RuleBook</span></a></span></span><span> </span><span id="local-6989586621684364539"><span class="annot"><a href="#local-6989586621684364539"><span class="hs-identifier hs-type">rep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="RuleBook"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-var">RuleBook</span></a></span></span><span>
+</span><span id="line-213"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="bookTopDownRules"><span class="annot"><span class="annottext">forall rep. RuleBook rep -&gt; TopDownRules rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#bookTopDownRules"><span class="hs-identifier hs-var hs-var">bookTopDownRules</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRules"><span class="hs-identifier hs-type">TopDownRules</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364539"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-214"></span><span>    </span><span id="bookBottomUpRules"><span class="annot"><span class="annottext">forall rep. RuleBook rep -&gt; BottomUpRules rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#bookBottomUpRules"><span class="hs-identifier hs-var hs-var">bookBottomUpRules</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRules"><span class="hs-identifier hs-type">BottomUpRules</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364539"><span class="hs-identifier hs-type">rep</span></a></span><span>
+</span><span id="line-215"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-216"></span><span>
+</span><span id="line-217"></span><span id="local-6989586621684364534"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684364118"><span id="local-6989586621684364120"><span class="annot"><span class="hs-identifier hs-type">Semigroup</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-type">RuleBook</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364534"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-218"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-type">RuleBook</span></a></span><span> </span><span id="local-6989586621684364115"><span class="annot"><span class="annottext">TopDownRules rep
+</span><a href="#local-6989586621684364115"><span class="hs-identifier hs-var">ts1</span></a></span></span><span> </span><span id="local-6989586621684364114"><span class="annot"><span class="annottext">BottomUpRules rep
+</span><a href="#local-6989586621684364114"><span class="hs-identifier hs-var">bs1</span></a></span></span><span> </span><span id="local-6989586621684364113"><span class="annot"><span class="annottext">&lt;&gt; :: RuleBook rep -&gt; RuleBook rep -&gt; RuleBook rep
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;&gt;</span></span></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-type">RuleBook</span></a></span><span> </span><span id="local-6989586621684364112"><span class="annot"><span class="annottext">TopDownRules rep
+</span><a href="#local-6989586621684364112"><span class="hs-identifier hs-var">ts2</span></a></span></span><span> </span><span id="local-6989586621684364111"><span class="annot"><span class="annottext">BottomUpRules rep
+</span><a href="#local-6989586621684364111"><span class="hs-identifier hs-var">bs2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TopDownRules rep -&gt; BottomUpRules rep -&gt; RuleBook rep
+forall rep. TopDownRules rep -&gt; BottomUpRules rep -&gt; RuleBook rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-var">RuleBook</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TopDownRules rep
+</span><a href="#local-6989586621684364115"><span class="hs-identifier hs-var">ts1</span></a></span><span> </span><span class="annot"><span class="annottext">TopDownRules rep -&gt; TopDownRules rep -&gt; TopDownRules rep
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">TopDownRules rep
+</span><a href="#local-6989586621684364112"><span class="hs-identifier hs-var">ts2</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BottomUpRules rep
+</span><a href="#local-6989586621684364114"><span class="hs-identifier hs-var">bs1</span></a></span><span> </span><span class="annot"><span class="annottext">BottomUpRules rep -&gt; BottomUpRules rep -&gt; BottomUpRules rep
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">BottomUpRules rep
+</span><a href="#local-6989586621684364111"><span class="hs-identifier hs-var">bs2</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-219"></span><span>
+</span><span id="line-220"></span><span id="local-6989586621684364533"><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684364104"><span id="local-6989586621684364106"><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-type">RuleBook</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364533"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-221"></span><span>  </span><span id="local-6989586621684364101"><span class="annot"><span class="annottext">mempty :: RuleBook rep
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mempty</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TopDownRules rep -&gt; BottomUpRules rep -&gt; RuleBook rep
+forall rep. TopDownRules rep -&gt; BottomUpRules rep -&gt; RuleBook rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-var">RuleBook</span></a></span><span> </span><span class="annot"><span class="annottext">TopDownRules rep
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">BottomUpRules rep
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span></span><span>
+</span><span id="line-222"></span><span>
+</span><span id="line-223"></span><span class="hs-comment">-- | Construct a rule book from a collection of rules.</span><span>
+</span><span id="line-224"></span><span id="local-6989586621684364532"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#ruleBook"><span class="hs-identifier hs-type">ruleBook</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-225"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#TopDownRule"><span class="hs-identifier hs-type">TopDownRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364532"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-226"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#BottomUpRule"><span class="hs-identifier hs-type">BottomUpRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364532"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-227"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-type">RuleBook</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364532"><span class="hs-identifier hs-type">m</span></a></span></span><span>
+</span><span id="line-228"></span><span id="ruleBook"><span class="annot"><span class="annottext">ruleBook :: forall m. [TopDownRule m] -&gt; [BottomUpRule m] -&gt; RuleBook m
+</span><a href="Futhark.Optimise.Simplify.Rule.html#ruleBook"><span class="hs-identifier hs-var hs-var">ruleBook</span></a></span></span><span> </span><span id="local-6989586621684364100"><span class="annot"><span class="annottext">[TopDownRule m]
+</span><a href="#local-6989586621684364100"><span class="hs-identifier hs-var">topdowns</span></a></span></span><span> </span><span id="local-6989586621684364099"><span class="annot"><span class="annottext">[BottomUpRule m]
+</span><a href="#local-6989586621684364099"><span class="hs-identifier hs-var">bottomups</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-229"></span><span>  </span><span class="annot"><span class="annottext">TopDownRules m -&gt; BottomUpRules m -&gt; RuleBook m
+forall rep. TopDownRules rep -&gt; BottomUpRules rep -&gt; RuleBook rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-var">RuleBook</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[TopDownRule m] -&gt; TopDownRules m
+forall m a. [SimplificationRule m a] -&gt; Rules m a
+</span><a href="#local-6989586621684364098"><span class="hs-identifier hs-var">groupRules</span></a></span><span> </span><span class="annot"><span class="annottext">[TopDownRule m]
+</span><a href="#local-6989586621684364100"><span class="hs-identifier hs-var">topdowns</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[BottomUpRule m] -&gt; BottomUpRules m
+forall m a. [SimplificationRule m a] -&gt; Rules m a
+</span><a href="#local-6989586621684364098"><span class="hs-identifier hs-var">groupRules</span></a></span><span> </span><span class="annot"><span class="annottext">[BottomUpRule m]
+</span><a href="#local-6989586621684364099"><span class="hs-identifier hs-var">bottomups</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-230"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-231"></span><span>    </span><span id="local-6989586621684364527"><span id="local-6989586621684364528"><span class="annot"><a href="#local-6989586621684364098"><span class="hs-identifier hs-type">groupRules</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364528"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364527"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-type">Rules</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364528"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364527"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-232"></span><span>    </span><span id="local-6989586621684364098"><span class="annot"><span class="annottext">groupRules :: forall m a. [SimplificationRule m a] -&gt; Rules m a
+</span><a href="#local-6989586621684364098"><span class="hs-identifier hs-var hs-var">groupRules</span></a></span></span><span> </span><span id="local-6989586621684364097"><span class="annot"><span class="annottext">[SimplificationRule m a]
+</span><a href="#local-6989586621684364097"><span class="hs-identifier hs-var">rs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-233"></span><span>      </span><span class="annot"><span class="annottext">[SimplificationRule m a]
+-&gt; [SimplificationRule m a]
+-&gt; [SimplificationRule m a]
+-&gt; [SimplificationRule m a]
+-&gt; [SimplificationRule m a]
+-&gt; Rules m a
+forall rep a.
+[SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; [SimplificationRule rep a]
+-&gt; Rules rep a
+</span><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-var">Rules</span></a></span><span>
+</span><span id="line-234"></span><span>        </span><span class="annot"><span class="annottext">[SimplificationRule m a]
+</span><a href="#local-6989586621684364097"><span class="hs-identifier hs-var">rs</span></a></span><span>
+</span><span id="line-235"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SimplificationRule m a -&gt; Bool)
+-&gt; [SimplificationRule m a] -&gt; [SimplificationRule m a]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="annot"><span class="annottext">SimplificationRule m a -&gt; Bool
+forall {rep} {a}. SimplificationRule rep a -&gt; Bool
+</span><a href="#local-6989586621684364096"><span class="hs-identifier hs-var">forBasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule m a]
+</span><a href="#local-6989586621684364097"><span class="hs-identifier hs-var">rs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-236"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SimplificationRule m a -&gt; Bool)
+-&gt; [SimplificationRule m a] -&gt; [SimplificationRule m a]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="annot"><span class="annottext">SimplificationRule m a -&gt; Bool
+forall {rep} {a}. SimplificationRule rep a -&gt; Bool
+</span><a href="#local-6989586621684364095"><span class="hs-identifier hs-var">forIf</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule m a]
+</span><a href="#local-6989586621684364097"><span class="hs-identifier hs-var">rs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-237"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SimplificationRule m a -&gt; Bool)
+-&gt; [SimplificationRule m a] -&gt; [SimplificationRule m a]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="annot"><span class="annottext">SimplificationRule m a -&gt; Bool
+forall {rep} {a}. SimplificationRule rep a -&gt; Bool
+</span><a href="#local-6989586621684364094"><span class="hs-identifier hs-var">forDoLoop</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule m a]
+</span><a href="#local-6989586621684364097"><span class="hs-identifier hs-var">rs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-238"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SimplificationRule m a -&gt; Bool)
+-&gt; [SimplificationRule m a] -&gt; [SimplificationRule m a]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="annot"><span class="annottext">SimplificationRule m a -&gt; Bool
+forall {rep} {a}. SimplificationRule rep a -&gt; Bool
+</span><a href="#local-6989586621684364093"><span class="hs-identifier hs-var">forOp</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule m a]
+</span><a href="#local-6989586621684364097"><span class="hs-identifier hs-var">rs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-239"></span><span>
+</span><span id="line-240"></span><span>    </span><span id="local-6989586621684364096"><span class="annot"><span class="annottext">forBasicOp :: SimplificationRule rep a -&gt; Bool
+</span><a href="#local-6989586621684364096"><span class="hs-identifier hs-var hs-var">forBasicOp</span></a></span></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBasicOp"><span class="hs-identifier hs-type">RuleBasicOp</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-241"></span><span>    </span><span class="annot"><a href="#local-6989586621684364096"><span class="hs-identifier hs-var">forBasicOp</span></a></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-type">RuleGeneric</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-242"></span><span>    </span><span class="annot"><a href="#local-6989586621684364096"><span class="hs-identifier hs-var">forBasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplificationRule rep a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-243"></span><span>
+</span><span id="line-244"></span><span>    </span><span id="local-6989586621684364095"><span class="annot"><span class="annottext">forIf :: SimplificationRule rep a -&gt; Bool
+</span><a href="#local-6989586621684364095"><span class="hs-identifier hs-var hs-var">forIf</span></a></span></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleIf"><span class="hs-identifier hs-type">RuleIf</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-245"></span><span>    </span><span class="annot"><a href="#local-6989586621684364095"><span class="hs-identifier hs-var">forIf</span></a></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-type">RuleGeneric</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-246"></span><span>    </span><span class="annot"><a href="#local-6989586621684364095"><span class="hs-identifier hs-var">forIf</span></a></span><span> </span><span class="annot"><span class="annottext">SimplificationRule rep a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-247"></span><span>
+</span><span id="line-248"></span><span>    </span><span id="local-6989586621684364094"><span class="annot"><span class="annottext">forDoLoop :: SimplificationRule rep a -&gt; Bool
+</span><a href="#local-6989586621684364094"><span class="hs-identifier hs-var hs-var">forDoLoop</span></a></span></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleDoLoop"><span class="hs-identifier hs-type">RuleDoLoop</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-249"></span><span>    </span><span class="annot"><a href="#local-6989586621684364094"><span class="hs-identifier hs-var">forDoLoop</span></a></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-type">RuleGeneric</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-250"></span><span>    </span><span class="annot"><a href="#local-6989586621684364094"><span class="hs-identifier hs-var">forDoLoop</span></a></span><span> </span><span class="annot"><span class="annottext">SimplificationRule rep a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-251"></span><span>
+</span><span id="line-252"></span><span>    </span><span id="local-6989586621684364093"><span class="annot"><span class="annottext">forOp :: SimplificationRule rep a -&gt; Bool
+</span><a href="#local-6989586621684364093"><span class="hs-identifier hs-var hs-var">forOp</span></a></span></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-type">RuleOp</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-253"></span><span>    </span><span class="annot"><a href="#local-6989586621684364093"><span class="hs-identifier hs-var">forOp</span></a></span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-type">RuleGeneric</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-254"></span><span>    </span><span class="annot"><a href="#local-6989586621684364093"><span class="hs-identifier hs-var">forOp</span></a></span><span> </span><span class="annot"><span class="annottext">SimplificationRule rep a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-255"></span><span>
+</span><span id="line-256"></span><span class="hs-comment">-- | @simplifyStm lookup stm@ performs simplification of the</span><span>
+</span><span id="line-257"></span><span class="hs-comment">-- binding @stm@.  If simplification is possible, a replacement list</span><span>
+</span><span id="line-258"></span><span class="hs-comment">-- of bindings is returned, that bind at least the same names as the</span><span>
+</span><span id="line-259"></span><span class="hs-comment">-- original binding (and possibly more, for intermediate results).</span><span>
+</span><span id="line-260"></span><span id="local-6989586621684364514"><span id="local-6989586621684364515"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#topDownSimplifyStm"><span class="hs-identifier hs-type">topDownSimplifyStm</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-261"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364515"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364514"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364515"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-262"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-type">RuleBook</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364514"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-263"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#SymbolTable"><span class="hs-identifier hs-type">ST.SymbolTable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364514"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-264"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364514"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-265"></span><span>  </span><span class="annot"><a href="#local-6989586621684364515"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364514"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-266"></span><span id="topDownSimplifyStm"><span class="annot"><span class="annottext">topDownSimplifyStm :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, HasScope rep m) =&gt;
+RuleBook rep -&gt; SymbolTable rep -&gt; Stm rep -&gt; m (Maybe (Stms rep))
+</span><a href="Futhark.Optimise.Simplify.Rule.html#topDownSimplifyStm"><span class="hs-identifier hs-var hs-var">topDownSimplifyStm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Rules rep (TopDown rep)
+-&gt; TopDown rep -&gt; Stm rep -&gt; m (Maybe (Stms rep))
+forall (m :: * -&gt; *) rep a.
+(MonadFreshNames m, HasScope rep m) =&gt;
+Rules rep a -&gt; a -&gt; Stm rep -&gt; m (Maybe (Stms rep))
+</span><a href="Futhark.Optimise.Simplify.Rule.html#applyRules"><span class="hs-identifier hs-var">applyRules</span></a></span><span> </span><span class="annot"><span class="annottext">(Rules rep (TopDown rep)
+ -&gt; TopDown rep -&gt; Stm rep -&gt; m (Maybe (Stms rep)))
+-&gt; (RuleBook rep -&gt; Rules rep (TopDown rep))
+-&gt; RuleBook rep
+-&gt; TopDown rep
+-&gt; Stm rep
+-&gt; m (Maybe (Stms rep))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">RuleBook rep -&gt; Rules rep (TopDown rep)
+forall rep. RuleBook rep -&gt; TopDownRules rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#bookTopDownRules"><span class="hs-identifier hs-var hs-var">bookTopDownRules</span></a></span><span>
+</span><span id="line-267"></span><span>
+</span><span id="line-268"></span><span class="hs-comment">-- | @simplifyStm uses stm@ performs simplification of the binding</span><span>
+</span><span id="line-269"></span><span class="hs-comment">-- @stm@.  If simplification is possible, a replacement list of</span><span>
+</span><span id="line-270"></span><span class="hs-comment">-- bindings is returned, that bind at least the same names as the</span><span>
+</span><span id="line-271"></span><span class="hs-comment">-- original binding (and possibly more, for intermediate results).</span><span>
+</span><span id="line-272"></span><span class="hs-comment">-- The first argument is the set of names used after this binding.</span><span>
+</span><span id="line-273"></span><span id="local-6989586621684364505"><span id="local-6989586621684364506"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#bottomUpSimplifyStm"><span class="hs-identifier hs-type">bottomUpSimplifyStm</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-274"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364506"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364505"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364506"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-275"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBook"><span class="hs-identifier hs-type">RuleBook</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364505"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-276"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.SymbolTable.html#SymbolTable"><span class="hs-identifier hs-type">ST.SymbolTable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364505"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Analysis.UsageTable.html#UsageTable"><span class="hs-identifier hs-type">UT.UsageTable</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-277"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364505"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-278"></span><span>  </span><span class="annot"><a href="#local-6989586621684364506"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364505"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-279"></span><span id="bottomUpSimplifyStm"><span class="annot"><span class="annottext">bottomUpSimplifyStm :: forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, HasScope rep m) =&gt;
+RuleBook rep
+-&gt; (SymbolTable rep, UsageTable) -&gt; Stm rep -&gt; m (Maybe (Stms rep))
+</span><a href="Futhark.Optimise.Simplify.Rule.html#bottomUpSimplifyStm"><span class="hs-identifier hs-var hs-var">bottomUpSimplifyStm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Rules rep (BottomUp rep)
+-&gt; BottomUp rep -&gt; Stm rep -&gt; m (Maybe (Stms rep))
+forall (m :: * -&gt; *) rep a.
+(MonadFreshNames m, HasScope rep m) =&gt;
+Rules rep a -&gt; a -&gt; Stm rep -&gt; m (Maybe (Stms rep))
+</span><a href="Futhark.Optimise.Simplify.Rule.html#applyRules"><span class="hs-identifier hs-var">applyRules</span></a></span><span> </span><span class="annot"><span class="annottext">(Rules rep (BottomUp rep)
+ -&gt; BottomUp rep -&gt; Stm rep -&gt; m (Maybe (Stms rep)))
+-&gt; (RuleBook rep -&gt; Rules rep (BottomUp rep))
+-&gt; RuleBook rep
+-&gt; BottomUp rep
+-&gt; Stm rep
+-&gt; m (Maybe (Stms rep))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">RuleBook rep -&gt; Rules rep (BottomUp rep)
+forall rep. RuleBook rep -&gt; BottomUpRules rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#bookBottomUpRules"><span class="hs-identifier hs-var hs-var">bookBottomUpRules</span></a></span><span>
+</span><span id="line-280"></span><span>
+</span><span id="line-281"></span><span id="local-6989586621684364499"><span id="local-6989586621684364500"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#rulesForStm"><span class="hs-identifier hs-type">rulesForStm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364500"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-type">Rules</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364500"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364499"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364500"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364499"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span></span></span><span>
+</span><span id="line-282"></span><span id="rulesForStm"><span class="annot"><span class="annottext">rulesForStm :: forall rep a. Stm rep -&gt; Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesForStm"><span class="hs-identifier hs-var hs-var">rulesForStm</span></a></span></span><span> </span><span id="local-6989586621684364082"><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684364082"><span class="hs-identifier hs-var">stm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Exp rep
+forall rep. Stm rep -&gt; Exp rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var hs-var">stmExp</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684364082"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-283"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Rules rep a -&gt; [SimplificationRule rep a]
+forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesBasicOp"><span class="hs-identifier hs-var hs-var">rulesBasicOp</span></a></span><span>
+</span><span id="line-284"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-type">DoLoop</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Rules rep a -&gt; [SimplificationRule rep a]
+forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesDoLoop"><span class="hs-identifier hs-var hs-var">rulesDoLoop</span></a></span><span>
+</span><span id="line-285"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Rules rep a -&gt; [SimplificationRule rep a]
+forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesOp"><span class="hs-identifier hs-var hs-var">rulesOp</span></a></span><span>
+</span><span id="line-286"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Rules rep a -&gt; [SimplificationRule rep a]
+forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesIf"><span class="hs-identifier hs-var hs-var">rulesIf</span></a></span><span>
+</span><span id="line-287"></span><span>  </span><span class="annot"><span class="annottext">Exp rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Rules rep a -&gt; [SimplificationRule rep a]
+forall rep a. Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesAny"><span class="hs-identifier hs-var hs-var">rulesAny</span></a></span><span>
+</span><span id="line-288"></span><span>
+</span><span id="line-289"></span><span id="local-6989586621684364494"><span id="local-6989586621684364495"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#applyRule"><span class="hs-identifier hs-type">applyRule</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#SimplificationRule"><span class="hs-identifier hs-type">SimplificationRule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364495"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364494"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684364494"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364495"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rule"><span class="hs-identifier hs-type">Rule</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364495"><span class="hs-identifier hs-type">rep</span></a></span></span></span><span>
+</span><span id="line-290"></span><span id="applyRule"><span class="annot"><span class="annottext">applyRule :: forall rep a. SimplificationRule rep a -&gt; a -&gt; Stm rep -&gt; Rule rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#applyRule"><span class="hs-identifier hs-var hs-var">applyRule</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleGeneric"><span class="hs-identifier hs-type">RuleGeneric</span></a></span><span> </span><span id="local-6989586621684364075"><span class="annot"><span class="annottext">RuleGeneric rep a
+</span><a href="#local-6989586621684364075"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684364074"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364074"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621684364073"><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684364073"><span class="hs-identifier hs-var">stm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RuleGeneric rep a
+</span><a href="#local-6989586621684364075"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364074"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684364073"><span class="hs-identifier hs-var">stm</span></a></span><span>
+</span><span id="line-291"></span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#applyRule"><span class="hs-identifier hs-var">applyRule</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleBasicOp"><span class="hs-identifier hs-type">RuleBasicOp</span></a></span><span> </span><span id="local-6989586621684364072"><span class="annot"><span class="annottext">RuleBasicOp rep a
+</span><a href="#local-6989586621684364072"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684364071"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364071"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684364069"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364069"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684364068"><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684364068"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-type">BasicOp</span></a></span><span> </span><span id="local-6989586621684364067"><span class="annot"><span class="annottext">BasicOp
+</span><a href="#local-6989586621684364067"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RuleBasicOp rep a
+</span><a href="#local-6989586621684364072"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364071"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364069"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684364068"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">BasicOp
+</span><a href="#local-6989586621684364067"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-292"></span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#applyRule"><span class="hs-identifier hs-var">applyRule</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleDoLoop"><span class="hs-identifier hs-type">RuleDoLoop</span></a></span><span> </span><span id="local-6989586621684364066"><span class="annot"><span class="annottext">RuleDoLoop rep a
+</span><a href="#local-6989586621684364066"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684364065"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364065"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684364064"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364064"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684364063"><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684364063"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-type">DoLoop</span></a></span><span> </span><span id="local-6989586621684364062"><span class="annot"><span class="annottext">[(FParam rep, SubExp)]
+</span><a href="#local-6989586621684364062"><span class="hs-identifier hs-var">merge</span></a></span></span><span> </span><span id="local-6989586621684364061"><span class="annot"><span class="annottext">LoopForm rep
+</span><a href="#local-6989586621684364061"><span class="hs-identifier hs-var">form</span></a></span></span><span> </span><span id="local-6989586621684364060"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684364060"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-293"></span><span>  </span><span class="annot"><span class="annottext">RuleDoLoop rep a
+</span><a href="#local-6989586621684364066"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364065"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364064"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684364063"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(FParam rep, SubExp)]
+</span><a href="#local-6989586621684364062"><span class="hs-identifier hs-var">merge</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">LoopForm rep
+</span><a href="#local-6989586621684364061"><span class="hs-identifier hs-var">form</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684364060"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-294"></span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#applyRule"><span class="hs-identifier hs-var">applyRule</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleIf"><span class="hs-identifier hs-type">RuleIf</span></a></span><span> </span><span id="local-6989586621684364059"><span class="annot"><span class="annottext">RuleIf rep a
+</span><a href="#local-6989586621684364059"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684364058"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364058"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684364057"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364057"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684364056"><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684364056"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span id="local-6989586621684364055"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364055"><span class="hs-identifier hs-var">cond</span></a></span></span><span> </span><span id="local-6989586621684364054"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684364054"><span class="hs-identifier hs-var">tbody</span></a></span></span><span> </span><span id="local-6989586621684364053"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684364053"><span class="hs-identifier hs-var">fbody</span></a></span></span><span> </span><span id="local-6989586621684364052"><span class="annot"><span class="annottext">IfDec (BranchType rep)
+</span><a href="#local-6989586621684364052"><span class="hs-identifier hs-var">ifsort</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-295"></span><span>  </span><span class="annot"><span class="annottext">RuleIf rep a
+</span><a href="#local-6989586621684364059"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364058"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364057"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684364056"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684364055"><span class="hs-identifier hs-var">cond</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684364054"><span class="hs-identifier hs-var">tbody</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684364053"><span class="hs-identifier hs-var">fbody</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType rep)
+</span><a href="#local-6989586621684364052"><span class="hs-identifier hs-var">ifsort</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-296"></span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#applyRule"><span class="hs-identifier hs-var">applyRule</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#RuleOp"><span class="hs-identifier hs-type">RuleOp</span></a></span><span> </span><span id="local-6989586621684364051"><span class="annot"><span class="annottext">RuleOp rep a
+</span><a href="#local-6989586621684364051"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684364050"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364050"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684364049"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364049"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684364048"><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684364048"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span id="local-6989586621684364047"><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684364047"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-297"></span><span>  </span><span class="annot"><span class="annottext">RuleOp rep a
+</span><a href="#local-6989586621684364051"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364050"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684364049"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><a href="#local-6989586621684364048"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">Op rep
+</span><a href="#local-6989586621684364047"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-298"></span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#applyRule"><span class="hs-identifier hs-var">applyRule</span></a></span><span> </span><span class="annot"><span class="annottext">SimplificationRule rep a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-299"></span><span>  </span><span class="annot"><span class="annottext">Rule rep
+forall rep. Rule rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#Skip"><span class="hs-identifier hs-var">Skip</span></a></span><span>
+</span><span id="line-300"></span><span>
+</span><span id="line-301"></span><span id="local-6989586621684364507"><span id="local-6989586621684364508"><span id="local-6989586621684364509"><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#applyRules"><span class="hs-identifier hs-type">applyRules</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-302"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364509"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#HasScope"><span class="hs-identifier hs-type">HasScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364508"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364509"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-303"></span><span>  </span><span class="annot"><a href="Futhark.Optimise.Simplify.Rule.html#Rules"><span class="hs-identifier hs-type">Rules</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364508"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364507"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-304"></span><span>  </span><span class="annot"><a href="#local-6989586621684364507"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-305"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364508"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-306"></span><span>  </span><span class="annot"><a href="#local-6989586621684364509"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684364508"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-307"></span><span id="applyRules"><span class="annot"><span class="annottext">applyRules :: forall (m :: * -&gt; *) rep a.
+(MonadFreshNames m, HasScope rep m) =&gt;
+Rules rep a -&gt; a -&gt; Stm rep -&gt; m (Maybe (Stms rep))
+</span><a href="Futhark.Optimise.Simplify.Rule.html#applyRules"><span class="hs-identifier hs-var hs-var">applyRules</span></a></span></span><span> </span><span id="local-6989586621684364039"><span class="annot"><span class="annottext">Rules rep a
+</span><a href="#local-6989586621684364039"><span class="hs-identifier hs-var">all_rules</span></a></span></span><span> </span><span id="local-6989586621684364038"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364038"><span class="hs-identifier hs-var">context</span></a></span></span><span> </span><span id="local-6989586621684364037"><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684364037"><span class="hs-identifier hs-var">stm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-308"></span><span>  </span><span id="local-6989586621684364036"><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684364036"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">m (Scope rep)
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; m (Scope rep)
+</span><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-var">askScope</span></a></span><span>
+</span><span id="line-309"></span><span>
+</span><span id="line-310"></span><span>  </span><span class="annot"><span class="annottext">(VNameSource -&gt; (Maybe (Stms rep), VNameSource))
+-&gt; m (Maybe (Stms rep))
+forall (m :: * -&gt; *) a.
+MonadFreshNames m =&gt;
+(VNameSource -&gt; (a, VNameSource)) -&gt; m a
+</span><a href="Futhark.MonadFreshNames.html#modifyNameSource"><span class="hs-identifier hs-var">modifyNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">((VNameSource -&gt; (Maybe (Stms rep), VNameSource))
+ -&gt; m (Maybe (Stms rep)))
+-&gt; (VNameSource -&gt; (Maybe (Stms rep), VNameSource))
+-&gt; m (Maybe (Stms rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684364033"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684364033"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-311"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684364032"><span class="annot"><span class="annottext">applyRules' :: [SimplificationRule rep a] -&gt; Maybe (Stms rep, VNameSource)
+</span><a href="#local-6989586621684364032"><span class="hs-identifier hs-var hs-var">applyRules'</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (Stms rep, VNameSource)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-312"></span><span>        </span><span class="annot"><a href="#local-6989586621684364032"><span class="hs-identifier hs-var">applyRules'</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684364031"><span class="annot"><span class="annottext">SimplificationRule rep a
+</span><a href="#local-6989586621684364031"><span class="hs-identifier hs-var">rule</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684364030"><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364030"><span class="hs-identifier hs-var">rules</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-313"></span><span>          </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Scope rep
+-&gt; VNameSource -&gt; Rule rep -&gt; Maybe (Stms rep, VNameSource)
+forall rep.
+Scope rep
+-&gt; VNameSource -&gt; Rule rep -&gt; Maybe (Stms rep, VNameSource)
+</span><a href="Futhark.Optimise.Simplify.Rule.html#simplify"><span class="hs-identifier hs-var">simplify</span></a></span><span> </span><span class="annot"><span class="annottext">Scope rep
+</span><a href="#local-6989586621684364036"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684364033"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SimplificationRule rep a -&gt; a -&gt; Stm rep -&gt; Rule rep
+forall rep a. SimplificationRule rep a -&gt; a -&gt; Stm rep -&gt; Rule rep
+</span><a href="Futhark.Optimise.Simplify.Rule.html#applyRule"><span class="hs-identifier hs-var">applyRule</span></a></span><span> </span><span class="annot"><span class="annottext">SimplificationRule rep a
+</span><a href="#local-6989586621684364031"><span class="hs-identifier hs-var">rule</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684364038"><span class="hs-identifier hs-var">context</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684364037"><span class="hs-identifier hs-var">stm</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-314"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684364029"><span class="annot"><span class="annottext">(Stms rep, VNameSource)
+</span><a href="#local-6989586621684364029"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Stms rep, VNameSource) -&gt; Maybe (Stms rep, VNameSource)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(Stms rep, VNameSource)
+</span><a href="#local-6989586621684364029"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-315"></span><span>            </span><span class="annot"><span class="annottext">Maybe (Stms rep, VNameSource)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a] -&gt; Maybe (Stms rep, VNameSource)
+</span><a href="#local-6989586621684364032"><span class="hs-identifier hs-var">applyRules'</span></a></span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a]
+</span><a href="#local-6989586621684364030"><span class="hs-identifier hs-var">rules</span></a></span><span>
+</span><span id="line-316"></span><span>     </span><span class="hs-keyword">in</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[SimplificationRule rep a] -&gt; Maybe (Stms rep, VNameSource)
+</span><a href="#local-6989586621684364032"><span class="hs-identifier hs-var">applyRules'</span></a></span><span> </span><span class="annot"><span class="annottext">([SimplificationRule rep a] -&gt; Maybe (Stms rep, VNameSource))
+-&gt; [SimplificationRule rep a] -&gt; Maybe (Stms rep, VNameSource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stm rep -&gt; Rules rep a -&gt; [SimplificationRule rep a]
+forall rep a. Stm rep -&gt; Rules rep a -&gt; [SimplificationRule rep a]
+</span><a href="Futhark.Optimise.Simplify.Rule.html#rulesForStm"><span class="hs-identifier hs-var">rulesForStm</span></a></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684364037"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="annot"><span class="annottext">Rules rep a
+</span><a href="#local-6989586621684364039"><span class="hs-identifier hs-var">all_rules</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-317"></span><span>          </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684364028"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684364028"><span class="hs-identifier hs-var">stms</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684364027"><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684364027"><span class="hs-identifier hs-var">src'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms rep -&gt; Maybe (Stms rep)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684364028"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684364027"><span class="hs-identifier hs-var">src'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-318"></span><span>          </span><span class="annot"><span class="annottext">Maybe (Stms rep, VNameSource)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe (Stms rep)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VNameSource
+</span><a href="#local-6989586621684364033"><span class="hs-identifier hs-var">src</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-319"></span></pre></body></html>

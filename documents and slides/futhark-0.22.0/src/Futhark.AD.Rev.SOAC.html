@@ -1,0 +1,510 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE MultiParamTypeClasses #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.AD.Rev.SOAC</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.AD.Rev.SOAC.html#vjpSOAC"><span class="hs-identifier">vjpSOAC</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-8"></span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Map.html"><span class="hs-identifier">Futhark.AD.Rev.Map</span></a></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html"><span class="hs-identifier">Futhark.AD.Rev.Monad</span></a></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Reduce.html"><span class="hs-identifier">Futhark.AD.Rev.Reduce</span></a></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Scan.html"><span class="hs-identifier">Futhark.AD.Rev.Scan</span></a></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Scatter.html"><span class="hs-identifier">Futhark.AD.Rev.Scatter</span></a></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Analysis.PrimExp.Convert.html"><span class="hs-identifier">Futhark.Analysis.PrimExp.Convert</span></a></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Builder.html"><span class="hs-identifier">Futhark.Builder</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html"><span class="hs-identifier">Futhark.IR.SOACS</span></a></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Tools.html"><span class="hs-identifier">Futhark.Tools</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.html"><span class="hs-identifier">Futhark.Util</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.html#chunks"><span class="hs-identifier">chunks</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- We split any multi-op scan or reduction into multiple operations so</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- we can detect special cases.  Post-AD, the result may be fused</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- again.</span><span>
+</span><span id="line-24"></span><span id="local-6989586621684463566"><span class="annot"><a href="Futhark.AD.Rev.SOAC.html#splitScanRed"><span class="hs-identifier hs-type">splitScanRed</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-25"></span><span>  </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#VjpOps"><span class="hs-identifier hs-type">VjpOps</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-26"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684463566"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#ADM"><span class="hs-identifier hs-type">ADM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#ScremaForm"><span class="hs-identifier hs-type">ScremaForm</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621684463566"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-27"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684463566"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-28"></span><span>  </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#ADM"><span class="hs-identifier hs-type">ADM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-29"></span><span>  </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#ADM"><span class="hs-identifier hs-type">ADM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-30"></span><span id="splitScanRed"><span class="annot"><span class="annottext">splitScanRed :: forall a.
+VjpOps
+-&gt; ([a] -&gt; ADM (ScremaForm SOACS), a -&gt; [SubExp])
+-&gt; (Pat, StmAux (), [a], SubExp, [VName])
+-&gt; ADM ()
+-&gt; ADM ()
+</span><a href="Futhark.AD.Rev.SOAC.html#splitScanRed"><span class="hs-identifier hs-var hs-var">splitScanRed</span></a></span></span><span> </span><span id="local-6989586621684463432"><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463432"><span class="hs-identifier hs-var">vjpops</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684463431"><span class="annot"><span class="annottext">[a] -&gt; ADM (ScremaForm SOACS)
+</span><a href="#local-6989586621684463431"><span class="hs-identifier hs-var">opSOAC</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684463430"><span class="annot"><span class="annottext">a -&gt; [SubExp]
+</span><a href="#local-6989586621684463430"><span class="hs-identifier hs-var">opNeutral</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684463429"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463429"><span class="hs-identifier hs-var">pat</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684463428"><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463428"><span class="hs-identifier hs-var">aux</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684463427"><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684463427"><span class="hs-identifier hs-var">ops</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684463426"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463426"><span class="hs-identifier hs-var">w</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684463425"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463425"><span class="hs-keyword hs-var">as</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684463424"><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463424"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-31"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684463423"><span class="annot"><span class="annottext">ks :: [Int]
+</span><a href="#local-6989586621684463423"><span class="hs-identifier hs-var hs-var">ks</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a -&gt; Int) -&gt; [a] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; Int) -&gt; (a -&gt; [SubExp]) -&gt; a -&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; [SubExp]
+</span><a href="#local-6989586621684463430"><span class="hs-identifier hs-var">opNeutral</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684463427"><span class="hs-identifier hs-var">ops</span></a></span><span>
+</span><span id="line-32"></span><span>      </span><span id="local-6989586621684463420"><span class="annot"><span class="annottext">pat_per_op :: [PatT Type]
+</span><a href="#local-6989586621684463420"><span class="hs-identifier hs-var hs-var">pat_per_op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">([PatElemT Type] -&gt; PatT Type) -&gt; [[PatElemT Type]] -&gt; [PatT Type]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">[PatElemT Type] -&gt; PatT Type
+forall dec. [PatElemT dec] -&gt; PatT dec
+</span><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-var">Pat</span></a></span><span> </span><span class="annot"><span class="annottext">([[PatElemT Type]] -&gt; [PatT Type])
+-&gt; [[PatElemT Type]] -&gt; [PatT Type]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [PatElemT Type] -&gt; [[PatElemT Type]]
+forall a. [Int] -&gt; [a] -&gt; [[a]]
+</span><a href="Futhark.Util.html#chunks"><span class="hs-identifier hs-var">chunks</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684463423"><span class="hs-identifier hs-var">ks</span></a></span><span> </span><span class="annot"><span class="annottext">([PatElemT Type] -&gt; [[PatElemT Type]])
+-&gt; [PatElemT Type] -&gt; [[PatElemT Type]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PatT Type -&gt; [PatElemT Type]
+forall dec. PatT dec -&gt; [PatElemT dec]
+</span><a href="Futhark.IR.Syntax.html#patElems"><span class="hs-identifier hs-var hs-var">patElems</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+Pat
+</span><a href="#local-6989586621684463429"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-33"></span><span>      </span><span id="local-6989586621684463417"><span class="annot"><span class="annottext">as_per_op :: [[VName]]
+</span><a href="#local-6989586621684463417"><span class="hs-identifier hs-var hs-var">as_per_op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [VName] -&gt; [[VName]]
+forall a. [Int] -&gt; [a] -&gt; [[a]]
+</span><a href="Futhark.Util.html#chunks"><span class="hs-identifier hs-var">chunks</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684463423"><span class="hs-identifier hs-var">ks</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463425"><span class="hs-keyword hs-var">as</span></a></span><span>
+</span><span id="line-34"></span><span>      </span><span id="local-6989586621684463416"><span class="annot"><span class="annottext">onOps :: [a] -&gt; [PatT Type] -&gt; [[VName]] -&gt; ADM ()
+</span><a href="#local-6989586621684463416"><span class="hs-identifier hs-var hs-var">onOps</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684463415"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684463415"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684463414"><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684463414"><span class="hs-identifier hs-var">ops'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684463413"><span class="annot"><span class="annottext">PatT Type
+</span><a href="#local-6989586621684463413"><span class="hs-identifier hs-var">op_pat</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684463412"><span class="annot"><span class="annottext">[PatT Type]
+</span><a href="#local-6989586621684463412"><span class="hs-identifier hs-var">op_pats'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684463411"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463411"><span class="hs-identifier hs-var">op_as</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684463410"><span class="annot"><span class="annottext">[[VName]]
+</span><a href="#local-6989586621684463410"><span class="hs-identifier hs-var">op_as'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-35"></span><span>        </span><span id="local-6989586621684463409"><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463409"><span class="hs-identifier hs-var">op_form</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[a] -&gt; ADM (ScremaForm SOACS)
+</span><a href="#local-6989586621684463431"><span class="hs-identifier hs-var">opSOAC</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621684463415"><span class="hs-identifier hs-var">op</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-36"></span><span>        </span><span class="annot"><span class="annottext">VjpOps -&gt; Pat -&gt; StmAux () -&gt; SOAC SOACS -&gt; ADM () -&gt; ADM ()
+</span><a href="Futhark.AD.Rev.SOAC.html#vjpSOAC"><span class="hs-identifier hs-var">vjpSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463432"><span class="hs-identifier hs-var">vjpops</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+Pat
+</span><a href="#local-6989586621684463413"><span class="hs-identifier hs-var">op_pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463428"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; [VName] -&gt; ScremaForm SOACS -&gt; SOAC SOACS
+forall rep. SubExp -&gt; [VName] -&gt; ScremaForm rep -&gt; SOAC rep
+</span><a href="Futhark.IR.SOACS.SOAC.html#Screma"><span class="hs-identifier hs-var">Screma</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463426"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463411"><span class="hs-identifier hs-var">op_as</span></a></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463409"><span class="hs-identifier hs-var">op_form</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ADM () -&gt; ADM ()) -&gt; ADM () -&gt; ADM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-37"></span><span>          </span><span class="annot"><span class="annottext">[a] -&gt; [PatT Type] -&gt; [[VName]] -&gt; ADM ()
+</span><a href="#local-6989586621684463416"><span class="hs-identifier hs-var">onOps</span></a></span><span> </span><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684463414"><span class="hs-identifier hs-var">ops'</span></a></span><span> </span><span class="annot"><span class="annottext">[PatT Type]
+</span><a href="#local-6989586621684463412"><span class="hs-identifier hs-var">op_pats'</span></a></span><span> </span><span class="annot"><span class="annottext">[[VName]]
+</span><a href="#local-6989586621684463410"><span class="hs-identifier hs-var">op_as'</span></a></span><span>
+</span><span id="line-38"></span><span>      </span><span class="annot"><a href="#local-6989586621684463416"><span class="hs-identifier hs-var">onOps</span></a></span><span> </span><span class="annot"><span class="annottext">[a]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[PatT Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[[VName]]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463424"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-39"></span><span>  </span><span class="annot"><span class="annottext">[a] -&gt; [PatT Type] -&gt; [[VName]] -&gt; ADM ()
+</span><a href="#local-6989586621684463416"><span class="hs-identifier hs-var">onOps</span></a></span><span> </span><span class="annot"><span class="annottext">[a]
+</span><a href="#local-6989586621684463427"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="annot"><span class="annottext">[PatT Type]
+</span><a href="#local-6989586621684463420"><span class="hs-identifier hs-var">pat_per_op</span></a></span><span> </span><span class="annot"><span class="annottext">[[VName]]
+</span><a href="#local-6989586621684463417"><span class="hs-identifier hs-var">as_per_op</span></a></span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="annot"><a href="Futhark.AD.Rev.SOAC.html#commonSOAC"><span class="hs-identifier hs-type">commonSOAC</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#SOAC"><span class="hs-identifier hs-type">SOAC</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#ADM"><span class="hs-identifier hs-type">ADM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#ADM"><span class="hs-identifier hs-type">ADM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#Adj"><span class="hs-identifier hs-type">Adj</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-42"></span><span id="commonSOAC"><span class="annot"><span class="annottext">commonSOAC :: Pat -&gt; StmAux () -&gt; SOAC SOACS -&gt; ADM () -&gt; ADM [Adj]
+</span><a href="Futhark.AD.Rev.SOAC.html#commonSOAC"><span class="hs-identifier hs-var hs-var">commonSOAC</span></a></span></span><span> </span><span id="local-6989586621684463406"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463406"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684463405"><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463405"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span id="local-6989586621684463404"><span class="annot"><span class="annottext">SOAC SOACS
+</span><a href="#local-6989586621684463404"><span class="hs-identifier hs-var">soac</span></a></span></span><span> </span><span id="local-6989586621684463403"><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463403"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-43"></span><span>  </span><span class="annot"><span class="annottext">Stm (Rep ADM) -&gt; ADM ()
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Stm (Rep m) -&gt; m ()
+</span><a href="Futhark.Builder.Class.html#addStm"><span class="hs-identifier hs-var">addStm</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm (Rep ADM) -&gt; ADM ()) -&gt; Stm (Rep ADM) -&gt; ADM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; StmAux (ExpDec SOACS) -&gt; Exp SOACS -&gt; Stm SOACS
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463406"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+StmAux (ExpDec SOACS)
+</span><a href="#local-6989586621684463405"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp SOACS -&gt; Stm SOACS) -&gt; Exp SOACS -&gt; Stm SOACS
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Op SOACS -&gt; Exp SOACS
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">Op SOACS
+SOAC SOACS
+</span><a href="#local-6989586621684463404"><span class="hs-identifier hs-var">soac</span></a></span><span>
+</span><span id="line-44"></span><span>  </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463403"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-45"></span><span>  </span><span class="annot"><span class="annottext">ADM [Adj] -&gt; ADM [Adj]
+forall a. ADM a -&gt; ADM a
+</span><a href="Futhark.AD.Rev.Monad.html#returnSweepCode"><span class="hs-identifier hs-var">returnSweepCode</span></a></span><span> </span><span class="annot"><span class="annottext">(ADM [Adj] -&gt; ADM [Adj]) -&gt; ADM [Adj] -&gt; ADM [Adj]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; ADM Adj) -&gt; [VName] -&gt; ADM [Adj]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; ADM Adj
+</span><a href="Futhark.AD.Rev.Monad.html#lookupAdj"><span class="hs-identifier hs-var">lookupAdj</span></a></span><span> </span><span class="annot"><span class="annottext">([VName] -&gt; ADM [Adj]) -&gt; [VName] -&gt; ADM [Adj]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PatT Type -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+Pat
+</span><a href="#local-6989586621684463406"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="annot"><a href="Futhark.AD.Rev.SOAC.html#vjpSOAC"><span class="hs-identifier hs-type">vjpSOAC</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#VjpOps"><span class="hs-identifier hs-type">VjpOps</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#SOAC"><span class="hs-identifier hs-type">SOAC</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#ADM"><span class="hs-identifier hs-type">ADM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.AD.Rev.Monad.html#ADM"><span class="hs-identifier hs-type">ADM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span id="vjpSOAC"><span class="annot"><span class="annottext">vjpSOAC :: VjpOps -&gt; Pat -&gt; StmAux () -&gt; SOAC SOACS -&gt; ADM () -&gt; ADM ()
+</span><a href="Futhark.AD.Rev.SOAC.html#vjpSOAC"><span class="hs-identifier hs-var hs-var">vjpSOAC</span></a></span></span><span> </span><span id="local-6989586621684463395"><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463395"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span id="local-6989586621684463394"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463394"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684463393"><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463393"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span id="local-6989586621684463392"><span class="annot"><span class="annottext">soac :: SOAC SOACS
+</span><a href="#local-6989586621684463392"><span class="hs-identifier hs-var">soac</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#Screma"><span class="hs-identifier hs-type">Screma</span></a></span><span> </span><span id="local-6989586621684463391"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463391"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684463390"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463390"><span class="hs-keyword hs-var">as</span></a></span></span><span> </span><span id="local-6989586621684463389"><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463389"><span class="hs-identifier hs-var">form</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684463388"><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463388"><span class="hs-identifier hs-var">m</span></a></span></span><span>
+</span><span id="line-49"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684463387"><span class="annot"><span class="annottext">[Reduce SOACS]
+</span><a href="#local-6989586621684463387"><span class="hs-identifier hs-var">reds</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS -&gt; Maybe [Reduce SOACS]
+forall rep. ScremaForm rep -&gt; Maybe [Reduce rep]
+</span><a href="Futhark.IR.SOACS.SOAC.html#isReduceSOAC"><span class="hs-identifier hs-var">isReduceSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463389"><span class="hs-identifier hs-var">form</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-50"></span><span>    </span><span class="annot"><span class="annottext">[Reduce SOACS] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[Reduce SOACS]
+</span><a href="#local-6989586621684463387"><span class="hs-identifier hs-var">reds</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-51"></span><span>    </span><span class="annot"><span class="annottext">VjpOps
+-&gt; ([Reduce SOACS] -&gt; ADM (ScremaForm SOACS),
+    Reduce SOACS -&gt; [SubExp])
+-&gt; (Pat, StmAux (), [Reduce SOACS], SubExp, [VName])
+-&gt; ADM ()
+-&gt; ADM ()
+forall a.
+VjpOps
+-&gt; ([a] -&gt; ADM (ScremaForm SOACS), a -&gt; [SubExp])
+-&gt; (Pat, StmAux (), [a], SubExp, [VName])
+-&gt; ADM ()
+-&gt; ADM ()
+</span><a href="Futhark.AD.Rev.SOAC.html#splitScanRed"><span class="hs-identifier hs-var">splitScanRed</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463395"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Reduce SOACS] -&gt; ADM (ScremaForm SOACS)
+forall rep (m :: * -&gt; *).
+(Buildable rep, MonadFreshNames m) =&gt;
+[Reduce rep] -&gt; m (ScremaForm rep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#reduceSOAC"><span class="hs-identifier hs-var">reduceSOAC</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Reduce SOACS -&gt; [SubExp]
+forall rep. Reduce rep -&gt; [SubExp]
+</span><a href="Futhark.IR.SOACS.SOAC.html#redNeutral"><span class="hs-identifier hs-var hs-var">redNeutral</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463394"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463393"><span class="hs-identifier hs-var">aux</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Reduce SOACS]
+</span><a href="#local-6989586621684463387"><span class="hs-identifier hs-var">reds</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463391"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463390"><span class="hs-keyword hs-var">as</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463388"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-52"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">[</span><span id="local-6989586621684463382"><span class="annot"><span class="annottext">Reduce SOACS
+</span><a href="#local-6989586621684463382"><span class="hs-identifier hs-var">red</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS -&gt; Maybe [Reduce SOACS]
+forall rep. ScremaForm rep -&gt; Maybe [Reduce rep]
+</span><a href="Futhark.IR.SOACS.SOAC.html#isReduceSOAC"><span class="hs-identifier hs-var">isReduceSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463389"><span class="hs-identifier hs-var">form</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-special">[</span><span id="local-6989586621684463381"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684463381"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">PatT Type -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+Pat
+</span><a href="#local-6989586621684463394"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-54"></span><span>    </span><span class="hs-special">[</span><span id="local-6989586621684463380"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463380"><span class="hs-identifier hs-var">ne</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Reduce SOACS -&gt; [SubExp]
+forall rep. Reduce rep -&gt; [SubExp]
+</span><a href="Futhark.IR.SOACS.SOAC.html#redNeutral"><span class="hs-identifier hs-var hs-var">redNeutral</span></a></span><span> </span><span class="annot"><span class="annottext">Reduce SOACS
+</span><a href="#local-6989586621684463382"><span class="hs-identifier hs-var">red</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-special">[</span><span id="local-6989586621684463379"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684463379"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463390"><span class="hs-keyword hs-var">as</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-56"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span id="local-6989586621684463378"><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684463378"><span class="hs-identifier hs-var">op</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VName
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Lambda SOACS -&gt; Maybe [(BinOp, PrimType, VName, VName)]
+forall rep.
+ASTRep rep =&gt;
+Lambda rep -&gt; Maybe [(BinOp, PrimType, VName, VName)]
+</span><a href="Futhark.IR.Prop.html#lamIsBinOp"><span class="hs-identifier hs-var">lamIsBinOp</span></a></span><span> </span><span class="annot"><span class="annottext">(Lambda SOACS -&gt; Maybe [(BinOp, PrimType, VName, VName)])
+-&gt; Lambda SOACS -&gt; Maybe [(BinOp, PrimType, VName, VName)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Reduce SOACS -&gt; Lambda SOACS
+forall rep. Reduce rep -&gt; Lambda rep
+</span><a href="Futhark.IR.SOACS.SOAC.html#redLambda"><span class="hs-identifier hs-var hs-var">redLambda</span></a></span><span> </span><span class="annot"><span class="annottext">Reduce SOACS
+</span><a href="#local-6989586621684463382"><span class="hs-identifier hs-var">red</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-57"></span><span>    </span><span class="annot"><span class="annottext">BinOp -&gt; Bool
+</span><a href="#local-6989586621684463375"><span class="hs-identifier hs-var">isMinMaxOp</span></a></span><span> </span><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684463378"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-58"></span><span>    </span><span class="annot"><span class="annottext">VjpOps
+-&gt; VName
+-&gt; StmAux ()
+-&gt; SubExp
+-&gt; BinOp
+-&gt; SubExp
+-&gt; VName
+-&gt; ADM ()
+-&gt; ADM ()
+</span><a href="Futhark.AD.Rev.Reduce.html#diffMinMaxReduce"><span class="hs-identifier hs-var">diffMinMaxReduce</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463395"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684463381"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463393"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463391"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">BinOp
+</span><a href="#local-6989586621684463378"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463380"><span class="hs-identifier hs-var">ne</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684463379"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463388"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684463373"><span class="annot"><span class="annottext">Reduce SOACS
+</span><a href="#local-6989586621684463373"><span class="hs-identifier hs-var">red</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Reduce SOACS] -&gt; Reduce SOACS
+forall rep. Buildable rep =&gt; [Reduce rep] -&gt; Reduce rep
+</span><a href="Futhark.IR.SOACS.SOAC.html#singleReduce"><span class="hs-identifier hs-var">singleReduce</span></a></span><span> </span><span class="annot"><span class="annottext">([Reduce SOACS] -&gt; Reduce SOACS)
+-&gt; Maybe [Reduce SOACS] -&gt; Maybe (Reduce SOACS)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS -&gt; Maybe [Reduce SOACS]
+forall rep. ScremaForm rep -&gt; Maybe [Reduce rep]
+</span><a href="Futhark.IR.SOACS.SOAC.html#isReduceSOAC"><span class="hs-identifier hs-var">isReduceSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463389"><span class="hs-identifier hs-var">form</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-60"></span><span>    </span><span id="local-6989586621684463370"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463370"><span class="hs-identifier hs-var">pat_adj</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Adj -&gt; ADM VName) -&gt; [Adj] -&gt; ADM [VName]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Adj -&gt; ADM VName
+</span><a href="Futhark.AD.Rev.Monad.html#adjVal"><span class="hs-identifier hs-var">adjVal</span></a></span><span> </span><span class="annot"><span class="annottext">([Adj] -&gt; ADM [VName]) -&gt; ADM [Adj] -&gt; ADM [VName]
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><span class="hs-operator hs-var">=&lt;&lt;</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; StmAux () -&gt; SOAC SOACS -&gt; ADM () -&gt; ADM [Adj]
+</span><a href="Futhark.AD.Rev.SOAC.html#commonSOAC"><span class="hs-identifier hs-var">commonSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463394"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463393"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC SOACS
+</span><a href="#local-6989586621684463392"><span class="hs-identifier hs-var">soac</span></a></span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463388"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-61"></span><span>    </span><span class="annot"><span class="annottext">VjpOps -&gt; [VName] -&gt; SubExp -&gt; [VName] -&gt; Reduce SOACS -&gt; ADM ()
+</span><a href="Futhark.AD.Rev.Reduce.html#diffReduce"><span class="hs-identifier hs-var">diffReduce</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463395"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463370"><span class="hs-identifier hs-var">pat_adj</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463391"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463390"><span class="hs-keyword hs-var">as</span></a></span><span> </span><span class="annot"><span class="annottext">Reduce SOACS
+</span><a href="#local-6989586621684463373"><span class="hs-identifier hs-var">red</span></a></span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-63"></span><span>    </span><span id="local-6989586621684463375"><span class="annot"><span class="annottext">isMinMaxOp :: BinOp -&gt; Bool
+</span><a href="#local-6989586621684463375"><span class="hs-identifier hs-var hs-var">isMinMaxOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Primitive.html#SMin"><span class="hs-identifier hs-type">SMin</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><a href="#local-6989586621684463375"><span class="hs-identifier hs-var">isMinMaxOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Primitive.html#UMin"><span class="hs-identifier hs-type">UMin</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-65"></span><span>    </span><span class="annot"><a href="#local-6989586621684463375"><span class="hs-identifier hs-var">isMinMaxOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Primitive.html#FMin"><span class="hs-identifier hs-type">FMin</span></a></span><span> </span><span class="annot"><span class="annottext">FloatType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><a href="#local-6989586621684463375"><span class="hs-identifier hs-var">isMinMaxOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Primitive.html#SMax"><span class="hs-identifier hs-type">SMax</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-67"></span><span>    </span><span class="annot"><a href="#local-6989586621684463375"><span class="hs-identifier hs-var">isMinMaxOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Primitive.html#UMax"><span class="hs-identifier hs-type">UMax</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-68"></span><span>    </span><span class="annot"><a href="#local-6989586621684463375"><span class="hs-identifier hs-var">isMinMaxOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Primitive.html#FMax"><span class="hs-identifier hs-type">FMax</span></a></span><span> </span><span class="annot"><span class="annottext">FloatType
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-69"></span><span>    </span><span class="annot"><a href="#local-6989586621684463375"><span class="hs-identifier hs-var">isMinMaxOp</span></a></span><span> </span><span class="annot"><span class="annottext">BinOp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-70"></span><span class="annot"><a href="Futhark.AD.Rev.SOAC.html#vjpSOAC"><span class="hs-identifier hs-var">vjpSOAC</span></a></span><span> </span><span id="local-6989586621684463360"><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463360"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span id="local-6989586621684463359"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463359"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684463358"><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463358"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span id="local-6989586621684463357"><span class="annot"><span class="annottext">soac :: SOAC SOACS
+</span><a href="#local-6989586621684463357"><span class="hs-identifier hs-var">soac</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#Screma"><span class="hs-identifier hs-type">Screma</span></a></span><span> </span><span id="local-6989586621684463356"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463356"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684463355"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463355"><span class="hs-keyword hs-var">as</span></a></span></span><span> </span><span id="local-6989586621684463354"><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463354"><span class="hs-identifier hs-var">form</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684463353"><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463353"><span class="hs-identifier hs-var">m</span></a></span></span><span>
+</span><span id="line-71"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684463352"><span class="annot"><span class="annottext">[Scan SOACS]
+</span><a href="#local-6989586621684463352"><span class="hs-identifier hs-var">scans</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS -&gt; Maybe [Scan SOACS]
+forall rep. ScremaForm rep -&gt; Maybe [Scan rep]
+</span><a href="Futhark.IR.SOACS.SOAC.html#isScanSOAC"><span class="hs-identifier hs-var">isScanSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463354"><span class="hs-identifier hs-var">form</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-72"></span><span>    </span><span class="annot"><span class="annottext">[Scan SOACS] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[Scan SOACS]
+</span><a href="#local-6989586621684463352"><span class="hs-identifier hs-var">scans</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-73"></span><span>    </span><span class="annot"><span class="annottext">VjpOps
+-&gt; ([Scan SOACS] -&gt; ADM (ScremaForm SOACS), Scan SOACS -&gt; [SubExp])
+-&gt; (Pat, StmAux (), [Scan SOACS], SubExp, [VName])
+-&gt; ADM ()
+-&gt; ADM ()
+forall a.
+VjpOps
+-&gt; ([a] -&gt; ADM (ScremaForm SOACS), a -&gt; [SubExp])
+-&gt; (Pat, StmAux (), [a], SubExp, [VName])
+-&gt; ADM ()
+-&gt; ADM ()
+</span><a href="Futhark.AD.Rev.SOAC.html#splitScanRed"><span class="hs-identifier hs-var">splitScanRed</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463360"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Scan SOACS] -&gt; ADM (ScremaForm SOACS)
+forall rep (m :: * -&gt; *).
+(Buildable rep, MonadFreshNames m) =&gt;
+[Scan rep] -&gt; m (ScremaForm rep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#scanSOAC"><span class="hs-identifier hs-var">scanSOAC</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Scan SOACS -&gt; [SubExp]
+forall rep. Scan rep -&gt; [SubExp]
+</span><a href="Futhark.IR.SOACS.SOAC.html#scanNeutral"><span class="hs-identifier hs-var hs-var">scanNeutral</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463359"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463358"><span class="hs-identifier hs-var">aux</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Scan SOACS]
+</span><a href="#local-6989586621684463352"><span class="hs-identifier hs-var">scans</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463356"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463355"><span class="hs-keyword hs-var">as</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463353"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-74"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684463348"><span class="annot"><span class="annottext">Scan SOACS
+</span><a href="#local-6989586621684463348"><span class="hs-identifier hs-var">red</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Scan SOACS] -&gt; Scan SOACS
+forall rep. Buildable rep =&gt; [Scan rep] -&gt; Scan rep
+</span><a href="Futhark.IR.SOACS.SOAC.html#singleScan"><span class="hs-identifier hs-var">singleScan</span></a></span><span> </span><span class="annot"><span class="annottext">([Scan SOACS] -&gt; Scan SOACS)
+-&gt; Maybe [Scan SOACS] -&gt; Maybe (Scan SOACS)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS -&gt; Maybe [Scan SOACS]
+forall rep. ScremaForm rep -&gt; Maybe [Scan rep]
+</span><a href="Futhark.IR.SOACS.SOAC.html#isScanSOAC"><span class="hs-identifier hs-var">isScanSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463354"><span class="hs-identifier hs-var">form</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-75"></span><span>    </span><span class="annot"><span class="annottext">ADM [Adj] -&gt; ADM ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(ADM [Adj] -&gt; ADM ()) -&gt; ADM [Adj] -&gt; ADM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; StmAux () -&gt; SOAC SOACS -&gt; ADM () -&gt; ADM [Adj]
+</span><a href="Futhark.AD.Rev.SOAC.html#commonSOAC"><span class="hs-identifier hs-var">commonSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463359"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463358"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC SOACS
+</span><a href="#local-6989586621684463357"><span class="hs-identifier hs-var">soac</span></a></span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463353"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-76"></span><span>    </span><span class="annot"><span class="annottext">VjpOps -&gt; [VName] -&gt; SubExp -&gt; [VName] -&gt; Scan SOACS -&gt; ADM ()
+</span><a href="Futhark.AD.Rev.Scan.html#diffScan"><span class="hs-identifier hs-var">diffScan</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463360"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT Type -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT Type
+Pat
+</span><a href="#local-6989586621684463359"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463356"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463355"><span class="hs-keyword hs-var">as</span></a></span><span> </span><span class="annot"><span class="annottext">Scan SOACS
+</span><a href="#local-6989586621684463348"><span class="hs-identifier hs-var">red</span></a></span><span>
+</span><span id="line-77"></span><span class="annot"><a href="Futhark.AD.Rev.SOAC.html#vjpSOAC"><span class="hs-identifier hs-var">vjpSOAC</span></a></span><span> </span><span id="local-6989586621684463344"><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463344"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span id="local-6989586621684463343"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463343"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684463342"><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463342"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span id="local-6989586621684463341"><span class="annot"><span class="annottext">soac :: SOAC SOACS
+</span><a href="#local-6989586621684463341"><span class="hs-identifier hs-var">soac</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#Screma"><span class="hs-identifier hs-type">Screma</span></a></span><span> </span><span id="local-6989586621684463340"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463340"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684463339"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463339"><span class="hs-keyword hs-var">as</span></a></span></span><span> </span><span id="local-6989586621684463338"><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463338"><span class="hs-identifier hs-var">form</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684463337"><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463337"><span class="hs-identifier hs-var">m</span></a></span></span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684463336"><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684463336"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS -&gt; Maybe (Lambda SOACS)
+forall rep. ScremaForm rep -&gt; Maybe (Lambda rep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#isMapSOAC"><span class="hs-identifier hs-var">isMapSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463338"><span class="hs-identifier hs-var">form</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-79"></span><span>    </span><span id="local-6989586621684463334"><span class="annot"><span class="annottext">[Adj]
+</span><a href="#local-6989586621684463334"><span class="hs-identifier hs-var">pat_adj</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Pat -&gt; StmAux () -&gt; SOAC SOACS -&gt; ADM () -&gt; ADM [Adj]
+</span><a href="Futhark.AD.Rev.SOAC.html#commonSOAC"><span class="hs-identifier hs-var">commonSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463343"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463342"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC SOACS
+</span><a href="#local-6989586621684463341"><span class="hs-identifier hs-var">soac</span></a></span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463337"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-80"></span><span>    </span><span class="annot"><span class="annottext">VjpOps -&gt; [Adj] -&gt; SubExp -&gt; Lambda SOACS -&gt; [VName] -&gt; ADM ()
+</span><a href="Futhark.AD.Rev.Map.html#vjpMap"><span class="hs-identifier hs-var">vjpMap</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463344"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="annot"><span class="annottext">[Adj]
+</span><a href="#local-6989586621684463334"><span class="hs-identifier hs-var">pat_adj</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463340"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684463336"><span class="hs-identifier hs-var">lam</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463339"><span class="hs-keyword hs-var">as</span></a></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="Futhark.AD.Rev.SOAC.html#vjpSOAC"><span class="hs-identifier hs-var">vjpSOAC</span></a></span><span> </span><span id="local-6989586621684463332"><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463332"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span id="local-6989586621684463331"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463331"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684463330"><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463330"><span class="hs-identifier hs-var">_aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#Screma"><span class="hs-identifier hs-type">Screma</span></a></span><span> </span><span id="local-6989586621684463329"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463329"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684463328"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463328"><span class="hs-keyword hs-var">as</span></a></span></span><span> </span><span id="local-6989586621684463327"><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463327"><span class="hs-identifier hs-var">form</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684463326"><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463326"><span class="hs-identifier hs-var">m</span></a></span></span><span>
+</span><span id="line-82"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684463325"><span class="annot"><span class="annottext">[Reduce SOACS]
+</span><a href="#local-6989586621684463325"><span class="hs-identifier hs-var">reds</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684463324"><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684463324"><span class="hs-identifier hs-var">map_lam</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-83"></span><span>      </span><span class="annot"><span class="annottext">ScremaForm SOACS -&gt; Maybe ([Reduce SOACS], Lambda SOACS)
+forall rep. ScremaForm rep -&gt; Maybe ([Reduce rep], Lambda rep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#isRedomapSOAC"><span class="hs-identifier hs-var">isRedomapSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">ScremaForm SOACS
+</span><a href="#local-6989586621684463327"><span class="hs-identifier hs-var">form</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-84"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621684463322"><span class="annot"><span class="annottext">Stm SOACS
+</span><a href="#local-6989586621684463322"><span class="hs-identifier hs-var">mapstm</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684463321"><span class="annot"><span class="annottext">Stm SOACS
+</span><a href="#local-6989586621684463321"><span class="hs-identifier hs-var">redstm</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-85"></span><span>      </span><span class="annot"><span class="annottext">Pat
+-&gt; (SubExp, [Reduce SOACS], Lambda SOACS, [VName])
+-&gt; ADM (Stm SOACS, Stm SOACS)
+forall (m :: * -&gt; *) rep.
+(MonadFreshNames m, Buildable rep, ExpDec rep ~ (),
+ Op rep ~ SOAC rep) =&gt;
+Pat rep
+-&gt; (SubExp, [Reduce rep], LambdaT rep, [VName])
+-&gt; m (Stm rep, Stm rep)
+</span><a href="Futhark.Tools.html#redomapToMapAndReduce"><span class="hs-identifier hs-var">redomapToMapAndReduce</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463331"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463329"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Reduce SOACS]
+</span><a href="#local-6989586621684463325"><span class="hs-identifier hs-var">reds</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684463324"><span class="hs-identifier hs-var">map_lam</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463328"><span class="hs-keyword hs-var">as</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span>    </span><span class="annot"><span class="annottext">VjpOps -&gt; Stm SOACS -&gt; ADM () -&gt; ADM ()
+</span><a href="Futhark.AD.Rev.Monad.html#vjpStm"><span class="hs-identifier hs-var hs-var">vjpStm</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463332"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="annot"><span class="annottext">Stm SOACS
+</span><a href="#local-6989586621684463322"><span class="hs-identifier hs-var">mapstm</span></a></span><span> </span><span class="annot"><span class="annottext">(ADM () -&gt; ADM ()) -&gt; ADM () -&gt; ADM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VjpOps -&gt; Stm SOACS -&gt; ADM () -&gt; ADM ()
+</span><a href="Futhark.AD.Rev.Monad.html#vjpStm"><span class="hs-identifier hs-var hs-var">vjpStm</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463332"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="annot"><span class="annottext">Stm SOACS
+</span><a href="#local-6989586621684463321"><span class="hs-identifier hs-var">redstm</span></a></span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463326"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-87"></span><span class="annot"><a href="Futhark.AD.Rev.SOAC.html#vjpSOAC"><span class="hs-identifier hs-var">vjpSOAC</span></a></span><span> </span><span id="local-6989586621684463318"><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463318"><span class="hs-identifier hs-var">ops</span></a></span></span><span> </span><span id="local-6989586621684463317"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463317"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684463316"><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463316"><span class="hs-identifier hs-var">aux</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#Scatter"><span class="hs-identifier hs-type">Scatter</span></a></span><span> </span><span id="local-6989586621684463314"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463314"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621684463313"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463313"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span id="local-6989586621684463312"><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684463312"><span class="hs-identifier hs-var">ass</span></a></span></span><span> </span><span id="local-6989586621684463311"><span class="annot"><span class="annottext">[(Shape, Int, VName)]
+</span><a href="#local-6989586621684463311"><span class="hs-identifier hs-var">written_info</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684463310"><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463310"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-88"></span><span>  </span><span class="annot"><span class="annottext">VjpOps
+-&gt; Pat
+-&gt; StmAux ()
+-&gt; (SubExp, [VName], Lambda SOACS, [(Shape, Int, VName)])
+-&gt; ADM ()
+-&gt; ADM ()
+</span><a href="Futhark.AD.Rev.Scatter.html#vjpScatter"><span class="hs-identifier hs-var">vjpScatter</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><a href="#local-6989586621684463318"><span class="hs-identifier hs-var">ops</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684463317"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+</span><a href="#local-6989586621684463316"><span class="hs-identifier hs-var">aux</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684463314"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684463313"><span class="hs-identifier hs-var">lam</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Lambda SOACS
+</span><a href="#local-6989586621684463312"><span class="hs-identifier hs-var">ass</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[(Shape, Int, VName)]
+</span><a href="#local-6989586621684463311"><span class="hs-identifier hs-var">written_info</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><a href="#local-6989586621684463310"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-89"></span><span class="annot"><a href="Futhark.AD.Rev.SOAC.html#vjpSOAC"><span class="hs-identifier hs-var">vjpSOAC</span></a></span><span> </span><span class="annot"><span class="annottext">VjpOps
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux ()
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684463308"><span class="annot"><span class="annottext">SOAC SOACS
+</span><a href="#local-6989586621684463308"><span class="hs-identifier hs-var">soac</span></a></span></span><span> </span><span class="annot"><span class="annottext">ADM ()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-90"></span><span>  </span><span class="annot"><span class="annottext">[Char] -&gt; ADM ()
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; ADM ()) -&gt; [Char] -&gt; ADM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;vjpSOAC unhandled:\n&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">SOAC SOACS -&gt; [Char]
+forall a. Pretty a =&gt; a -&gt; [Char]
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC SOACS
+</span><a href="#local-6989586621684463308"><span class="hs-identifier hs-var">soac</span></a></span><span>
+</span><span id="line-91"></span></pre></body></html>

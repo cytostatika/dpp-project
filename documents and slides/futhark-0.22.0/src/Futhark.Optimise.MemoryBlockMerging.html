@@ -1,0 +1,1317 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ConstraintKinds #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- | This module implements an optimization that tries to statically reuse</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- kernel-level allocations. The goal is to lower the static memory usage, which</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- might allow more programs to run using intra-group parallelism.</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Optimise.MemoryBlockMerging</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#optimise"><span class="hs-identifier">optimise</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-9"></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.State.Strict</span></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Function</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(&amp;)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Map</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-operator">(!)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Set</span></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Analysis.Interference.html"><span class="hs-identifier">Futhark.Analysis.Interference</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Interference</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html"><span class="hs-identifier">Futhark.Builder.Class</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Construct.html"><span class="hs-identifier">Futhark.Construct</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html"><span class="hs-identifier">Futhark.IR.GPUMem</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.GreedyColoring.html"><span class="hs-identifier">Futhark.Optimise.MemoryBlockMerging.GreedyColoring</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">GreedyColoring</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Pass.html"><span class="hs-identifier">Futhark.Pass</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier">Pass</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier">PassM</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.Pass.html"><span class="hs-identifier">Futhark.Pass</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Pass</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.html"><span class="hs-identifier">Futhark.Util</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.html#invertMap"><span class="hs-identifier">invertMap</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- | A mapping from allocation names to their size and space.</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">type</span><span> </span><span id="Allocs"><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#Allocs"><span class="hs-identifier hs-var">Allocs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Space"><span class="hs-identifier hs-type">Space</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-type">getAllocsStm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#Allocs"><span class="hs-identifier hs-type">Allocs</span></a></span><span>
+</span><span id="line-30"></span><span id="getAllocsStm"><span class="annot"><span class="annottext">getAllocsStm :: Stm GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var hs-var">getAllocsStm</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#PatElem"><span class="hs-identifier hs-type">PatElem</span></a></span><span> </span><span id="local-6989586621684450917"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684450917"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="annot"><span class="annottext">LetDec GPUMem
+</span><span class="hs-identifier">_</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Alloc"><span class="hs-identifier hs-type">Alloc</span></a></span><span> </span><span id="local-6989586621684450914"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450914"><span class="hs-identifier hs-var">se</span></a></span></span><span> </span><span id="local-6989586621684450913"><span class="annot"><span class="annottext">Space
+</span><a href="#local-6989586621684450913"><span class="hs-identifier hs-var">sp</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-31"></span><span>  </span><span class="annot"><span class="annottext">VName -&gt; (SubExp, Space) -&gt; Allocs
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684450917"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450914"><span class="hs-identifier hs-var">se</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Space
+</span><a href="#local-6989586621684450913"><span class="hs-identifier hs-var">sp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Alloc"><span class="hs-identifier hs-type">Alloc</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Allocs
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;impossible&quot;</span></span><span>
+</span><span id="line-33"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684450909"><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450909"><span class="hs-identifier hs-var">then_body</span></a></span></span><span> </span><span id="local-6989586621684450908"><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450908"><span class="hs-identifier hs-var">else_body</span></a></span></span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType GPUMem)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-34"></span><span>  </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Allocs) -&gt; Seq (Stm GPUMem) -&gt; Allocs
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450909"><span class="hs-identifier hs-var">then_body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>    </span><span class="annot"><span class="annottext">Allocs -&gt; Allocs -&gt; Allocs
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Allocs) -&gt; Seq (Stm GPUMem) -&gt; Allocs
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450908"><span class="hs-identifier hs-var">else_body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-type">DoLoop</span></a></span><span> </span><span class="annot"><span class="annottext">[(FParam GPUMem, SubExp)]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">LoopForm GPUMem
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684450904"><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450904"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-37"></span><span>  </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Allocs) -&gt; Seq (Stm GPUMem) -&gt; Allocs
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450904"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Allocs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span id="local-6989586621684451091"><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsSegOp"><span class="hs-identifier hs-type">getAllocsSegOp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451091"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#Allocs"><span class="hs-identifier hs-type">Allocs</span></a></span></span><span>
+</span><span id="line-41"></span><span id="getAllocsSegOp"><span class="annot"><span class="annottext">getAllocsSegOp :: forall lvl. SegOp lvl GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsSegOp"><span class="hs-identifier hs-var hs-var">getAllocsSegOp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-type">SegMap</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684450893"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450893"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-42"></span><span>  </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Allocs) -&gt; Seq (Stm GPUMem) -&gt; Allocs
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450893"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsSegOp"><span class="hs-identifier hs-var">getAllocsSegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-type">SegRed</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684450890"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450890"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-44"></span><span>  </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Allocs) -&gt; Seq (Stm GPUMem) -&gt; Allocs
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450890"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsSegOp"><span class="hs-identifier hs-var">getAllocsSegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegScan"><span class="hs-identifier hs-type">SegScan</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684450888"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450888"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-46"></span><span>  </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Allocs) -&gt; Seq (Stm GPUMem) -&gt; Allocs
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450888"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsSegOp"><span class="hs-identifier hs-var">getAllocsSegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-type">SegHist</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[HistOp GPUMem]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684450886"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450886"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-48"></span><span>  </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Allocs) -&gt; Seq (Stm GPUMem) -&gt; Allocs
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsStm"><span class="hs-identifier hs-var">getAllocsStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450886"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-type">setAllocsStm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span>
+</span><span id="line-51"></span><span id="setAllocsStm"><span class="annot"><span class="annottext">setAllocsStm :: Map VName SubExp -&gt; Stm GPUMem -&gt; Stm GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var hs-var">setAllocsStm</span></a></span></span><span> </span><span id="local-6989586621684450884"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450884"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span id="local-6989586621684450883"><span class="annot"><span class="annottext">stm :: Stm GPUMem
+</span><a href="#local-6989586621684450883"><span class="hs-identifier hs-var">stm</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#PatElem"><span class="hs-identifier hs-type">PatElem</span></a></span><span> </span><span id="local-6989586621684450882"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684450882"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="annot"><span class="annottext">LetDec GPUMem
+</span><span class="hs-identifier">_</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Alloc"><span class="hs-identifier hs-type">Alloc</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684450881"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450881"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Map VName SubExp -&gt; Maybe SubExp
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684450882"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450884"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-53"></span><span>    </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450883"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: ExpT GPUMem
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; ExpT GPUMem
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; ExpT GPUMem) -&gt; BasicOp -&gt; ExpT GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#SubExp"><span class="hs-identifier hs-var">SubExp</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450881"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-54"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684450876"><span class="annot"><span class="annottext">stm :: Stm GPUMem
+</span><a href="#local-6989586621684450876"><span class="hs-identifier hs-var">stm</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Alloc"><span class="hs-identifier hs-type">Alloc</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450876"><span class="hs-identifier hs-var">stm</span></a></span><span>
+</span><span id="line-55"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span id="local-6989586621684450875"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450875"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span id="local-6989586621684450874"><span class="annot"><span class="annottext">stm :: Stm GPUMem
+</span><a href="#local-6989586621684450874"><span class="hs-identifier hs-var">stm</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-type">Inner</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span id="local-6989586621684450871"><span class="annot"><span class="annottext">SegOp SegLevel GPUMem
+</span><a href="#local-6989586621684450871"><span class="hs-identifier hs-var">segop</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450874"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: ExpT GPUMem
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Op GPUMem -&gt; ExpT GPUMem
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op GPUMem -&gt; ExpT GPUMem) -&gt; Op GPUMem -&gt; ExpT GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ())
+forall inner. inner -&gt; MemOp inner
+</span><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-var">Inner</span></a></span><span> </span><span class="annot"><span class="annottext">(HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ()))
+-&gt; HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem -&gt; HostOp GPUMem ()
+forall rep op. SegOp SegLevel rep -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-var">SegOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPUMem -&gt; HostOp GPUMem ())
+-&gt; SegOp SegLevel GPUMem -&gt; HostOp GPUMem ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; SegOp SegLevel GPUMem -&gt; SegOp SegLevel GPUMem
+forall lvl.
+Map VName SubExp -&gt; SegOp lvl GPUMem -&gt; SegOp lvl GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsSegOp"><span class="hs-identifier hs-var">setAllocsSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450875"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem
+</span><a href="#local-6989586621684450871"><span class="hs-identifier hs-var">segop</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-57"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span id="local-6989586621684450869"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450869"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span id="local-6989586621684450868"><span class="annot"><span class="annottext">stm :: Stm GPUMem
+</span><a href="#local-6989586621684450868"><span class="hs-identifier hs-var">stm</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span id="local-6989586621684450867"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450867"><span class="hs-identifier hs-var">cse</span></a></span></span><span> </span><span id="local-6989586621684450866"><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450866"><span class="hs-identifier hs-var">then_body</span></a></span></span><span> </span><span id="local-6989586621684450865"><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450865"><span class="hs-identifier hs-var">else_body</span></a></span></span><span> </span><span id="local-6989586621684450864"><span class="annot"><span class="annottext">IfDec (BranchType GPUMem)
+</span><a href="#local-6989586621684450864"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-58"></span><span>  </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450868"><span class="hs-identifier hs-var">stm</span></a></span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">stmExp :: ExpT GPUMem
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-60"></span><span>        </span><span class="annot"><span class="annottext">SubExp
+-&gt; BodyT GPUMem
+-&gt; BodyT GPUMem
+-&gt; IfDec (BranchType GPUMem)
+-&gt; ExpT GPUMem
+forall rep.
+SubExp
+-&gt; BodyT rep -&gt; BodyT rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-var">If</span></a></span><span>
+</span><span id="line-61"></span><span>          </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450867"><span class="hs-identifier hs-var">cse</span></a></span><span>
+</span><span id="line-62"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450866"><span class="hs-identifier hs-var">then_body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">bodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var">bodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Stm GPUMem -&gt; Stm GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450869"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450866"><span class="hs-identifier hs-var">then_body</span></a></span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450865"><span class="hs-identifier hs-var">else_body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">bodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var">bodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Stm GPUMem -&gt; Stm GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450869"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450865"><span class="hs-identifier hs-var">else_body</span></a></span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span>          </span><span class="annot"><span class="annottext">IfDec (BranchType GPUMem)
+</span><a href="#local-6989586621684450864"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-66"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span id="local-6989586621684450862"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450862"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span id="local-6989586621684450861"><span class="annot"><span class="annottext">stm :: Stm GPUMem
+</span><a href="#local-6989586621684450861"><span class="hs-identifier hs-var">stm</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec GPUMem)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-type">DoLoop</span></a></span><span> </span><span id="local-6989586621684450860"><span class="annot"><span class="annottext">[(FParam GPUMem, SubExp)]
+</span><a href="#local-6989586621684450860"><span class="hs-identifier hs-var">merge</span></a></span></span><span> </span><span id="local-6989586621684450859"><span class="annot"><span class="annottext">LoopForm GPUMem
+</span><a href="#local-6989586621684450859"><span class="hs-identifier hs-var">form</span></a></span></span><span> </span><span id="local-6989586621684450858"><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450858"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-67"></span><span>  </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450861"><span class="hs-identifier hs-var">stm</span></a></span><span>
+</span><span id="line-68"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">stmExp :: ExpT GPUMem
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-69"></span><span>        </span><span class="annot"><span class="annottext">[(FParam GPUMem, SubExp)]
+-&gt; LoopForm GPUMem -&gt; BodyT GPUMem -&gt; ExpT GPUMem
+forall rep.
+[(FParam rep, SubExp)] -&gt; LoopForm rep -&gt; BodyT rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-var">DoLoop</span></a></span><span> </span><span class="annot"><span class="annottext">[(FParam GPUMem, SubExp)]
+</span><a href="#local-6989586621684450860"><span class="hs-identifier hs-var">merge</span></a></span><span> </span><span class="annot"><span class="annottext">LoopForm GPUMem
+</span><a href="#local-6989586621684450859"><span class="hs-identifier hs-var">form</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450858"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">bodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var">bodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Stm GPUMem -&gt; Stm GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450862"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450858"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-70"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-71"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684450857"><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450857"><span class="hs-identifier hs-var">stm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450857"><span class="hs-identifier hs-var">stm</span></a></span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span id="local-6989586621684451071"><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsSegOp"><span class="hs-identifier hs-type">setAllocsSegOp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-74"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-75"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451071"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-76"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451071"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span></span><span>
+</span><span id="line-77"></span><span id="setAllocsSegOp"><span class="annot"><span class="annottext">setAllocsSegOp :: forall lvl.
+Map VName SubExp -&gt; SegOp lvl GPUMem -&gt; SegOp lvl GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsSegOp"><span class="hs-identifier hs-var hs-var">setAllocsSegOp</span></a></span></span><span> </span><span id="local-6989586621684450852"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450852"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-type">SegMap</span></a></span><span> </span><span id="local-6989586621684450851"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450851"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450850"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450850"><span class="hs-identifier hs-var">sp</span></a></span></span><span> </span><span id="local-6989586621684450849"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450849"><span class="hs-identifier hs-var">tps</span></a></span></span><span> </span><span id="local-6989586621684450848"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450848"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-78"></span><span>  </span><span class="annot"><span class="annottext">lvl -&gt; SegSpace -&gt; [Type] -&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl -&gt; SegSpace -&gt; [Type] -&gt; KernelBody rep -&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-var">SegMap</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450851"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450850"><span class="hs-identifier hs-var">sp</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450849"><span class="hs-identifier hs-var">tps</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-79"></span><span>    </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450848"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Stm GPUMem -&gt; Stm GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450852"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450848"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-80"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsSegOp"><span class="hs-identifier hs-var">setAllocsSegOp</span></a></span><span> </span><span id="local-6989586621684450847"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450847"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-type">SegRed</span></a></span><span> </span><span id="local-6989586621684450846"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450846"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450845"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450845"><span class="hs-identifier hs-var">sp</span></a></span></span><span> </span><span id="local-6989586621684450844"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450844"><span class="hs-identifier hs-var">segbinops</span></a></span></span><span> </span><span id="local-6989586621684450843"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450843"><span class="hs-identifier hs-var">tps</span></a></span></span><span> </span><span id="local-6989586621684450842"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450842"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-81"></span><span>  </span><span class="annot"><span class="annottext">lvl
+-&gt; SegSpace
+-&gt; [SegBinOp GPUMem]
+-&gt; [Type]
+-&gt; KernelBody GPUMem
+-&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-var">SegRed</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450846"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450845"><span class="hs-identifier hs-var">sp</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450844"><span class="hs-identifier hs-var">segbinops</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450843"><span class="hs-identifier hs-var">tps</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-82"></span><span>    </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450842"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Stm GPUMem -&gt; Stm GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450847"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450842"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-83"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsSegOp"><span class="hs-identifier hs-var">setAllocsSegOp</span></a></span><span> </span><span id="local-6989586621684450841"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450841"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegScan"><span class="hs-identifier hs-type">SegScan</span></a></span><span> </span><span id="local-6989586621684450840"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450840"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450839"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450839"><span class="hs-identifier hs-var">sp</span></a></span></span><span> </span><span id="local-6989586621684450838"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450838"><span class="hs-identifier hs-var">segbinops</span></a></span></span><span> </span><span id="local-6989586621684450837"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450837"><span class="hs-identifier hs-var">tps</span></a></span></span><span> </span><span id="local-6989586621684450836"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450836"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-84"></span><span>  </span><span class="annot"><span class="annottext">lvl
+-&gt; SegSpace
+-&gt; [SegBinOp GPUMem]
+-&gt; [Type]
+-&gt; KernelBody GPUMem
+-&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegScan"><span class="hs-identifier hs-var">SegScan</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450840"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450839"><span class="hs-identifier hs-var">sp</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450838"><span class="hs-identifier hs-var">segbinops</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450837"><span class="hs-identifier hs-var">tps</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-85"></span><span>    </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450836"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Stm GPUMem -&gt; Stm GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450841"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450836"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-86"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsSegOp"><span class="hs-identifier hs-var">setAllocsSegOp</span></a></span><span> </span><span id="local-6989586621684450835"><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450835"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-type">SegHist</span></a></span><span> </span><span id="local-6989586621684450834"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450834"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450833"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450833"><span class="hs-identifier hs-var">sp</span></a></span></span><span> </span><span id="local-6989586621684450832"><span class="annot"><span class="annottext">[HistOp GPUMem]
+</span><a href="#local-6989586621684450832"><span class="hs-identifier hs-var">segbinops</span></a></span></span><span> </span><span id="local-6989586621684450831"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450831"><span class="hs-identifier hs-var">tps</span></a></span></span><span> </span><span id="local-6989586621684450830"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450830"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-87"></span><span>  </span><span class="annot"><span class="annottext">lvl
+-&gt; SegSpace
+-&gt; [HistOp GPUMem]
+-&gt; [Type]
+-&gt; KernelBody GPUMem
+-&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [HistOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-var">SegHist</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450834"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450833"><span class="hs-identifier hs-var">sp</span></a></span><span> </span><span class="annot"><span class="annottext">[HistOp GPUMem]
+</span><a href="#local-6989586621684450832"><span class="hs-identifier hs-var">segbinops</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450831"><span class="hs-identifier hs-var">tps</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-88"></span><span>    </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450830"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; Stm GPUMem -&gt; Stm GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsStm"><span class="hs-identifier hs-var">setAllocsStm</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName SubExp
+</span><a href="#local-6989586621684450835"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450830"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-89"></span><span>
+</span><span id="line-90"></span><span id="local-6989586621684451064"><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#maxSubExp"><span class="hs-identifier hs-type">maxSubExp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451064"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Set</span></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684451064"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span></span><span>
+</span><span id="line-91"></span><span id="maxSubExp"><span class="annot"><span class="annottext">maxSubExp :: forall (m :: * -&gt; *). MonadBuilder m =&gt; Set SubExp -&gt; m SubExp
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#maxSubExp"><span class="hs-identifier hs-var hs-var">maxSubExp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; m SubExp
+forall {m :: * -&gt; *}. MonadBuilder m =&gt; [SubExp] -&gt; m SubExp
+</span><a href="#local-6989586621684450826"><span class="hs-identifier hs-var">helper</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExp] -&gt; m SubExp)
+-&gt; (Set SubExp -&gt; [SubExp]) -&gt; Set SubExp -&gt; m SubExp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Set SubExp -&gt; [SubExp]
+forall a. Set a -&gt; [a]
+</span><span class="hs-identifier hs-var">S.toList</span></span><span>
+</span><span id="line-92"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-93"></span><span>    </span><span id="local-6989586621684450826"><span class="annot"><span class="annottext">helper :: [SubExp] -&gt; m SubExp
+</span><a href="#local-6989586621684450826"><span class="hs-identifier hs-var hs-var">helper</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684450813"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450813"><span class="hs-identifier hs-var">s1</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684450812"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450812"><span class="hs-identifier hs-var">s2</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684450811"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684450811"><span class="hs-identifier hs-var">sexps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-94"></span><span>      </span><span id="local-6989586621684450810"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450810"><span class="hs-identifier hs-var">z</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Exp (Rep m) -&gt; m SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[Char] -&gt; Exp (Rep m) -&gt; m SubExp
+</span><a href="Futhark.Construct.html#letSubExp"><span class="hs-identifier hs-var">letSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;maxSubHelper&quot;</span></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m SubExp) -&gt; Exp (Rep m) -&gt; m SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BasicOp -&gt; Exp (Rep m)
+forall rep. BasicOp -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#BasicOp"><span class="hs-identifier hs-var">BasicOp</span></a></span><span> </span><span class="annot"><span class="annottext">(BasicOp -&gt; Exp (Rep m)) -&gt; BasicOp -&gt; Exp (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BinOp -&gt; SubExp -&gt; SubExp -&gt; BasicOp
+</span><a href="Futhark.IR.Syntax.html#BinOp"><span class="hs-identifier hs-var">BinOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntType -&gt; BinOp
+</span><a href="Futhark.IR.Primitive.html#UMax"><span class="hs-identifier hs-var">UMax</span></a></span><span> </span><span class="annot"><span class="annottext">IntType
+</span><a href="Futhark.IR.Primitive.html#Int64"><span class="hs-identifier hs-var">Int64</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450813"><span class="hs-identifier hs-var">s1</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450812"><span class="hs-identifier hs-var">s2</span></a></span><span>
+</span><span id="line-95"></span><span>      </span><span class="annot"><span class="annottext">[SubExp] -&gt; m SubExp
+</span><a href="#local-6989586621684450826"><span class="hs-identifier hs-var">helper</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450810"><span class="hs-identifier hs-var">z</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; [SubExp] -&gt; [SubExp]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684450811"><span class="hs-identifier hs-var">sexps</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span>    </span><span class="annot"><a href="#local-6989586621684450826"><span class="hs-identifier hs-var">helper</span></a></span><span> </span><span class="hs-special">[</span><span id="local-6989586621684450805"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450805"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-97"></span><span>      </span><span class="annot"><span class="annottext">SubExp -&gt; m SubExp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450805"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-98"></span><span>    </span><span class="annot"><a href="#local-6989586621684450826"><span class="hs-identifier hs-var">helper</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; m SubExp
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;impossible&quot;</span></span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span><span id="local-6989586621684451047"><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#isKernelInvariant"><span class="hs-identifier hs-type">isKernelInvariant</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621684451047"><span class="hs-identifier hs-type">space</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span></span><span>
+</span><span id="line-101"></span><span id="isKernelInvariant"><span class="annot"><span class="annottext">isKernelInvariant :: forall space. Scope GPUMem -&gt; (SubExp, space) -&gt; Bool
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#isKernelInvariant"><span class="hs-identifier hs-var hs-var">isKernelInvariant</span></a></span></span><span> </span><span id="local-6989586621684450802"><span class="annot"><span class="annottext">Scope GPUMem
+</span><a href="#local-6989586621684450802"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684450800"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684450800"><span class="hs-identifier hs-var">vname</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">space
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684450800"><span class="hs-identifier hs-var">vname</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Scope GPUMem -&gt; Bool
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Bool
+</span><span class="hs-operator hs-var">`M.member`</span></span><span> </span><span class="annot"><span class="annottext">Scope GPUMem
+</span><a href="#local-6989586621684450802"><span class="hs-identifier hs-var">scope</span></a></span><span>
+</span><span id="line-102"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#isKernelInvariant"><span class="hs-identifier hs-var">isKernelInvariant</span></a></span><span> </span><span class="annot"><span class="annottext">Scope GPUMem
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">(SubExp, space)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-103"></span><span>
+</span><span id="line-104"></span><span id="local-6989586621684451042"><span id="local-6989586621684451043"><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernelBodyStms"><span class="hs-identifier hs-type">onKernelBodyStms</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-105"></span><span>  </span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451043"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-106"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451042"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-107"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684451043"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-108"></span><span>  </span><span class="annot"><a href="#local-6989586621684451043"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451042"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-109"></span><span id="onKernelBodyStms"><span class="annot"><span class="annottext">onKernelBodyStms :: forall (m :: * -&gt; *) lvl.
+MonadBuilder m =&gt;
+SegOp lvl GPUMem
+-&gt; (Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+-&gt; m (SegOp lvl GPUMem)
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernelBodyStms"><span class="hs-identifier hs-var hs-var">onKernelBodyStms</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-type">SegMap</span></a></span><span> </span><span id="local-6989586621684450786"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450786"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450785"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450785"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684450784"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450784"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684450783"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450783"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684450782"><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450782"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-110"></span><span>  </span><span id="local-6989586621684450781"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450781"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450782"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450783"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-111"></span><span>  </span><span class="annot"><span class="annottext">SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem))
+-&gt; SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">lvl -&gt; SegSpace -&gt; [Type] -&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl -&gt; SegSpace -&gt; [Type] -&gt; KernelBody rep -&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-var">SegMap</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450786"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450785"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450784"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450783"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450781"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-112"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernelBodyStms"><span class="hs-identifier hs-var">onKernelBodyStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-type">SegRed</span></a></span><span> </span><span id="local-6989586621684450780"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450780"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450779"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450779"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684450778"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450778"><span class="hs-identifier hs-var">binops</span></a></span></span><span> </span><span id="local-6989586621684450777"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450777"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684450776"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450776"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684450775"><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450775"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-113"></span><span>  </span><span id="local-6989586621684450774"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450774"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450775"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450776"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-114"></span><span>  </span><span class="annot"><span class="annottext">SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem))
+-&gt; SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">lvl
+-&gt; SegSpace
+-&gt; [SegBinOp GPUMem]
+-&gt; [Type]
+-&gt; KernelBody GPUMem
+-&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-var">SegRed</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450780"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450779"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450778"><span class="hs-identifier hs-var">binops</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450777"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450776"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450774"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-115"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernelBodyStms"><span class="hs-identifier hs-var">onKernelBodyStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegScan"><span class="hs-identifier hs-type">SegScan</span></a></span><span> </span><span id="local-6989586621684450773"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450773"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450772"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450772"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684450771"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450771"><span class="hs-identifier hs-var">binops</span></a></span></span><span> </span><span id="local-6989586621684450770"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450770"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684450769"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450769"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684450768"><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450768"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-116"></span><span>  </span><span id="local-6989586621684450767"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450767"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450768"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450769"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-117"></span><span>  </span><span class="annot"><span class="annottext">SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem))
+-&gt; SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">lvl
+-&gt; SegSpace
+-&gt; [SegBinOp GPUMem]
+-&gt; [Type]
+-&gt; KernelBody GPUMem
+-&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegScan"><span class="hs-identifier hs-var">SegScan</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450773"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450772"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450771"><span class="hs-identifier hs-var">binops</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450770"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450769"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450767"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-118"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernelBodyStms"><span class="hs-identifier hs-var">onKernelBodyStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-type">SegHist</span></a></span><span> </span><span id="local-6989586621684450766"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450766"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450765"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450765"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684450764"><span class="annot"><span class="annottext">[HistOp GPUMem]
+</span><a href="#local-6989586621684450764"><span class="hs-identifier hs-var">binops</span></a></span></span><span> </span><span id="local-6989586621684450763"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450763"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684450762"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450762"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684450761"><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450761"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-119"></span><span>  </span><span id="local-6989586621684450760"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450760"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450761"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450762"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-120"></span><span>  </span><span class="annot"><span class="annottext">SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem))
+-&gt; SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">lvl
+-&gt; SegSpace
+-&gt; [HistOp GPUMem]
+-&gt; [Type]
+-&gt; KernelBody GPUMem
+-&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [HistOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-var">SegHist</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450766"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450765"><span class="hs-identifier hs-var">space</span></a></span><span> </span><span class="annot"><span class="annottext">[HistOp GPUMem]
+</span><a href="#local-6989586621684450764"><span class="hs-identifier hs-var">binops</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450763"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450762"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450760"><span class="hs-identifier hs-var">stms</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span class="hs-comment">-- | This is the actual optimiser. Given an interference graph and a @SegOp@,</span><span>
+</span><span id="line-123"></span><span class="hs-comment">-- replace allocations and references to memory blocks inside with a (hopefully)</span><span>
+</span><span id="line-124"></span><span class="hs-comment">-- reduced number of allocations.</span><span>
+</span><span id="line-125"></span><span id="local-6989586621684451037"><span id="local-6989586621684451039"><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#optimiseKernel"><span class="hs-identifier hs-type">optimiseKernel</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-126"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451039"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451039"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-127"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.Interference.html#Graph"><span class="hs-identifier hs-type">Interference.Graph</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-128"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451037"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-129"></span><span>  </span><span class="annot"><a href="#local-6989586621684451039"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451037"><span class="hs-identifier hs-type">lvl</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-130"></span><span id="optimiseKernel"><span class="annot"><span class="annottext">optimiseKernel :: forall (m :: * -&gt; *) lvl.
+(MonadBuilder m, Rep m ~ GPUMem) =&gt;
+Graph VName -&gt; SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#optimiseKernel"><span class="hs-identifier hs-var hs-var">optimiseKernel</span></a></span></span><span> </span><span id="local-6989586621684450693"><span class="annot"><span class="annottext">Graph VName
+</span><a href="#local-6989586621684450693"><span class="hs-identifier hs-var">graph</span></a></span></span><span> </span><span id="local-6989586621684450692"><span class="annot"><span class="annottext">SegOp lvl GPUMem
+</span><a href="#local-6989586621684450692"><span class="hs-identifier hs-var">segop0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-131"></span><span>  </span><span id="local-6989586621684450691"><span class="annot"><span class="annottext">SegOp lvl GPUMem
+</span><a href="#local-6989586621684450691"><span class="hs-identifier hs-var">segop</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SegOp lvl GPUMem
+-&gt; (Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+-&gt; m (SegOp lvl GPUMem)
+forall (m :: * -&gt; *) lvl.
+MonadBuilder m =&gt;
+SegOp lvl GPUMem
+-&gt; (Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+-&gt; m (SegOp lvl GPUMem)
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernelBodyStms"><span class="hs-identifier hs-var">onKernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp lvl GPUMem
+</span><a href="#local-6989586621684450692"><span class="hs-identifier hs-var">segop0</span></a></span><span> </span><span class="annot"><span class="annottext">((Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+ -&gt; m (SegOp lvl GPUMem))
+-&gt; (Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+-&gt; m (SegOp lvl GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+forall (m :: * -&gt; *).
+LocalScope GPUMem m =&gt;
+(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernels"><span class="hs-identifier hs-var">onKernels</span></a></span><span> </span><span class="annot"><span class="annottext">((SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+ -&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)))
+-&gt; (SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem)
+-&gt; m (Seq (Stm GPUMem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Graph VName -&gt; SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem)
+forall (m :: * -&gt; *) lvl.
+(MonadBuilder m, Rep m ~ GPUMem) =&gt;
+Graph VName -&gt; SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#optimiseKernel"><span class="hs-identifier hs-var">optimiseKernel</span></a></span><span> </span><span class="annot"><span class="annottext">Graph VName
+</span><a href="#local-6989586621684450693"><span class="hs-identifier hs-var">graph</span></a></span><span>
+</span><span id="line-132"></span><span>  </span><span id="local-6989586621684450689"><span class="annot"><span class="annottext">Scope GPUMem
+</span><a href="#local-6989586621684450689"><span class="hs-identifier hs-var">scope_here</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">m (Scope GPUMem)
+forall rep (m :: * -&gt; *). HasScope rep m =&gt; m (Scope rep)
+</span><a href="Futhark.IR.Prop.Scope.html#askScope"><span class="hs-identifier hs-var">askScope</span></a></span><span>
+</span><span id="line-133"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684450687"><span class="annot"><span class="annottext">allocs :: Allocs
+</span><a href="#local-6989586621684450687"><span class="hs-identifier hs-var hs-var">allocs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((SubExp, Space) -&gt; Bool) -&gt; Allocs -&gt; Allocs
+forall a k. (a -&gt; Bool) -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.filter</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Scope GPUMem -&gt; (SubExp, Space) -&gt; Bool
+forall space. Scope GPUMem -&gt; (SubExp, space) -&gt; Bool
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#isKernelInvariant"><span class="hs-identifier hs-var">isKernelInvariant</span></a></span><span> </span><span class="annot"><span class="annottext">Scope GPUMem
+</span><a href="#local-6989586621684450689"><span class="hs-identifier hs-var">scope_here</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Allocs -&gt; Allocs) -&gt; Allocs -&gt; Allocs
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOp lvl GPUMem -&gt; Allocs
+forall lvl. SegOp lvl GPUMem -&gt; Allocs
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#getAllocsSegOp"><span class="hs-identifier hs-var">getAllocsSegOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp lvl GPUMem
+</span><a href="#local-6989586621684450691"><span class="hs-identifier hs-var">segop</span></a></span><span>
+</span><span id="line-134"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684450685"><span class="annot"><span class="annottext">Map Int Space
+</span><a href="#local-6989586621684450685"><span class="hs-identifier hs-var">colorspaces</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684450684"><span class="annot"><span class="annottext">Coloring VName
+</span><a href="#local-6989586621684450684"><span class="hs-identifier hs-var">coloring</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-135"></span><span>        </span><span class="annot"><span class="annottext">Map VName Space -&gt; Graph VName -&gt; (Map Int Space, Coloring VName)
+forall a space.
+(Ord a, Ord space) =&gt;
+Map a space -&gt; Graph a -&gt; (Map Int space, Coloring a)
+</span><a href="Futhark.Optimise.MemoryBlockMerging.GreedyColoring.html#colorGraph"><span class="hs-identifier hs-var">GreedyColoring.colorGraph</span></a></span><span>
+</span><span id="line-136"></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((SubExp, Space) -&gt; Space) -&gt; Allocs -&gt; Map VName Space
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">(SubExp, Space) -&gt; Space
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">Allocs
+</span><a href="#local-6989586621684450687"><span class="hs-identifier hs-var">allocs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-137"></span><span>          </span><span class="annot"><span class="annottext">Graph VName
+</span><a href="#local-6989586621684450693"><span class="hs-identifier hs-var">graph</span></a></span><span>
+</span><span id="line-138"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684450682"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684450682"><span class="hs-identifier hs-var">maxes</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684450681"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450681"><span class="hs-identifier hs-var">maxstms</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-139"></span><span>    </span><span class="annot"><span class="annottext">Coloring VName -&gt; Map Int (Set VName)
+forall v k. (Ord v, Ord k) =&gt; Map k v -&gt; Map v (Set k)
+</span><a href="Futhark.Util.html#invertMap"><span class="hs-identifier hs-var">invertMap</span></a></span><span> </span><span class="annot"><span class="annottext">Coloring VName
+</span><a href="#local-6989586621684450684"><span class="hs-identifier hs-var">coloring</span></a></span><span>
+</span><span id="line-140"></span><span>      </span><span class="annot"><span class="annottext">Map Int (Set VName)
+-&gt; (Map Int (Set VName) -&gt; [Set VName]) -&gt; [Set VName]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">Map Int (Set VName) -&gt; [Set VName]
+forall k a. Map k a -&gt; [a]
+</span><span class="hs-identifier hs-var">M.elems</span></span><span>
+</span><span id="line-141"></span><span>      </span><span class="annot"><span class="annottext">[Set VName] -&gt; ([Set VName] -&gt; m [SubExp]) -&gt; m [SubExp]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(Set VName -&gt; m SubExp) -&gt; [Set VName] -&gt; m [SubExp]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Set SubExp -&gt; m SubExp
+forall (m :: * -&gt; *). MonadBuilder m =&gt; Set SubExp -&gt; m SubExp
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#maxSubExp"><span class="hs-identifier hs-var">maxSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">(Set SubExp -&gt; m SubExp)
+-&gt; (Set VName -&gt; Set SubExp) -&gt; Set VName -&gt; m SubExp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; Set VName -&gt; Set SubExp
+forall b a. Ord b =&gt; (a -&gt; b) -&gt; Set a -&gt; Set b
+</span><span class="hs-identifier hs-var">S.map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SubExp, Space) -&gt; SubExp
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">((SubExp, Space) -&gt; SubExp)
+-&gt; (VName -&gt; (SubExp, Space)) -&gt; VName -&gt; SubExp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Allocs
+</span><a href="#local-6989586621684450687"><span class="hs-identifier hs-var">allocs</span></a></span><span> </span><span class="annot"><span class="annottext">Allocs -&gt; VName -&gt; (SubExp, Space)
+forall k a. Ord k =&gt; Map k a -&gt; k -&gt; a
+</span><span class="hs-operator hs-var">!</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-142"></span><span>      </span><span class="annot"><span class="annottext">m [SubExp]
+-&gt; (m [SubExp] -&gt; m ([SubExp], Seq (Stm GPUMem)))
+-&gt; m ([SubExp], Seq (Stm GPUMem))
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">m [SubExp] -&gt; m ([SubExp], Seq (Stm GPUMem))
+forall (m :: * -&gt; *) a.
+MonadBuilder m =&gt;
+m a -&gt; m (a, Stms (Rep m))
+</span><a href="Futhark.Builder.Class.html#collectStms"><span class="hs-identifier hs-var">collectStms</span></a></span><span>
+</span><span id="line-143"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684450676"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684450676"><span class="hs-identifier hs-var">colors</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684450675"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450675"><span class="hs-identifier hs-var">stms</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-144"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; [SubExp] -&gt; [SubExp]
+forall a. HasCallStack =&gt; Bool -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">assert</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684450682"><span class="hs-identifier hs-var">maxes</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Map Int Space -&gt; Int
+forall k a. Map k a -&gt; Int
+</span><span class="hs-identifier hs-var">M.size</span></span><span> </span><span class="annot"><span class="annottext">Map Int Space
+</span><a href="#local-6989586621684450685"><span class="hs-identifier hs-var">colorspaces</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684450682"><span class="hs-identifier hs-var">maxes</span></a></span><span>
+</span><span id="line-145"></span><span>      </span><span class="annot"><span class="annottext">[SubExp] -&gt; ([SubExp] -&gt; [(Int, SubExp)]) -&gt; [(Int, SubExp)]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; [SubExp] -&gt; [(Int, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span class="hs-special">]</span><span>
+</span><span id="line-146"></span><span>      </span><span class="annot"><span class="annottext">[(Int, SubExp)] -&gt; ([(Int, SubExp)] -&gt; m [SubExp]) -&gt; m [SubExp]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">((Int, SubExp) -&gt; m SubExp) -&gt; [(Int, SubExp)] -&gt; m [SubExp]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621684450672"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684450672"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684450671"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450671"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; Exp (Rep m) -&gt; m SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+[Char] -&gt; Exp (Rep m) -&gt; m SubExp
+</span><a href="Futhark.Construct.html#letSubExp"><span class="hs-identifier hs-var">letSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;color&quot;</span></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m SubExp) -&gt; Exp (Rep m) -&gt; m SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Op GPUMem -&gt; ExpT GPUMem
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op GPUMem -&gt; ExpT GPUMem) -&gt; Op GPUMem -&gt; ExpT GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Space -&gt; MemOp (HostOp GPUMem ())
+forall inner. SubExp -&gt; Space -&gt; MemOp inner
+</span><a href="Futhark.IR.Mem.html#Alloc"><span class="hs-identifier hs-var">Alloc</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450671"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">(Space -&gt; MemOp (HostOp GPUMem ()))
+-&gt; Space -&gt; MemOp (HostOp GPUMem ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Int Space
+</span><a href="#local-6989586621684450685"><span class="hs-identifier hs-var">colorspaces</span></a></span><span> </span><span class="annot"><span class="annottext">Map Int Space -&gt; Int -&gt; Space
+forall k a. Ord k =&gt; Map k a -&gt; k -&gt; a
+</span><span class="hs-operator hs-var">!</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684450672"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>      </span><span class="annot"><span class="annottext">m [SubExp]
+-&gt; (m [SubExp] -&gt; m ([SubExp], Seq (Stm GPUMem)))
+-&gt; m ([SubExp], Seq (Stm GPUMem))
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">m [SubExp] -&gt; m ([SubExp], Seq (Stm GPUMem))
+forall (m :: * -&gt; *) a.
+MonadBuilder m =&gt;
+m a -&gt; m (a, Stms (Rep m))
+</span><a href="Futhark.Builder.Class.html#collectStms"><span class="hs-identifier hs-var">collectStms</span></a></span><span>
+</span><span id="line-148"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684450670"><span class="annot"><span class="annottext">segop' :: SegOp lvl GPUMem
+</span><a href="#local-6989586621684450670"><span class="hs-identifier hs-var hs-var">segop'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName SubExp -&gt; SegOp lvl GPUMem -&gt; SegOp lvl GPUMem
+forall lvl.
+Map VName SubExp -&gt; SegOp lvl GPUMem -&gt; SegOp lvl GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#setAllocsSegOp"><span class="hs-identifier hs-var">setAllocsSegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Int -&gt; SubExp) -&gt; Coloring VName -&gt; Map VName SubExp
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684450676"><span class="hs-identifier hs-var">colors</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp] -&gt; Int -&gt; SubExp
+forall a. [a] -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">!!</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Coloring VName
+</span><a href="#local-6989586621684450684"><span class="hs-identifier hs-var">coloring</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SegOp lvl GPUMem
+</span><a href="#local-6989586621684450691"><span class="hs-identifier hs-var">segop</span></a></span><span>
+</span><span id="line-149"></span><span>  </span><span class="annot"><span class="annottext">SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem))
+-&gt; SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SegOp lvl GPUMem
+</span><a href="#local-6989586621684450670"><span class="hs-identifier hs-var">segop'</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-150"></span><span>    </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-type">SegMap</span></a></span><span> </span><span id="local-6989586621684450668"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450668"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450667"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450667"><span class="hs-identifier hs-var">sp</span></a></span></span><span> </span><span id="local-6989586621684450666"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450666"><span class="hs-identifier hs-var">tps</span></a></span></span><span> </span><span id="local-6989586621684450665"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450665"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-151"></span><span>      </span><span class="annot"><span class="annottext">lvl -&gt; SegSpace -&gt; [Type] -&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl -&gt; SegSpace -&gt; [Type] -&gt; KernelBody rep -&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-var">SegMap</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450668"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450667"><span class="hs-identifier hs-var">sp</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450666"><span class="hs-identifier hs-var">tps</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-152"></span><span>        </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450665"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450681"><span class="hs-identifier hs-var">maxstms</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450675"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450665"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-153"></span><span>    </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-type">SegRed</span></a></span><span> </span><span id="local-6989586621684450664"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450664"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450663"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450663"><span class="hs-identifier hs-var">sp</span></a></span></span><span> </span><span id="local-6989586621684450662"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450662"><span class="hs-identifier hs-var">binops</span></a></span></span><span> </span><span id="local-6989586621684450661"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450661"><span class="hs-identifier hs-var">tps</span></a></span></span><span> </span><span id="local-6989586621684450660"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450660"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-154"></span><span>      </span><span class="annot"><span class="annottext">lvl
+-&gt; SegSpace
+-&gt; [SegBinOp GPUMem]
+-&gt; [Type]
+-&gt; KernelBody GPUMem
+-&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-var">SegRed</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450664"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450663"><span class="hs-identifier hs-var">sp</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450662"><span class="hs-identifier hs-var">binops</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450661"><span class="hs-identifier hs-var">tps</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-155"></span><span>        </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450660"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450681"><span class="hs-identifier hs-var">maxstms</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450675"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450660"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-156"></span><span>    </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegScan"><span class="hs-identifier hs-type">SegScan</span></a></span><span> </span><span id="local-6989586621684450659"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450659"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450658"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450658"><span class="hs-identifier hs-var">sp</span></a></span></span><span> </span><span id="local-6989586621684450657"><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450657"><span class="hs-identifier hs-var">binops</span></a></span></span><span> </span><span id="local-6989586621684450656"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450656"><span class="hs-identifier hs-var">tps</span></a></span></span><span> </span><span id="local-6989586621684450655"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450655"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-157"></span><span>      </span><span class="annot"><span class="annottext">lvl
+-&gt; SegSpace
+-&gt; [SegBinOp GPUMem]
+-&gt; [Type]
+-&gt; KernelBody GPUMem
+-&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [SegBinOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegScan"><span class="hs-identifier hs-var">SegScan</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450659"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450658"><span class="hs-identifier hs-var">sp</span></a></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><a href="#local-6989586621684450657"><span class="hs-identifier hs-var">binops</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450656"><span class="hs-identifier hs-var">tps</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-158"></span><span>        </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450655"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450681"><span class="hs-identifier hs-var">maxstms</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450675"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450655"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-159"></span><span>    </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-type">SegHist</span></a></span><span> </span><span id="local-6989586621684450654"><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450654"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684450653"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450653"><span class="hs-identifier hs-var">sp</span></a></span></span><span> </span><span id="local-6989586621684450652"><span class="annot"><span class="annottext">[HistOp GPUMem]
+</span><a href="#local-6989586621684450652"><span class="hs-identifier hs-var">binops</span></a></span></span><span> </span><span id="local-6989586621684450651"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450651"><span class="hs-identifier hs-var">tps</span></a></span></span><span> </span><span id="local-6989586621684450650"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450650"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-160"></span><span>      </span><span class="annot"><span class="annottext">lvl
+-&gt; SegSpace
+-&gt; [HistOp GPUMem]
+-&gt; [Type]
+-&gt; KernelBody GPUMem
+-&gt; SegOp lvl GPUMem
+forall lvl rep.
+lvl
+-&gt; SegSpace
+-&gt; [HistOp rep]
+-&gt; [Type]
+-&gt; KernelBody rep
+-&gt; SegOp lvl rep
+</span><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-var">SegHist</span></a></span><span> </span><span class="annot"><span class="annottext">lvl
+</span><a href="#local-6989586621684450654"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684450653"><span class="hs-identifier hs-var">sp</span></a></span><span> </span><span class="annot"><span class="annottext">[HistOp GPUMem]
+</span><a href="#local-6989586621684450652"><span class="hs-identifier hs-var">binops</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684450651"><span class="hs-identifier hs-var">tps</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelBody GPUMem -&gt; SegOp lvl GPUMem)
+-&gt; KernelBody GPUMem -&gt; SegOp lvl GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-161"></span><span>        </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450650"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">kernelBodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var">kernelBodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450681"><span class="hs-identifier hs-var">maxstms</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450675"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem) -&gt; Seq (Stm GPUMem)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684450650"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-162"></span><span>
+</span><span id="line-163"></span><span class="hs-comment">-- | Helper function that modifies kernels found inside some statements.</span><span>
+</span><span id="line-164"></span><span id="local-6989586621684451029"><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernels"><span class="hs-identifier hs-type">onKernels</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-165"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#LocalScope"><span class="hs-identifier hs-type">LocalScope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684451029"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-166"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684451029"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-167"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-168"></span><span>  </span><span class="annot"><a href="#local-6989586621684451029"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-169"></span><span id="onKernels"><span class="annot"><span class="annottext">onKernels :: forall (m :: * -&gt; *).
+LocalScope GPUMem m =&gt;
+(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernels"><span class="hs-identifier hs-var hs-var">onKernels</span></a></span></span><span> </span><span id="local-6989586621684450629"><span class="annot"><span class="annottext">SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem)
+</span><a href="#local-6989586621684450629"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684450628"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450628"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem)) -&gt; m (Seq (Stm GPUMem))
+forall rep a (m :: * -&gt; *) b.
+(Scoped rep a, LocalScope rep m) =&gt;
+a -&gt; m b -&gt; m b
+</span><a href="Futhark.IR.Prop.Scope.html#inScopeOf"><span class="hs-identifier hs-var">inScopeOf</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450628"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">(m (Seq (Stm GPUMem)) -&gt; m (Seq (Stm GPUMem)))
+-&gt; m (Seq (Stm GPUMem)) -&gt; m (Seq (Stm GPUMem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; m (Stm GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; m (Stm GPUMem)
+</span><a href="#local-6989586621684450626"><span class="hs-identifier hs-var">helper</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450628"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-170"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-171"></span><span>    </span><span id="local-6989586621684450626"><span class="annot"><span class="annottext">helper :: Stm GPUMem -&gt; m (Stm GPUMem)
+</span><a href="#local-6989586621684450626"><span class="hs-identifier hs-var hs-var">helper</span></a></span></span><span> </span><span id="local-6989586621684450625"><span class="annot"><span class="annottext">stm :: Stm GPUMem
+</span><a href="#local-6989586621684450625"><span class="hs-identifier hs-var">stm</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: forall rep. Stm rep -&gt; Exp rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-type">Inner</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span id="local-6989586621684450624"><span class="annot"><span class="annottext">SegOp SegLevel GPUMem
+</span><a href="#local-6989586621684450624"><span class="hs-identifier hs-var">segop</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-172"></span><span>      </span><span id="local-6989586621684450623"><span class="annot"><span class="annottext">SegOp SegLevel GPUMem
+</span><a href="#local-6989586621684450623"><span class="hs-identifier hs-var">exp'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem)
+</span><a href="#local-6989586621684450629"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem
+</span><a href="#local-6989586621684450624"><span class="hs-identifier hs-var">segop</span></a></span><span>
+</span><span id="line-173"></span><span>      </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; m (Stm GPUMem)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; m (Stm GPUMem)) -&gt; Stm GPUMem -&gt; m (Stm GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450625"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: ExpT GPUMem
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Op GPUMem -&gt; ExpT GPUMem
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op GPUMem -&gt; ExpT GPUMem) -&gt; Op GPUMem -&gt; ExpT GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ())
+forall inner. inner -&gt; MemOp inner
+</span><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-var">Inner</span></a></span><span> </span><span class="annot"><span class="annottext">(HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ()))
+-&gt; HostOp GPUMem () -&gt; MemOp (HostOp GPUMem ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem -&gt; HostOp GPUMem ()
+forall rep op. SegOp SegLevel rep -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-var">SegOp</span></a></span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem
+</span><a href="#local-6989586621684450623"><span class="hs-identifier hs-var">exp'</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-174"></span><span>    </span><span class="annot"><a href="#local-6989586621684450626"><span class="hs-identifier hs-var">helper</span></a></span><span> </span><span id="local-6989586621684450622"><span class="annot"><span class="annottext">stm :: Stm GPUMem
+</span><a href="#local-6989586621684450622"><span class="hs-identifier hs-var">stm</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: forall rep. Stm rep -&gt; Exp rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span id="local-6989586621684450621"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450621"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621684450620"><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450620"><span class="hs-identifier hs-var">then_body</span></a></span></span><span> </span><span id="local-6989586621684450619"><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450619"><span class="hs-identifier hs-var">else_body</span></a></span></span><span> </span><span id="local-6989586621684450618"><span class="annot"><span class="annottext">IfDec (BranchType GPUMem)
+</span><a href="#local-6989586621684450618"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-175"></span><span>      </span><span id="local-6989586621684450617"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450617"><span class="hs-identifier hs-var">then_body_stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem)
+</span><a href="#local-6989586621684450629"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+forall (m :: * -&gt; *).
+LocalScope GPUMem m =&gt;
+(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernels"><span class="hs-operator hs-var">`onKernels`</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450620"><span class="hs-identifier hs-var">then_body</span></a></span><span>
+</span><span id="line-176"></span><span>      </span><span id="local-6989586621684450616"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450616"><span class="hs-identifier hs-var">else_body_stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem)
+</span><a href="#local-6989586621684450629"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+forall (m :: * -&gt; *).
+LocalScope GPUMem m =&gt;
+(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernels"><span class="hs-operator hs-var">`onKernels`</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450619"><span class="hs-identifier hs-var">else_body</span></a></span><span>
+</span><span id="line-177"></span><span>      </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; m (Stm GPUMem)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; m (Stm GPUMem)) -&gt; Stm GPUMem -&gt; m (Stm GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-178"></span><span>        </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450622"><span class="hs-identifier hs-var">stm</span></a></span><span>
+</span><span id="line-179"></span><span>          </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">stmExp :: ExpT GPUMem
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-180"></span><span>              </span><span class="annot"><span class="annottext">SubExp
+-&gt; BodyT GPUMem
+-&gt; BodyT GPUMem
+-&gt; IfDec (BranchType GPUMem)
+-&gt; ExpT GPUMem
+forall rep.
+SubExp
+-&gt; BodyT rep -&gt; BodyT rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-var">If</span></a></span><span>
+</span><span id="line-181"></span><span>                </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684450621"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-182"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450620"><span class="hs-identifier hs-var">then_body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">bodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var">bodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450617"><span class="hs-identifier hs-var">then_body_stms</span></a></span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-183"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450619"><span class="hs-identifier hs-var">else_body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">bodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var">bodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450616"><span class="hs-identifier hs-var">else_body_stms</span></a></span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-184"></span><span>                </span><span class="annot"><span class="annottext">IfDec (BranchType GPUMem)
+</span><a href="#local-6989586621684450618"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-185"></span><span>          </span><span class="hs-special">}</span><span>
+</span><span id="line-186"></span><span>    </span><span class="annot"><a href="#local-6989586621684450626"><span class="hs-identifier hs-var">helper</span></a></span><span> </span><span id="local-6989586621684450615"><span class="annot"><span class="annottext">stm :: Stm GPUMem
+</span><a href="#local-6989586621684450615"><span class="hs-identifier hs-var">stm</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: forall rep. Stm rep -&gt; Exp rep
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-type">DoLoop</span></a></span><span> </span><span id="local-6989586621684450614"><span class="annot"><span class="annottext">[(FParam GPUMem, SubExp)]
+</span><a href="#local-6989586621684450614"><span class="hs-identifier hs-var">merge</span></a></span></span><span> </span><span id="local-6989586621684450613"><span class="annot"><span class="annottext">LoopForm GPUMem
+</span><a href="#local-6989586621684450613"><span class="hs-identifier hs-var">form</span></a></span></span><span> </span><span id="local-6989586621684450612"><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450612"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-187"></span><span>      </span><span id="local-6989586621684450611"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450611"><span class="hs-identifier hs-var">body_stms</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem)
+</span><a href="#local-6989586621684450629"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+forall (m :: * -&gt; *).
+LocalScope GPUMem m =&gt;
+(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernels"><span class="hs-operator hs-var">`onKernels`</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem -&gt; Seq (Stm GPUMem)
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450612"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-188"></span><span>      </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; m (Stm GPUMem)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Stm GPUMem -&gt; m (Stm GPUMem)) -&gt; Stm GPUMem -&gt; m (Stm GPUMem)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450615"><span class="hs-identifier hs-var">stm</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">stmExp :: ExpT GPUMem
+</span><a href="Futhark.IR.Syntax.html#stmExp"><span class="hs-identifier hs-var">stmExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(FParam GPUMem, SubExp)]
+-&gt; LoopForm GPUMem -&gt; BodyT GPUMem -&gt; ExpT GPUMem
+forall rep.
+[(FParam rep, SubExp)] -&gt; LoopForm rep -&gt; BodyT rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-var">DoLoop</span></a></span><span> </span><span class="annot"><span class="annottext">[(FParam GPUMem, SubExp)]
+</span><a href="#local-6989586621684450614"><span class="hs-identifier hs-var">merge</span></a></span><span> </span><span class="annot"><span class="annottext">LoopForm GPUMem
+</span><a href="#local-6989586621684450613"><span class="hs-identifier hs-var">form</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT GPUMem
+</span><a href="#local-6989586621684450612"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">bodyStms :: Seq (Stm GPUMem)
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var">bodyStms</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450611"><span class="hs-identifier hs-var">body_stms</span></a></span><span class="hs-special">}</span><span class="hs-special">)</span><span class="hs-special">}</span><span>
+</span><span id="line-189"></span><span>    </span><span class="annot"><a href="#local-6989586621684450626"><span class="hs-identifier hs-var">helper</span></a></span><span> </span><span id="local-6989586621684450610"><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450610"><span class="hs-identifier hs-var">stm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stm GPUMem -&gt; m (Stm GPUMem)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Stm GPUMem
+</span><a href="#local-6989586621684450610"><span class="hs-identifier hs-var">stm</span></a></span><span>
+</span><span id="line-190"></span><span>
+</span><span id="line-191"></span><span class="hs-comment">-- | Perform the reuse-allocations optimization.</span><span>
+</span><span id="line-192"></span><span class="annot"><a href="Futhark.Optimise.MemoryBlockMerging.html#optimise"><span class="hs-identifier hs-type">optimise</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-type">Pass</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span>
+</span><span id="line-193"></span><span id="optimise"><span class="annot"><span class="annottext">optimise :: Pass GPUMem GPUMem
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#optimise"><span class="hs-identifier hs-var hs-var">optimise</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-194"></span><span>  </span><span class="annot"><span class="annottext">[Char]
+-&gt; [Char]
+-&gt; (Prog GPUMem -&gt; PassM (Prog GPUMem))
+-&gt; Pass GPUMem GPUMem
+forall fromrep torep.
+[Char]
+-&gt; [Char]
+-&gt; (Prog fromrep -&gt; PassM (Prog torep))
+-&gt; Pass fromrep torep
+</span><a href="Futhark.Pass.html#Pass"><span class="hs-identifier hs-var">Pass</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;reuse allocations&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;reuse allocations&quot;</span></span><span> </span><span class="annot"><span class="annottext">((Prog GPUMem -&gt; PassM (Prog GPUMem)) -&gt; Pass GPUMem GPUMem)
+-&gt; (Prog GPUMem -&gt; PassM (Prog GPUMem)) -&gt; Pass GPUMem GPUMem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684450608"><span class="annot"><span class="annottext">Prog GPUMem
+</span><a href="#local-6989586621684450608"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-195"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684450607"><span class="annot"><span class="annottext">graph :: Graph VName
+</span><a href="#local-6989586621684450607"><span class="hs-identifier hs-var hs-var">graph</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Prog GPUMem -&gt; Graph VName
+</span><a href="Futhark.Analysis.Interference.html#analyseProgGPU"><span class="hs-identifier hs-var">Interference.analyseProgGPU</span></a></span><span> </span><span class="annot"><span class="annottext">Prog GPUMem
+</span><a href="#local-6989586621684450608"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-196"></span><span>     </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">(Scope GPUMem -&gt; Seq (Stm GPUMem) -&gt; PassM (Seq (Stm GPUMem)))
+-&gt; Prog GPUMem -&gt; PassM (Prog GPUMem)
+forall rep.
+(Scope rep -&gt; Stms rep -&gt; PassM (Stms rep))
+-&gt; Prog rep -&gt; PassM (Prog rep)
+</span><a href="Futhark.Pass.html#intraproceduralTransformation"><span class="hs-identifier hs-var">Pass.intraproceduralTransformation</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Graph VName
+-&gt; Scope GPUMem -&gt; Seq (Stm GPUMem) -&gt; PassM (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450604"><span class="hs-identifier hs-var">onStms</span></a></span><span> </span><span class="annot"><span class="annottext">Graph VName
+</span><a href="#local-6989586621684450607"><span class="hs-identifier hs-var">graph</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Prog GPUMem
+</span><a href="#local-6989586621684450608"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-197"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-198"></span><span>    </span><span class="annot"><a href="#local-6989586621684450604"><span class="hs-identifier hs-type">onStms</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-199"></span><span>      </span><span class="annot"><a href="Futhark.Analysis.Interference.html#Graph"><span class="hs-identifier hs-type">Interference.Graph</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-200"></span><span>      </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-201"></span><span>      </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-202"></span><span>      </span><span class="annot"><a href="Futhark.Pass.html#PassM"><span class="hs-identifier hs-type">PassM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span>    </span><span id="local-6989586621684450604"><span class="annot"><span class="annottext">onStms :: Graph VName
+-&gt; Scope GPUMem -&gt; Seq (Stm GPUMem) -&gt; PassM (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450604"><span class="hs-identifier hs-var hs-var">onStms</span></a></span></span><span> </span><span id="local-6989586621684450603"><span class="annot"><span class="annottext">Graph VName
+</span><a href="#local-6989586621684450603"><span class="hs-identifier hs-var">graph</span></a></span></span><span> </span><span id="local-6989586621684450602"><span class="annot"><span class="annottext">Scope GPUMem
+</span><a href="#local-6989586621684450602"><span class="hs-identifier hs-var">scope</span></a></span></span><span> </span><span id="local-6989586621684450601"><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450601"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-204"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684450600"><span class="annot"><span class="annottext">m :: BuilderT GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450600"><span class="hs-identifier hs-var hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope GPUMem
+-&gt; BuilderT GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem))
+-&gt; BuilderT GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem))
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">localScope</span></a></span><span> </span><span class="annot"><span class="annottext">Scope GPUMem
+</span><a href="#local-6989586621684450602"><span class="hs-identifier hs-var">scope</span></a></span><span> </span><span class="annot"><span class="annottext">(BuilderT GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem))
+ -&gt; BuilderT
+      GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem)))
+-&gt; BuilderT GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem))
+-&gt; BuilderT GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Graph VName
+-&gt; SegOp SegLevel GPUMem
+-&gt; BuilderT
+     GPUMem (StateT VNameSource Identity) (SegOp SegLevel GPUMem)
+forall (m :: * -&gt; *) lvl.
+(MonadBuilder m, Rep m ~ GPUMem) =&gt;
+Graph VName -&gt; SegOp lvl GPUMem -&gt; m (SegOp lvl GPUMem)
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#optimiseKernel"><span class="hs-identifier hs-var">optimiseKernel</span></a></span><span> </span><span class="annot"><span class="annottext">Graph VName
+</span><a href="#local-6989586621684450603"><span class="hs-identifier hs-var">graph</span></a></span><span> </span><span class="annot"><span class="annottext">(SegOp SegLevel GPUMem
+ -&gt; BuilderT
+      GPUMem (StateT VNameSource Identity) (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem)
+-&gt; BuilderT GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem))
+forall (m :: * -&gt; *).
+LocalScope GPUMem m =&gt;
+(SegOp SegLevel GPUMem -&gt; m (SegOp SegLevel GPUMem))
+-&gt; Seq (Stm GPUMem) -&gt; m (Seq (Stm GPUMem))
+</span><a href="Futhark.Optimise.MemoryBlockMerging.html#onKernels"><span class="hs-operator hs-var">`onKernels`</span></a></span><span> </span><span class="annot"><span class="annottext">Seq (Stm GPUMem)
+</span><a href="#local-6989586621684450601"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-205"></span><span>      </span><span class="annot"><span class="annottext">((Seq (Stm GPUMem), Seq (Stm GPUMem)) -&gt; Seq (Stm GPUMem))
+-&gt; PassM (Seq (Stm GPUMem), Seq (Stm GPUMem))
+-&gt; PassM (Seq (Stm GPUMem))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">(Seq (Stm GPUMem), Seq (Stm GPUMem)) -&gt; Seq (Stm GPUMem)
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">(PassM (Seq (Stm GPUMem), Seq (Stm GPUMem))
+ -&gt; PassM (Seq (Stm GPUMem)))
+-&gt; PassM (Seq (Stm GPUMem), Seq (Stm GPUMem))
+-&gt; PassM (Seq (Stm GPUMem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(VNameSource
+ -&gt; ((Seq (Stm GPUMem), Seq (Stm GPUMem)), VNameSource))
+-&gt; PassM (Seq (Stm GPUMem), Seq (Stm GPUMem))
+forall (m :: * -&gt; *) a.
+MonadFreshNames m =&gt;
+(VNameSource -&gt; (a, VNameSource)) -&gt; m a
+</span><a href="Futhark.MonadFreshNames.html#modifyNameSource"><span class="hs-identifier hs-var">modifyNameSource</span></a></span><span> </span><span class="annot"><span class="annottext">((VNameSource
+  -&gt; ((Seq (Stm GPUMem), Seq (Stm GPUMem)), VNameSource))
+ -&gt; PassM (Seq (Stm GPUMem), Seq (Stm GPUMem)))
+-&gt; (VNameSource
+    -&gt; ((Seq (Stm GPUMem), Seq (Stm GPUMem)), VNameSource))
+-&gt; PassM (Seq (Stm GPUMem), Seq (Stm GPUMem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">State VNameSource (Seq (Stm GPUMem), Seq (Stm GPUMem))
+-&gt; VNameSource
+-&gt; ((Seq (Stm GPUMem), Seq (Stm GPUMem)), VNameSource)
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><span class="hs-identifier hs-var">runState</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BuilderT GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem))
+-&gt; Scope GPUMem
+-&gt; State VNameSource (Seq (Stm GPUMem), Seq (Stm GPUMem))
+forall (m :: * -&gt; *) rep a.
+MonadFreshNames m =&gt;
+BuilderT rep m a -&gt; Scope rep -&gt; m (a, Stms rep)
+</span><a href="Futhark.Builder.html#runBuilderT"><span class="hs-identifier hs-var">runBuilderT</span></a></span><span> </span><span class="annot"><span class="annottext">BuilderT GPUMem (StateT VNameSource Identity) (Seq (Stm GPUMem))
+</span><a href="#local-6989586621684450600"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">Scope GPUMem
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-206"></span></pre></body></html>

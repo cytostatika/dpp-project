@@ -1,0 +1,854 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Analysis.MemAlias</span><span>
+</span><span id="line-5"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeSeqMem"><span class="hs-identifier">analyzeSeqMem</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeGPUMem"><span class="hs-identifier">analyzeGPUMem</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#canBeSameMemory"><span class="hs-identifier">canBeSameMemory</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#aliasesOf"><span class="hs-identifier">aliasesOf</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier">MemAliases</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-11"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-12"></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bifunctor</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Function</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(&amp;)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Functor</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(&lt;&amp;&gt;)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">fromMaybe</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">mapMaybe</span></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html"><span class="hs-identifier">Futhark.IR.GPUMem</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SeqMem.html"><span class="hs-identifier">Futhark.IR.SeqMem</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.html"><span class="hs-identifier">Futhark.Util</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.Pretty.html"><span class="hs-identifier">Futhark.Util.Pretty</span></a></span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- For our purposes, memory aliases are a bijective function: If @a@ aliases</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- @b@, @b@ also aliases @a@. However, this relationship is not transitive. Consider for instance the following:</span><span>
+</span><span id="line-27"></span><span class="hs-comment">--</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--   let xs@mem_1 =</span><span>
+</span><span id="line-30"></span><span class="hs-comment">--     if ... then</span><span>
+</span><span id="line-31"></span><span class="hs-comment">--       replicate i 0 @ mem_2</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--     else</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--       replicate j 1 @ mem_3</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-35"></span><span class="hs-comment">--</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- Here, @mem_1@ aliases both @mem_2@ and @mem_3@, each of which alias @mem_1@</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- but not each other.</span><span>
+</span><span id="line-38"></span><span class="hs-keyword">newtype</span><span> </span><span id="MemAliases"><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-var">MemAliases</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="MemAliases"><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-var">MemAliases</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">M.Map</span></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#Names"><span class="hs-identifier hs-type">Names</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684448404"><span id="local-6989586621684448406"><span id="local-6989586621684448414"><span class="annot"><span class="annottext">Int -&gt; MemAliases -&gt; ShowS
+[MemAliases] -&gt; ShowS
+MemAliases -&gt; String
+(Int -&gt; MemAliases -&gt; ShowS)
+-&gt; (MemAliases -&gt; String)
+-&gt; ([MemAliases] -&gt; ShowS)
+-&gt; Show MemAliases
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+showList :: [MemAliases] -&gt; ShowS
+$cshowList :: [MemAliases] -&gt; ShowS
+show :: MemAliases -&gt; String
+$cshow :: MemAliases -&gt; String
+showsPrec :: Int -&gt; MemAliases -&gt; ShowS
+$cshowsPrec :: Int -&gt; MemAliases -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684448392"><span id="local-6989586621684448399"><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases -&gt; Bool
+(MemAliases -&gt; MemAliases -&gt; Bool)
+-&gt; (MemAliases -&gt; MemAliases -&gt; Bool) -&gt; Eq MemAliases
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+/= :: MemAliases -&gt; MemAliases -&gt; Bool
+$c/= :: MemAliases -&gt; MemAliases -&gt; Bool
+== :: MemAliases -&gt; MemAliases -&gt; Bool
+$c== :: MemAliases -&gt; MemAliases -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684448379"><span id="local-6989586621684448381"><span class="annot"><span class="hs-identifier hs-type">Semigroup</span></span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-42"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span id="local-6989586621684448374"><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448374"><span class="hs-identifier hs-var">m1</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684448373"><span class="annot"><span class="annottext">&lt;&gt; :: MemAliases -&gt; MemAliases -&gt; MemAliases
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;&gt;</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span id="local-6989586621684448372"><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448372"><span class="hs-identifier hs-var">m2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-var">MemAliases</span></a></span><span> </span><span class="annot"><span class="annottext">(Map VName Names -&gt; MemAliases) -&gt; Map VName Names -&gt; MemAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Names -&gt; Names -&gt; Names)
+-&gt; Map VName Names -&gt; Map VName Names -&gt; Map VName Names
+forall k a. Ord k =&gt; (a -&gt; a -&gt; a) -&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.unionWith</span></span><span> </span><span class="annot"><span class="annottext">Names -&gt; Names -&gt; Names
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(&lt;&gt;)</span></span><span> </span><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448374"><span class="hs-identifier hs-var">m1</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448372"><span class="hs-identifier hs-var">m2</span></a></span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684448364"><span id="local-6989586621684448366"><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-45"></span><span>  </span><span id="local-6989586621684448360"><span class="annot"><span class="annottext">mempty :: MemAliases
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mempty</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-var">MemAliases</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621684448355"><span id="local-6989586621684448357"><span class="annot"><span class="hs-identifier hs-type">Pretty</span></span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-48"></span><span>  </span><span id="local-6989586621684448349"><span class="annot"><span class="annottext">ppr :: MemAliases -&gt; Doc
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">ppr</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span id="local-6989586621684448347"><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448347"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName Names -&gt; Doc
+forall a. Pretty a =&gt; a -&gt; Doc
+</span><span class="hs-identifier hs-var">ppr</span></span><span> </span><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448347"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#addAlias"><span class="hs-identifier hs-type">addAlias</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span>
+</span><span id="line-51"></span><span id="addAlias"><span class="annot"><span class="annottext">addAlias :: VName -&gt; VName -&gt; MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#addAlias"><span class="hs-identifier hs-var hs-var">addAlias</span></a></span></span><span> </span><span id="local-6989586621684448345"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448345"><span class="hs-identifier hs-var">v1</span></a></span></span><span> </span><span id="local-6989586621684448344"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448344"><span class="hs-identifier hs-var">v2</span></a></span></span><span> </span><span id="local-6989586621684448343"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448343"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448343"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases -&gt; MemAliases
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#singleton"><span class="hs-identifier hs-var">singleton</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448345"><span class="hs-identifier hs-var">v1</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Names
+</span><a href="Futhark.IR.Prop.Names.html#oneName"><span class="hs-identifier hs-var">oneName</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448344"><span class="hs-identifier hs-var">v2</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases -&gt; MemAliases
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#singleton"><span class="hs-identifier hs-var">singleton</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448344"><span class="hs-identifier hs-var">v2</span></a></span><span> </span><span class="annot"><span class="annottext">Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-53"></span><span>
+</span><span id="line-54"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#singleton"><span class="hs-identifier hs-type">singleton</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#Names"><span class="hs-identifier hs-type">Names</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span>
+</span><span id="line-55"></span><span id="singleton"><span class="annot"><span class="annottext">singleton :: VName -&gt; Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#singleton"><span class="hs-identifier hs-var hs-var">singleton</span></a></span></span><span> </span><span id="local-6989586621684448340"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448340"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621684448339"><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684448339"><span class="hs-identifier hs-var">ns</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-var">MemAliases</span></a></span><span> </span><span class="annot"><span class="annottext">(Map VName Names -&gt; MemAliases) -&gt; Map VName Names -&gt; MemAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; Map VName Names
+forall k a. k -&gt; a -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.singleton</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448340"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684448339"><span class="hs-identifier hs-var">ns</span></a></span><span>
+</span><span id="line-56"></span><span>
+</span><span id="line-57"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#canBeSameMemory"><span class="hs-identifier hs-type">canBeSameMemory</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-58"></span><span id="canBeSameMemory"><span class="annot"><span class="annottext">canBeSameMemory :: MemAliases -&gt; VName -&gt; VName -&gt; Bool
+</span><a href="Futhark.Analysis.MemAlias.html#canBeSameMemory"><span class="hs-identifier hs-var hs-var">canBeSameMemory</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span id="local-6989586621684448337"><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448337"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684448336"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448336"><span class="hs-identifier hs-var">v1</span></a></span></span><span> </span><span id="local-6989586621684448335"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448335"><span class="hs-identifier hs-var">v2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">(Names -&gt; Bool) -&gt; Maybe Names -&gt; Maybe Bool
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448335"><span class="hs-identifier hs-var">v2</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; Bool
+</span><a href="Futhark.IR.Prop.Names.html#nameIn"><span class="hs-operator hs-var">`nameIn`</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Map VName Names -&gt; Maybe Names
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448336"><span class="hs-identifier hs-var">v1</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448337"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-60"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-61"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">(Names -&gt; Bool) -&gt; Maybe Names -&gt; Maybe Bool
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448336"><span class="hs-identifier hs-var">v1</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; Bool
+</span><a href="Futhark.IR.Prop.Names.html#nameIn"><span class="hs-operator hs-var">`nameIn`</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Map VName Names -&gt; Maybe Names
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448335"><span class="hs-identifier hs-var">v2</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448337"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-62"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621684448332"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621684448332"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621684448332"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-63"></span><span>      </span><span class="annot"><span class="annottext">Maybe Bool
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; Bool
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; Bool) -&gt; String -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;VName not found in MemAliases: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; ShowS
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448335"><span class="hs-identifier hs-var">v2</span></a></span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><span class="annottext">Maybe Bool
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; Bool
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">(String -&gt; Bool) -&gt; String -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;VName not found in MemAliases: &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; ShowS
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448336"><span class="hs-identifier hs-var">v1</span></a></span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#aliasesOf"><span class="hs-identifier hs-type">aliasesOf</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Names.html#Names"><span class="hs-identifier hs-type">Names</span></a></span><span>
+</span><span id="line-67"></span><span id="aliasesOf"><span class="annot"><span class="annottext">aliasesOf :: MemAliases -&gt; VName -&gt; Names
+</span><a href="Futhark.Analysis.MemAlias.html#aliasesOf"><span class="hs-identifier hs-var hs-var">aliasesOf</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span id="local-6989586621684448329"><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448329"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684448328"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448328"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Names -&gt; Maybe Names -&gt; Names
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="annot"><span class="annottext">Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">(Maybe Names -&gt; Names) -&gt; Maybe Names -&gt; Names
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Map VName Names -&gt; Maybe Names
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">M.lookup</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448328"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448329"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#isIn"><span class="hs-identifier hs-type">isIn</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-70"></span><span id="isIn"><span class="annot"><span class="annottext">isIn :: VName -&gt; MemAliases -&gt; Bool
+</span><a href="Futhark.Analysis.MemAlias.html#isIn"><span class="hs-identifier hs-var hs-var">isIn</span></a></span></span><span> </span><span id="local-6989586621684448326"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448326"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span id="local-6989586621684448325"><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448325"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448326"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Set VName -&gt; Bool
+forall a. Ord a =&gt; a -&gt; Set a -&gt; Bool
+</span><span class="hs-operator hs-var">`S.member`</span></span><span> </span><span class="annot"><span class="annottext">Map VName Names -&gt; Set VName
+forall k a. Map k a -&gt; Set k
+</span><span class="hs-identifier hs-var">M.keysSet</span></span><span> </span><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448325"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-71"></span><span>
+</span><span id="line-72"></span><span class="hs-keyword">newtype</span><span> </span><span id="Env"><span class="annot"><a href="Futhark.Analysis.MemAlias.html#Env"><span class="hs-identifier hs-var">Env</span></a></span></span><span> </span><span id="local-6989586621684448643"><span class="annot"><a href="#local-6989586621684448643"><span class="hs-identifier hs-type">inner</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Env"><span class="annot"><a href="Futhark.Analysis.MemAlias.html#Env"><span class="hs-identifier hs-var">Env</span></a></span></span><span> </span><span class="hs-special">{</span><span id="onInner"><span class="annot"><span class="annottext">forall inner.
+Env inner -&gt; MemAliases -&gt; inner -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#onInner"><span class="hs-identifier hs-var hs-var">onInner</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684448643"><span class="hs-identifier hs-type">inner</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliasesM"><span class="hs-identifier hs-type">MemAliasesM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448643"><span class="hs-identifier hs-type">inner</span></a></span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span class="hs-special">}</span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span class="hs-keyword">type</span><span> </span><span id="MemAliasesM"><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliasesM"><span class="hs-identifier hs-var">MemAliasesM</span></a></span></span><span> </span><span id="local-6989586621684448320"><span class="annot"><a href="#local-6989586621684448320"><span class="hs-identifier hs-type">inner</span></a></span></span><span> </span><span id="local-6989586621684448319"><span class="annot"><a href="#local-6989586621684448319"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Reader</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448320"><span class="hs-identifier hs-type">inner</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684448319"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeHostOp"><span class="hs-identifier hs-type">analyzeHostOp</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#HostOp"><span class="hs-identifier hs-type">HostOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliasesM"><span class="hs-identifier hs-type">MemAliasesM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#HostOp"><span class="hs-identifier hs-type">HostOp</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span>
+</span><span id="line-77"></span><span id="analyzeHostOp"><span class="annot"><span class="annottext">analyzeHostOp :: MemAliases
+-&gt; HostOp GPUMem () -&gt; MemAliasesM (HostOp GPUMem ()) MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeHostOp"><span class="hs-identifier hs-var hs-var">analyzeHostOp</span></a></span></span><span> </span><span id="local-6989586621684448317"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448317"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegMap"><span class="hs-identifier hs-type">SegMap</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684448314"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684448314"><span class="hs-identifier hs-var">kbody</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-78"></span><span>  </span><span class="annot"><span class="annottext">Stms GPUMem
+-&gt; MemAliases -&gt; MemAliasesM (HostOp GPUMem ()) MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-var">analyzeStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Stms GPUMem
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684448314"><span class="hs-identifier hs-var">kbody</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448317"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-79"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeHostOp"><span class="hs-identifier hs-var">analyzeHostOp</span></a></span><span> </span><span id="local-6989586621684448311"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448311"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegRed"><span class="hs-identifier hs-type">SegRed</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684448309"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684448309"><span class="hs-identifier hs-var">kbody</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-80"></span><span>  </span><span class="annot"><span class="annottext">Stms GPUMem
+-&gt; MemAliases -&gt; MemAliasesM (HostOp GPUMem ()) MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-var">analyzeStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Stms GPUMem
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684448309"><span class="hs-identifier hs-var">kbody</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448311"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeHostOp"><span class="hs-identifier hs-var">analyzeHostOp</span></a></span><span> </span><span id="local-6989586621684448308"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448308"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegScan"><span class="hs-identifier hs-type">SegScan</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[SegBinOp GPUMem]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684448306"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684448306"><span class="hs-identifier hs-var">kbody</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-82"></span><span>  </span><span class="annot"><span class="annottext">Stms GPUMem
+-&gt; MemAliases -&gt; MemAliasesM (HostOp GPUMem ()) MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-var">analyzeStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Stms GPUMem
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684448306"><span class="hs-identifier hs-var">kbody</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448308"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-83"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeHostOp"><span class="hs-identifier hs-var">analyzeHostOp</span></a></span><span> </span><span id="local-6989586621684448305"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448305"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegOp"><span class="hs-identifier hs-type">SegOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SegOp.html#SegHist"><span class="hs-identifier hs-type">SegHist</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[HistOp GPUMem]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684448303"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684448303"><span class="hs-identifier hs-var">kbody</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-84"></span><span>  </span><span class="annot"><span class="annottext">Stms GPUMem
+-&gt; MemAliases -&gt; MemAliasesM (HostOp GPUMem ()) MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-var">analyzeStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Stms GPUMem
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684448303"><span class="hs-identifier hs-var">kbody</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448305"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-85"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeHostOp"><span class="hs-identifier hs-var">analyzeHostOp</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">HostOp GPUMem ()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliasesM (HostOp GPUMem ()) MemAliases
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">MemAliases
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-86"></span><span>
+</span><span id="line-87"></span><span id="local-6989586621684448626"><span id="local-6989586621684448627"><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeStm"><span class="hs-identifier hs-type">analyzeStm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Mem"><span class="hs-identifier hs-type">Mem</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448627"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448626"><span class="hs-identifier hs-type">inner</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448627"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Mem.html#LetDecMem"><span class="hs-identifier hs-type">LetDecMem</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448627"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliasesM"><span class="hs-identifier hs-type">MemAliasesM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448626"><span class="hs-identifier hs-type">inner</span></a></span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span></span></span><span>
+</span><span id="line-88"></span><span id="analyzeStm"><span class="annot"><span class="annottext">analyzeStm :: forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+MemAliases -&gt; Stm rep -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStm"><span class="hs-identifier hs-var hs-var">analyzeStm</span></a></span></span><span> </span><span id="local-6989586621684448243"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448243"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#PatElem"><span class="hs-identifier hs-type">PatElem</span></a></span><span> </span><span id="local-6989586621684448239"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448239"><span class="hs-identifier hs-var">vname</span></a></span></span><span> </span><span class="annot"><span class="annottext">LetDec rep
+</span><span class="hs-identifier">_</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Alloc"><span class="hs-identifier hs-type">Alloc</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Space
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><span class="annottext">MemAliases -&gt; ReaderT (Env inner) Identity MemAliases
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(MemAliases -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; MemAliases -&gt; ReaderT (Env inner) Identity MemAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448243"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases -&gt; MemAliases
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#singleton"><span class="hs-identifier hs-var">singleton</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448239"><span class="hs-identifier hs-var">vname</span></a></span><span> </span><span class="annot"><span class="annottext">Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-90"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeStm"><span class="hs-identifier hs-var">analyzeStm</span></a></span><span> </span><span id="local-6989586621684448236"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448236"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Inner"><span class="hs-identifier hs-type">Inner</span></a></span><span> </span><span id="local-6989586621684448234"><span class="annot"><span class="annottext">inner
+</span><a href="#local-6989586621684448234"><span class="hs-identifier hs-var">inner</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-91"></span><span>  </span><span id="local-6989586621684448233"><span class="annot"><span class="annottext">MemAliases -&gt; inner -&gt; ReaderT (Env inner) Identity MemAliases
+</span><a href="#local-6989586621684448233"><span class="hs-identifier hs-var">on_inner</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Env inner
+ -&gt; MemAliases -&gt; inner -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; ReaderT
+     (Env inner)
+     Identity
+     (MemAliases -&gt; inner -&gt; ReaderT (Env inner) Identity MemAliases)
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; a) -&gt; m a
+</span><span class="hs-identifier hs-var">asks</span></span><span> </span><span class="annot"><span class="annottext">Env inner
+-&gt; MemAliases -&gt; inner -&gt; ReaderT (Env inner) Identity MemAliases
+forall inner.
+Env inner -&gt; MemAliases -&gt; inner -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#onInner"><span class="hs-identifier hs-var hs-var">onInner</span></a></span><span>
+</span><span id="line-92"></span><span>  </span><span class="annot"><span class="annottext">MemAliases -&gt; inner -&gt; ReaderT (Env inner) Identity MemAliases
+</span><a href="#local-6989586621684448233"><span class="hs-identifier hs-var">on_inner</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448236"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">inner
+</span><a href="#local-6989586621684448234"><span class="hs-identifier hs-var">inner</span></a></span><span>
+</span><span id="line-93"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeStm"><span class="hs-identifier hs-var">analyzeStm</span></a></span><span> </span><span id="local-6989586621684448231"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448231"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684448230"><span class="annot"><span class="annottext">PatT (LetDec rep)
+</span><a href="#local-6989586621684448230"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684448228"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684448228"><span class="hs-identifier hs-var">then_body</span></a></span></span><span> </span><span id="local-6989586621684448227"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684448227"><span class="hs-identifier hs-var">else_body</span></a></span></span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType rep)
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-94"></span><span>  </span><span id="local-6989586621684448226"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448226"><span class="hs-identifier hs-var">m'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-95"></span><span>    </span><span class="annot"><span class="annottext">Stms rep -&gt; MemAliases -&gt; ReaderT (Env inner) Identity MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-var">analyzeStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT rep -&gt; Stms rep
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684448228"><span class="hs-identifier hs-var">then_body</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448231"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-96"></span><span>      </span><span class="annot"><span class="annottext">ReaderT (Env inner) Identity MemAliases
+-&gt; (MemAliases -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; MemAliases -&gt; ReaderT (Env inner) Identity MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-var">analyzeStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT rep -&gt; Stms rep
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684448227"><span class="hs-identifier hs-var">else_body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>  </span><span class="annot"><span class="annottext">[VName] -&gt; [SubExp] -&gt; [(VName, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT LetDecMem -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep)
+PatT LetDecMem
+</span><a href="#local-6989586621684448230"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SubExpRes -&gt; SubExp) -&gt; [SubExpRes] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExpRes -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.html#resSubExp"><span class="hs-identifier hs-var hs-var">resSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExpRes] -&gt; [SubExp]) -&gt; [SubExpRes] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep -&gt; [SubExpRes]
+forall rep. BodyT rep -&gt; [SubExpRes]
+</span><a href="Futhark.IR.Syntax.html#bodyResult"><span class="hs-identifier hs-var hs-var">bodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684448228"><span class="hs-identifier hs-var">then_body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>    </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; [(VName, SubExp)] -&gt; [(VName, SubExp)]
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; [SubExp] -&gt; [(VName, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT LetDecMem -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep)
+PatT LetDecMem
+</span><a href="#local-6989586621684448230"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SubExpRes -&gt; SubExp) -&gt; [SubExpRes] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExpRes -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.html#resSubExp"><span class="hs-identifier hs-var hs-var">resSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExpRes] -&gt; [SubExp]) -&gt; [SubExpRes] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep -&gt; [SubExpRes]
+forall rep. BodyT rep -&gt; [SubExpRes]
+</span><a href="Futhark.IR.Syntax.html#bodyResult"><span class="hs-identifier hs-var hs-var">bodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684448227"><span class="hs-identifier hs-var">else_body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>    </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+-&gt; ([(VName, SubExp)] -&gt; [(VName, VName)]) -&gt; [(VName, VName)]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">((VName, SubExp) -&gt; Maybe (VName, VName))
+-&gt; [(VName, SubExp)] -&gt; [(VName, VName)]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MemAliases -&gt; (VName, SubExp) -&gt; Maybe (VName, VName)
+</span><a href="Futhark.Analysis.MemAlias.html#filterFun"><span class="hs-identifier hs-var">filterFun</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448226"><span class="hs-identifier hs-var">m'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span>    </span><span class="annot"><span class="annottext">[(VName, VName)] -&gt; ([(VName, VName)] -&gt; MemAliases) -&gt; MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">((VName, VName) -&gt; MemAliases -&gt; MemAliases)
+-&gt; MemAliases -&gt; [(VName, VName)] -&gt; MemAliases
+forall (t :: * -&gt; *) a b.
+Foldable t =&gt;
+(a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName -&gt; VName -&gt; MemAliases -&gt; MemAliases)
+-&gt; (VName, VName) -&gt; MemAliases -&gt; MemAliases
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; VName -&gt; MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#addAlias"><span class="hs-identifier hs-var">addAlias</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448226"><span class="hs-identifier hs-var">m'</span></a></span><span>
+</span><span id="line-101"></span><span>    </span><span class="annot"><span class="annottext">MemAliases
+-&gt; (MemAliases -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; ReaderT (Env inner) Identity MemAliases
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span>
+</span><span id="line-102"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeStm"><span class="hs-identifier hs-var">analyzeStm</span></a></span><span> </span><span id="local-6989586621684448218"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448218"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684448217"><span class="annot"><span class="annottext">PatT (LetDec rep)
+</span><a href="#local-6989586621684448217"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="annot"><span class="annottext">StmAux (ExpDec rep)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#DoLoop"><span class="hs-identifier hs-type">DoLoop</span></a></span><span> </span><span id="local-6989586621684448215"><span class="annot"><span class="annottext">[(FParam rep, SubExp)]
+</span><a href="#local-6989586621684448215"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span class="annot"><span class="annottext">LoopForm rep
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684448214"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684448214"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-103"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684448213"><span class="annot"><span class="annottext">m_init :: MemAliases
+</span><a href="#local-6989586621684448213"><span class="hs-identifier hs-var hs-var">m_init</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-104"></span><span>        </span><span class="annot"><span class="annottext">((Param FParamMem, SubExp) -&gt; SubExp)
+-&gt; [(Param FParamMem, SubExp)] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(Param FParamMem, SubExp) -&gt; SubExp
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">[(FParam rep, SubExp)]
+[(Param FParamMem, SubExp)]
+</span><a href="#local-6989586621684448215"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-105"></span><span>          </span><span class="annot"><span class="annottext">[SubExp] -&gt; ([SubExp] -&gt; [(VName, SubExp)]) -&gt; [(VName, SubExp)]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; [SubExp] -&gt; [(VName, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT LetDecMem -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep)
+PatT LetDecMem
+</span><a href="#local-6989586621684448217"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-106"></span><span>          </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+-&gt; ([(VName, SubExp)] -&gt; [(VName, VName)]) -&gt; [(VName, VName)]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">((VName, SubExp) -&gt; Maybe (VName, VName))
+-&gt; [(VName, SubExp)] -&gt; [(VName, VName)]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MemAliases -&gt; (VName, SubExp) -&gt; Maybe (VName, VName)
+</span><a href="Futhark.Analysis.MemAlias.html#filterFun"><span class="hs-identifier hs-var">filterFun</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448218"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>          </span><span class="annot"><span class="annottext">[(VName, VName)] -&gt; ([(VName, VName)] -&gt; MemAliases) -&gt; MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">((VName, VName) -&gt; MemAliases -&gt; MemAliases)
+-&gt; MemAliases -&gt; [(VName, VName)] -&gt; MemAliases
+forall (t :: * -&gt; *) a b.
+Foldable t =&gt;
+(a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName -&gt; VName -&gt; MemAliases -&gt; MemAliases)
+-&gt; (VName, VName) -&gt; MemAliases -&gt; MemAliases
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; VName -&gt; MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#addAlias"><span class="hs-identifier hs-var">addAlias</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448218"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-108"></span><span>      </span><span id="local-6989586621684448212"><span class="annot"><span class="annottext">m_params :: MemAliases
+</span><a href="#local-6989586621684448212"><span class="hs-identifier hs-var hs-var">m_params</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-109"></span><span>        </span><span class="annot"><span class="annottext">((Param FParamMem, SubExp) -&gt; Maybe (VName, VName))
+-&gt; [(Param FParamMem, SubExp)] -&gt; [(VName, VName)]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MemAliases -&gt; (VName, SubExp) -&gt; Maybe (VName, VName)
+</span><a href="Futhark.Analysis.MemAlias.html#filterFun"><span class="hs-identifier hs-var">filterFun</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448213"><span class="hs-identifier hs-var">m_init</span></a></span><span> </span><span class="annot"><span class="annottext">((VName, SubExp) -&gt; Maybe (VName, VName))
+-&gt; ((Param FParamMem, SubExp) -&gt; (VName, SubExp))
+-&gt; (Param FParamMem, SubExp)
+-&gt; Maybe (VName, VName)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Param FParamMem -&gt; VName)
+-&gt; (Param FParamMem, SubExp) -&gt; (VName, SubExp)
+forall (p :: * -&gt; * -&gt; *) a b c.
+Bifunctor p =&gt;
+(a -&gt; b) -&gt; p a c -&gt; p b c
+</span><span class="hs-identifier hs-var">first</span></span><span> </span><span class="annot"><span class="annottext">Param FParamMem -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">paramName</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(FParam rep, SubExp)]
+[(Param FParamMem, SubExp)]
+</span><a href="#local-6989586621684448215"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-110"></span><span>          </span><span class="annot"><span class="annottext">[(VName, VName)] -&gt; ([(VName, VName)] -&gt; MemAliases) -&gt; MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">((VName, VName) -&gt; MemAliases -&gt; MemAliases)
+-&gt; MemAliases -&gt; [(VName, VName)] -&gt; MemAliases
+forall (t :: * -&gt; *) a b.
+Foldable t =&gt;
+(a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName -&gt; VName -&gt; MemAliases -&gt; MemAliases)
+-&gt; (VName, VName) -&gt; MemAliases -&gt; MemAliases
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; VName -&gt; MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#addAlias"><span class="hs-identifier hs-var">addAlias</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448213"><span class="hs-identifier hs-var">m_init</span></a></span><span>
+</span><span id="line-111"></span><span>  </span><span id="local-6989586621684448208"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448208"><span class="hs-identifier hs-var">m_body</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; MemAliases -&gt; ReaderT (Env inner) Identity MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-var">analyzeStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT rep -&gt; Stms rep
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684448214"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448212"><span class="hs-identifier hs-var">m_params</span></a></span><span>
+</span><span id="line-112"></span><span>  </span><span class="annot"><span class="annottext">[VName] -&gt; [SubExp] -&gt; [(VName, SubExp)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT LetDecMem -&gt; [VName]
+forall dec. PatT dec -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Patterns.html#patNames"><span class="hs-identifier hs-var">patNames</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (LetDec rep)
+PatT LetDecMem
+</span><a href="#local-6989586621684448217"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SubExpRes -&gt; SubExp) -&gt; [SubExpRes] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExpRes -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.html#resSubExp"><span class="hs-identifier hs-var hs-var">resSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">([SubExpRes] -&gt; [SubExp]) -&gt; [SubExpRes] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep -&gt; [SubExpRes]
+forall rep. BodyT rep -&gt; [SubExpRes]
+</span><a href="Futhark.IR.Syntax.html#bodyResult"><span class="hs-identifier hs-var hs-var">bodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684448214"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span>    </span><span class="annot"><span class="annottext">[(VName, SubExp)]
+-&gt; ([(VName, SubExp)] -&gt; [(VName, VName)]) -&gt; [(VName, VName)]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">((VName, SubExp) -&gt; Maybe (VName, VName))
+-&gt; [(VName, SubExp)] -&gt; [(VName, VName)]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MemAliases -&gt; (VName, SubExp) -&gt; Maybe (VName, VName)
+</span><a href="Futhark.Analysis.MemAlias.html#filterFun"><span class="hs-identifier hs-var">filterFun</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448208"><span class="hs-identifier hs-var">m_body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>    </span><span class="annot"><span class="annottext">[(VName, VName)] -&gt; ([(VName, VName)] -&gt; MemAliases) -&gt; MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">((VName, VName) -&gt; MemAliases -&gt; MemAliases)
+-&gt; MemAliases -&gt; [(VName, VName)] -&gt; MemAliases
+forall (t :: * -&gt; *) a b.
+Foldable t =&gt;
+(a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(VName -&gt; VName -&gt; MemAliases -&gt; MemAliases)
+-&gt; (VName, VName) -&gt; MemAliases -&gt; MemAliases
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; VName -&gt; MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#addAlias"><span class="hs-identifier hs-var">addAlias</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448208"><span class="hs-identifier hs-var">m_body</span></a></span><span>
+</span><span id="line-115"></span><span>    </span><span class="annot"><span class="annottext">MemAliases
+-&gt; (MemAliases -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; ReaderT (Env inner) Identity MemAliases
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span>
+</span><span id="line-116"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeStm"><span class="hs-identifier hs-var">analyzeStm</span></a></span><span> </span><span id="local-6989586621684448207"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448207"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; ReaderT (Env inner) Identity MemAliases
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448207"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#filterFun"><span class="hs-identifier hs-type">filterFun</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-119"></span><span id="filterFun"><span class="annot"><span class="annottext">filterFun :: MemAliases -&gt; (VName, SubExp) -&gt; Maybe (VName, VName)
+</span><a href="Futhark.Analysis.MemAlias.html#filterFun"><span class="hs-identifier hs-var hs-var">filterFun</span></a></span></span><span> </span><span id="local-6989586621684448206"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448206"><span class="hs-identifier hs-var">m'</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684448205"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448205"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621684448203"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448203"><span class="hs-identifier hs-var">v'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448203"><span class="hs-identifier hs-var">v'</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; MemAliases -&gt; Bool
+</span><a href="Futhark.Analysis.MemAlias.html#isIn"><span class="hs-operator hs-var">`isIn`</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448206"><span class="hs-identifier hs-var">m'</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VName, VName) -&gt; Maybe (VName, VName)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448205"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448203"><span class="hs-identifier hs-var">v'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-120"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#filterFun"><span class="hs-identifier hs-var">filterFun</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">(VName, SubExp)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (VName, VName)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span id="local-6989586621684448633"><span id="local-6989586621684448634"><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-type">analyzeStms</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Mem"><span class="hs-identifier hs-type">Mem</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448634"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448633"><span class="hs-identifier hs-type">inner</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448634"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Mem.html#LetDecMem"><span class="hs-identifier hs-type">LetDecMem</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448634"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliasesM"><span class="hs-identifier hs-type">MemAliasesM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448633"><span class="hs-identifier hs-type">inner</span></a></span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span></span></span><span>
+</span><span id="line-123"></span><span id="analyzeStms"><span class="annot"><span class="annottext">analyzeStms :: forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-var hs-var">analyzeStms</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-124"></span><span>  </span><span class="annot"><span class="annottext">(MemAliases
+ -&gt; Seq (Stm rep) -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; Seq (Stm rep)
+-&gt; MemAliases
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">((MemAliases
+  -&gt; Seq (Stm rep) -&gt; ReaderT (Env inner) Identity MemAliases)
+ -&gt; Seq (Stm rep)
+ -&gt; MemAliases
+ -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; (MemAliases
+    -&gt; Seq (Stm rep) -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; Seq (Stm rep)
+-&gt; MemAliases
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(MemAliases -&gt; Stm rep -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; MemAliases
+-&gt; Seq (Stm rep)
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall (t :: * -&gt; *) (m :: * -&gt; *) b a.
+(Foldable t, Monad m) =&gt;
+(b -&gt; a -&gt; m b) -&gt; b -&gt; t a -&gt; m b
+</span><span class="hs-identifier hs-var">foldM</span></span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; Stm rep -&gt; ReaderT (Env inner) Identity MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+MemAliases -&gt; Stm rep -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStm"><span class="hs-identifier hs-var">analyzeStm</span></a></span><span>
+</span><span id="line-125"></span><span>
+</span><span id="line-126"></span><span id="local-6989586621684448549"><span id="local-6989586621684448550"><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeFun"><span class="hs-identifier hs-type">analyzeFun</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Mem"><span class="hs-identifier hs-type">Mem</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448550"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448549"><span class="hs-identifier hs-type">inner</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448550"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Mem.html#LetDecMem"><span class="hs-identifier hs-type">LetDecMem</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448550"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliasesM"><span class="hs-identifier hs-type">MemAliasesM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448549"><span class="hs-identifier hs-type">inner</span></a></span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span></span></span><span>
+</span><span id="line-127"></span><span id="analyzeFun"><span class="annot"><span class="annottext">analyzeFun :: forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+FunDef rep -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeFun"><span class="hs-identifier hs-var hs-var">analyzeFun</span></a></span></span><span> </span><span id="local-6989586621684448135"><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684448135"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-128"></span><span>  </span><span class="annot"><span class="annottext">FunDef rep -&gt; [FParam rep]
+forall rep. FunDef rep -&gt; [FParam rep]
+</span><a href="Futhark.IR.Syntax.html#funDefParams"><span class="hs-identifier hs-var hs-var">funDefParams</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684448135"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-129"></span><span>    </span><span class="annot"><span class="annottext">[Param FParamMem]
+-&gt; ([Param FParamMem] -&gt; [MemAliases]) -&gt; [MemAliases]
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(Param FParamMem -&gt; Maybe MemAliases)
+-&gt; [Param FParamMem] -&gt; [MemAliases]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">mapMaybe</span></span><span> </span><span class="annot"><span class="annottext">Param FParamMem -&gt; Maybe MemAliases
+forall {d} {u} {ret}. Param (MemInfo d u ret) -&gt; Maybe MemAliases
+</span><a href="#local-6989586621684448133"><span class="hs-identifier hs-var">justMem</span></a></span><span>
+</span><span id="line-130"></span><span>    </span><span class="annot"><span class="annottext">[MemAliases] -&gt; ([MemAliases] -&gt; MemAliases) -&gt; MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">[MemAliases] -&gt; MemAliases
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span>
+</span><span id="line-131"></span><span>    </span><span class="annot"><span class="annottext">MemAliases
+-&gt; (MemAliases -&gt; MemAliasesM inner MemAliases)
+-&gt; MemAliasesM inner MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Stms rep -&gt; MemAliases -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeStms"><span class="hs-identifier hs-var">analyzeStms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BodyT rep -&gt; Stms rep
+forall rep. BodyT rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#bodyStms"><span class="hs-identifier hs-var hs-var">bodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">(BodyT rep -&gt; Stms rep) -&gt; BodyT rep -&gt; Stms rep
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FunDef rep -&gt; BodyT rep
+forall rep. FunDef rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#funDefBody"><span class="hs-identifier hs-var hs-var">funDefBody</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684448135"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-132"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-133"></span><span>    </span><span id="local-6989586621684448133"><span class="annot"><span class="annottext">justMem :: Param (MemInfo d u ret) -&gt; Maybe MemAliases
+</span><a href="#local-6989586621684448133"><span class="hs-identifier hs-var hs-var">justMem</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-type">Param</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684448129"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448129"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#MemMem"><span class="hs-identifier hs-type">MemMem</span></a></span><span> </span><span class="annot"><span class="annottext">Space
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; Maybe MemAliases
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(MemAliases -&gt; Maybe MemAliases) -&gt; MemAliases -&gt; Maybe MemAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#singleton"><span class="hs-identifier hs-var">singleton</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448129"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-134"></span><span>    </span><span class="annot"><a href="#local-6989586621684448133"><span class="hs-identifier hs-var">justMem</span></a></span><span> </span><span class="annot"><span class="annottext">Param (MemInfo d u ret)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe MemAliases
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#transitiveClosure"><span class="hs-identifier hs-type">transitiveClosure</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span>
+</span><span id="line-137"></span><span id="transitiveClosure"><span class="annot"><span class="annottext">transitiveClosure :: MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#transitiveClosure"><span class="hs-identifier hs-var hs-var">transitiveClosure</span></a></span></span><span> </span><span id="local-6989586621684448126"><span class="annot"><span class="annottext">ma :: MemAliases
+</span><a href="#local-6989586621684448126"><span class="hs-identifier hs-var">ma</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span id="local-6989586621684448125"><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448125"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-138"></span><span>  </span><span class="annot"><span class="annottext">(VName -&gt; Names -&gt; MemAliases) -&gt; Map VName Names -&gt; MemAliases
+forall m k a. Monoid m =&gt; (k -&gt; a -&gt; m) -&gt; Map k a -&gt; m
+</span><span class="hs-identifier hs-var">M.foldMapWithKey</span></span><span>
+</span><span id="line-139"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684448123"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448123"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span id="local-6989586621684448122"><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684448122"><span class="hs-identifier hs-var">ns</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-140"></span><span>        </span><span class="annot"><span class="annottext">Names -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Names.html#namesToList"><span class="hs-identifier hs-var">namesToList</span></a></span><span> </span><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684448122"><span class="hs-identifier hs-var">ns</span></a></span><span>
+</span><span id="line-141"></span><span>          </span><span class="annot"><span class="annottext">[VName] -&gt; ([VName] -&gt; Names) -&gt; Names
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; Names) -&gt; [VName] -&gt; Names
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MemAliases -&gt; VName -&gt; Names
+</span><a href="Futhark.Analysis.MemAlias.html#aliasesOf"><span class="hs-identifier hs-var">aliasesOf</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448126"><span class="hs-identifier hs-var">ma</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-142"></span><span>          </span><span class="annot"><span class="annottext">Names -&gt; (Names -&gt; MemAliases) -&gt; MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#singleton"><span class="hs-identifier hs-var">singleton</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448123"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-143"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span>    </span><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448125"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-145"></span><span>    </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases -&gt; MemAliases
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448126"><span class="hs-identifier hs-var">ma</span></a></span><span>
+</span><span id="line-146"></span><span>
+</span><span id="line-147"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeSeqMem"><span class="hs-identifier hs-type">analyzeSeqMem</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SeqMem.html#SeqMem"><span class="hs-identifier hs-type">SeqMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span>
+</span><span id="line-148"></span><span id="analyzeSeqMem"><span class="annot"><span class="annottext">analyzeSeqMem :: Prog SeqMem -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeSeqMem"><span class="hs-identifier hs-var hs-var">analyzeSeqMem</span></a></span></span><span> </span><span id="local-6989586621684448119"><span class="annot"><span class="annottext">Prog SeqMem
+</span><a href="#local-6989586621684448119"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#completeBijection"><span class="hs-identifier hs-var">completeBijection</span></a></span><span> </span><span class="annot"><span class="annottext">(MemAliases -&gt; MemAliases) -&gt; MemAliases -&gt; MemAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Reader (Env ()) MemAliases -&gt; Env () -&gt; MemAliases
+forall r a. Reader r a -&gt; r -&gt; a
+</span><span class="hs-identifier hs-var">runReader</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Prog SeqMem -&gt; Reader (Env ()) MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Prog rep -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyze"><span class="hs-identifier hs-var">analyze</span></a></span><span> </span><span class="annot"><span class="annottext">Prog SeqMem
+</span><a href="#local-6989586621684448119"><span class="hs-identifier hs-var">prog</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Env () -&gt; MemAliases) -&gt; Env () -&gt; MemAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(MemAliases -&gt; () -&gt; Reader (Env ()) MemAliases) -&gt; Env ()
+forall inner.
+(MemAliases -&gt; inner -&gt; MemAliasesM inner MemAliases) -&gt; Env inner
+</span><a href="Futhark.Analysis.MemAlias.html#Env"><span class="hs-identifier hs-var">Env</span></a></span><span> </span><span class="annot"><span class="annottext">((MemAliases -&gt; () -&gt; Reader (Env ()) MemAliases) -&gt; Env ())
+-&gt; (MemAliases -&gt; () -&gt; Reader (Env ()) MemAliases) -&gt; Env ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684448115"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448115"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; Reader (Env ()) MemAliases
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448115"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-149"></span><span>
+</span><span id="line-150"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyzeGPUMem"><span class="hs-identifier hs-type">analyzeGPUMem</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span>
+</span><span id="line-151"></span><span id="analyzeGPUMem"><span class="annot"><span class="annottext">analyzeGPUMem :: Prog GPUMem -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeGPUMem"><span class="hs-identifier hs-var hs-var">analyzeGPUMem</span></a></span></span><span> </span><span id="local-6989586621684448114"><span class="annot"><span class="annottext">Prog GPUMem
+</span><a href="#local-6989586621684448114"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#completeBijection"><span class="hs-identifier hs-var">completeBijection</span></a></span><span> </span><span class="annot"><span class="annottext">(MemAliases -&gt; MemAliases) -&gt; MemAliases -&gt; MemAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">MemAliasesM (HostOp GPUMem ()) MemAliases
+-&gt; Env (HostOp GPUMem ()) -&gt; MemAliases
+forall r a. Reader r a -&gt; r -&gt; a
+</span><span class="hs-identifier hs-var">runReader</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Prog GPUMem -&gt; MemAliasesM (HostOp GPUMem ()) MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Prog rep -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyze"><span class="hs-identifier hs-var">analyze</span></a></span><span> </span><span class="annot"><span class="annottext">Prog GPUMem
+</span><a href="#local-6989586621684448114"><span class="hs-identifier hs-var">prog</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Env (HostOp GPUMem ()) -&gt; MemAliases)
+-&gt; Env (HostOp GPUMem ()) -&gt; MemAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(MemAliases
+ -&gt; HostOp GPUMem () -&gt; MemAliasesM (HostOp GPUMem ()) MemAliases)
+-&gt; Env (HostOp GPUMem ())
+forall inner.
+(MemAliases -&gt; inner -&gt; MemAliasesM inner MemAliases) -&gt; Env inner
+</span><a href="Futhark.Analysis.MemAlias.html#Env"><span class="hs-identifier hs-var">Env</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases
+-&gt; HostOp GPUMem () -&gt; MemAliasesM (HostOp GPUMem ()) MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeHostOp"><span class="hs-identifier hs-var">analyzeHostOp</span></a></span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span id="local-6989586621684448529"><span id="local-6989586621684448530"><span class="annot"><a href="Futhark.Analysis.MemAlias.html#analyze"><span class="hs-identifier hs-type">analyze</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Mem.html#Mem"><span class="hs-identifier hs-type">Mem</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448530"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448529"><span class="hs-identifier hs-type">inner</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#LetDec"><span class="hs-identifier hs-type">LetDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448530"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Mem.html#LetDecMem"><span class="hs-identifier hs-type">LetDecMem</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448530"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliasesM"><span class="hs-identifier hs-type">MemAliasesM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684448529"><span class="hs-identifier hs-type">inner</span></a></span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span></span></span><span>
+</span><span id="line-154"></span><span id="analyze"><span class="annot"><span class="annottext">analyze :: forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+Prog rep -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyze"><span class="hs-identifier hs-var hs-var">analyze</span></a></span></span><span> </span><span id="local-6989586621684448073"><span class="annot"><span class="annottext">Prog rep
+</span><a href="#local-6989586621684448073"><span class="hs-identifier hs-var">prog</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-155"></span><span>  </span><span class="annot"><span class="annottext">Prog rep -&gt; [FunDef rep]
+forall rep. Prog rep -&gt; [FunDef rep]
+</span><a href="Futhark.IR.Syntax.html#progFuns"><span class="hs-identifier hs-var hs-var">progFuns</span></a></span><span> </span><span class="annot"><span class="annottext">Prog rep
+</span><a href="#local-6989586621684448073"><span class="hs-identifier hs-var">prog</span></a></span><span>
+</span><span id="line-156"></span><span>    </span><span class="annot"><span class="annottext">[FunDef rep]
+-&gt; ([FunDef rep] -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(MemAliases
+ -&gt; FunDef rep -&gt; ReaderT (Env inner) Identity MemAliases)
+-&gt; MemAliases
+-&gt; [FunDef rep]
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall (t :: * -&gt; *) (m :: * -&gt; *) b a.
+(Foldable t, Monad m) =&gt;
+(b -&gt; a -&gt; m b) -&gt; b -&gt; t a -&gt; m b
+</span><span class="hs-identifier hs-var">foldM</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621684448071"><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448071"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span id="local-6989586621684448070"><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684448070"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases -&gt; MemAliases
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(&lt;&gt;)</span></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448071"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(MemAliases -&gt; MemAliases)
+-&gt; ReaderT (Env inner) Identity MemAliases
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">FunDef rep -&gt; ReaderT (Env inner) Identity MemAliases
+forall rep inner.
+(Mem rep inner, LetDec rep ~ LetDecMem) =&gt;
+FunDef rep -&gt; MemAliasesM inner MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#analyzeFun"><span class="hs-identifier hs-var">analyzeFun</span></a></span><span> </span><span class="annot"><span class="annottext">FunDef rep
+</span><a href="#local-6989586621684448070"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map VName Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-var">MemAliases</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-157"></span><span>    </span><span class="annot"><span class="annottext">ReaderT (Env inner) Identity MemAliases
+-&gt; (MemAliases -&gt; MemAliases)
+-&gt; ReaderT (Env inner) Identity MemAliases
+forall (f :: * -&gt; *) a b. Functor f =&gt; f a -&gt; (a -&gt; b) -&gt; f b
+</span><span class="hs-operator hs-var">&lt;&amp;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(MemAliases -&gt; MemAliases) -&gt; MemAliases -&gt; MemAliases
+forall a. Eq a =&gt; (a -&gt; a) -&gt; a -&gt; a
+</span><a href="Futhark.Util.html#fixPoint"><span class="hs-identifier hs-var">fixPoint</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#transitiveClosure"><span class="hs-identifier hs-var">transitiveClosure</span></a></span><span>
+</span><span id="line-158"></span><span>
+</span><span id="line-159"></span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#completeBijection"><span class="hs-identifier hs-type">completeBijection</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span>
+</span><span id="line-160"></span><span id="completeBijection"><span class="annot"><span class="annottext">completeBijection :: MemAliases -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#completeBijection"><span class="hs-identifier hs-var hs-var">completeBijection</span></a></span></span><span> </span><span id="local-6989586621684448067"><span class="annot"><span class="annottext">ma :: MemAliases
+</span><a href="#local-6989586621684448067"><span class="hs-identifier hs-var">ma</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Analysis.MemAlias.html#MemAliases"><span class="hs-identifier hs-type">MemAliases</span></a></span><span> </span><span id="local-6989586621684448066"><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448066"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-161"></span><span>  </span><span class="annot"><span class="annottext">(VName -&gt; Names -&gt; MemAliases) -&gt; Map VName Names -&gt; MemAliases
+forall m k a. Monoid m =&gt; (k -&gt; a -&gt; m) -&gt; Map k a -&gt; m
+</span><span class="hs-identifier hs-var">M.foldMapWithKey</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621684448065"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448065"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span id="local-6989586621684448064"><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684448064"><span class="hs-identifier hs-var">ns</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(VName -&gt; MemAliases) -&gt; [VName] -&gt; MemAliases
+forall (t :: * -&gt; *) m a.
+(Foldable t, Monoid m) =&gt;
+(a -&gt; m) -&gt; t a -&gt; m
+</span><span class="hs-identifier hs-var">foldMap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; MemAliases
+</span><a href="Futhark.Analysis.MemAlias.html#singleton"><span class="hs-operator hs-var">`singleton`</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Names
+</span><a href="Futhark.IR.Prop.Names.html#oneName"><span class="hs-identifier hs-var">oneName</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684448065"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Names -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Names.html#namesToList"><span class="hs-identifier hs-var">namesToList</span></a></span><span> </span><span class="annot"><span class="annottext">Names
+</span><a href="#local-6989586621684448064"><span class="hs-identifier hs-var">ns</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Map VName Names
+</span><a href="#local-6989586621684448066"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">MemAliases -&gt; MemAliases -&gt; MemAliases
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">MemAliases
+</span><a href="#local-6989586621684448067"><span class="hs-identifier hs-var">ma</span></a></span><span>
+</span><span id="line-162"></span></pre></body></html>

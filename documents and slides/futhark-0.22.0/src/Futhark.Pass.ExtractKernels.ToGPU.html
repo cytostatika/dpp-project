@@ -1,0 +1,294 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ConstraintKinds #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Pass.ExtractKernels.ToGPU</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#getSize"><span class="hs-identifier">getSize</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#segThread"><span class="hs-identifier">segThread</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#soacsLambdaToGPU"><span class="hs-identifier">soacsLambdaToGPU</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#soacsStmToGPU"><span class="hs-identifier">soacsStmToGPU</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#scopeForGPU"><span class="hs-identifier">scopeForGPU</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#scopeForSOACs"><span class="hs-identifier">scopeForSOACs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>    </span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#injectSOACS"><span class="hs-identifier">injectSOACS</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Identity</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Analysis.Rephrase.html"><span class="hs-identifier">Futhark.Analysis.Rephrase</span></a></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.html"><span class="hs-identifier">Futhark.IR</span></a></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html"><span class="hs-identifier">Futhark.IR.GPU</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html"><span class="hs-identifier">Futhark.IR.SOACS</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier">SOACS</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html"><span class="hs-identifier">Futhark.IR.SOACS.SOAC</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">SOAC</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Tools.html"><span class="hs-identifier">Futhark.Tools</span></a></span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span id="local-6989586621684418996"><span id="local-6989586621684418999"><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#getSize"><span class="hs-identifier hs-type">getSize</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-26"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418999"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418999"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#HostOp"><span class="hs-identifier hs-type">HostOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418999"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684418996"><span class="hs-identifier hs-type">inner</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-27"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-28"></span><span>  </span><span class="annot"><a href="Futhark.IR.GPU.Sizes.html#SizeClass"><span class="hs-identifier hs-type">SizeClass</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-29"></span><span>  </span><span class="annot"><a href="#local-6989586621684418999"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#SubExp"><span class="hs-identifier hs-type">SubExp</span></a></span></span></span><span>
+</span><span id="line-30"></span><span id="getSize"><span class="annot"><span class="annottext">getSize :: forall (m :: * -&gt; *) inner.
+(MonadBuilder m, Op (Rep m) ~ HostOp (Rep m) inner) =&gt;
+String -&gt; SizeClass -&gt; m SubExp
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#getSize"><span class="hs-identifier hs-var hs-var">getSize</span></a></span></span><span> </span><span id="local-6989586621684418850"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684418850"><span class="hs-identifier hs-var">desc</span></a></span></span><span> </span><span id="local-6989586621684418849"><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684418849"><span class="hs-identifier hs-var">size_class</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-31"></span><span>  </span><span id="local-6989586621684418848"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684418848"><span class="hs-identifier hs-var">size_key</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; Name
+</span><a href="Language.Futhark.Core.html#nameFromString"><span class="hs-identifier hs-var">nameFromString</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; Name) -&gt; (VName -&gt; String) -&gt; VName -&gt; Name
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; String
+forall a. Pretty a =&gt; a -&gt; String
+</span><a href="Futhark.Util.Pretty.html#pretty"><span class="hs-identifier hs-var">pretty</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; Name) -&gt; m VName -&gt; m Name
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; m VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; String -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684418850"><span class="hs-identifier hs-var">desc</span></a></span><span>
+</span><span id="line-32"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; Exp (Rep m) -&gt; m SubExp
+forall (m :: * -&gt; *).
+MonadBuilder m =&gt;
+String -&gt; Exp (Rep m) -&gt; m SubExp
+</span><a href="Futhark.Construct.html#letSubExp"><span class="hs-identifier hs-var">letSubExp</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684418850"><span class="hs-identifier hs-var">desc</span></a></span><span> </span><span class="annot"><span class="annottext">(Exp (Rep m) -&gt; m SubExp) -&gt; Exp (Rep m) -&gt; m SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Op (Rep m) -&gt; Exp (Rep m)
+forall rep. Op rep -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#Op"><span class="hs-identifier hs-var">Op</span></a></span><span> </span><span class="annot"><span class="annottext">(Op (Rep m) -&gt; Exp (Rep m)) -&gt; Op (Rep m) -&gt; Exp (Rep m)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SizeOp -&gt; HostOp (Rep m) inner
+forall rep op. SizeOp -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#SizeOp"><span class="hs-identifier hs-var">SizeOp</span></a></span><span> </span><span class="annot"><span class="annottext">(SizeOp -&gt; HostOp (Rep m) inner) -&gt; SizeOp -&gt; HostOp (Rep m) inner
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; SizeClass -&gt; SizeOp
+</span><a href="Futhark.IR.GPU.Op.html#GetSize"><span class="hs-identifier hs-var">GetSize</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684418848"><span class="hs-identifier hs-var">size_key</span></a></span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="#local-6989586621684418849"><span class="hs-identifier hs-var">size_class</span></a></span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span id="local-6989586621684418964"><span id="local-6989586621684418965"><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#segThread"><span class="hs-identifier hs-type">segThread</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-35"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#MonadBuilder"><span class="hs-identifier hs-type">MonadBuilder</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418965"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418965"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#HostOp"><span class="hs-identifier hs-type">HostOp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Builder.Class.html#Rep"><span class="hs-identifier hs-type">Rep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418965"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621684418964"><span class="hs-identifier hs-type">inner</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-36"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">String</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-37"></span><span>  </span><span class="annot"><a href="#local-6989586621684418965"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span></span></span><span>
+</span><span id="line-38"></span><span id="segThread"><span class="annot"><span class="annottext">segThread :: forall (m :: * -&gt; *) inner.
+(MonadBuilder m, Op (Rep m) ~ HostOp (Rep m) inner) =&gt;
+String -&gt; m SegLevel
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#segThread"><span class="hs-identifier hs-var hs-var">segThread</span></a></span></span><span> </span><span id="local-6989586621684418817"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684418817"><span class="hs-identifier hs-var">desc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-39"></span><span>  </span><span class="annot"><span class="annottext">Count NumGroups SubExp
+-&gt; Count GroupSize SubExp -&gt; SegVirt -&gt; SegLevel
+</span><a href="Futhark.IR.GPU.Op.html#SegThread"><span class="hs-identifier hs-var">SegThread</span></a></span><span>
+</span><span id="line-40"></span><span>    </span><span class="annot"><span class="annottext">(Count NumGroups SubExp
+ -&gt; Count GroupSize SubExp -&gt; SegVirt -&gt; SegLevel)
+-&gt; m (Count NumGroups SubExp)
+-&gt; m (Count GroupSize SubExp -&gt; SegVirt -&gt; SegLevel)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; Count NumGroups SubExp
+forall u e. e -&gt; Count u e
+</span><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier hs-var">Count</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; Count NumGroups SubExp)
+-&gt; m SubExp -&gt; m (Count NumGroups SubExp)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; SizeClass -&gt; m SubExp
+forall (m :: * -&gt; *) inner.
+(MonadBuilder m, Op (Rep m) ~ HostOp (Rep m) inner) =&gt;
+String -&gt; SizeClass -&gt; m SubExp
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#getSize"><span class="hs-identifier hs-var">getSize</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684418817"><span class="hs-identifier hs-var">desc</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_num_groups&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="Futhark.IR.GPU.Sizes.html#SizeNumGroups"><span class="hs-identifier hs-var">SizeNumGroups</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span>    </span><span class="annot"><span class="annottext">m (Count GroupSize SubExp -&gt; SegVirt -&gt; SegLevel)
+-&gt; m (Count GroupSize SubExp) -&gt; m (SegVirt -&gt; SegLevel)
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SubExp -&gt; Count GroupSize SubExp
+forall u e. e -&gt; Count u e
+</span><a href="Futhark.IR.GPU.Sizes.html#Count"><span class="hs-identifier hs-var">Count</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; Count GroupSize SubExp)
+-&gt; m SubExp -&gt; m (Count GroupSize SubExp)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; SizeClass -&gt; m SubExp
+forall (m :: * -&gt; *) inner.
+(MonadBuilder m, Op (Rep m) ~ HostOp (Rep m) inner) =&gt;
+String -&gt; SizeClass -&gt; m SubExp
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#getSize"><span class="hs-identifier hs-var">getSize</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621684418817"><span class="hs-identifier hs-var">desc</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;_group_size&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SizeClass
+</span><a href="Futhark.IR.GPU.Sizes.html#SizeGroup"><span class="hs-identifier hs-var">SizeGroup</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-42"></span><span>    </span><span class="annot"><span class="annottext">m (SegVirt -&gt; SegLevel) -&gt; m SegVirt -&gt; m SegLevel
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">SegVirt -&gt; m SegVirt
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">SegVirt
+</span><a href="Futhark.IR.SegOp.html#SegVirt"><span class="hs-identifier hs-var">SegVirt</span></a></span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span id="local-6989586621684418948"><span id="local-6989586621684418949"><span id="local-6989586621684418950"><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#injectSOACS"><span class="hs-identifier hs-type">injectSOACS</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monad</span></span><span> </span><span class="annot"><a href="#local-6989586621684418950"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-46"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#SameScope"><span class="hs-identifier hs-type">SameScope</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418949"><span class="hs-identifier hs-type">from</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418948"><span class="hs-identifier hs-type">to</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-47"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418949"><span class="hs-identifier hs-type">from</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#ExpDec"><span class="hs-identifier hs-type">ExpDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418948"><span class="hs-identifier hs-type">to</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-48"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#BodyDec"><span class="hs-identifier hs-type">BodyDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418949"><span class="hs-identifier hs-type">from</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#BodyDec"><span class="hs-identifier hs-type">BodyDec</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418948"><span class="hs-identifier hs-type">to</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-49"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#RetType"><span class="hs-identifier hs-type">RetType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418949"><span class="hs-identifier hs-type">from</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#RetType"><span class="hs-identifier hs-type">RetType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418948"><span class="hs-identifier hs-type">to</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-50"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#BranchType"><span class="hs-identifier hs-type">BranchType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418949"><span class="hs-identifier hs-type">from</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#BranchType"><span class="hs-identifier hs-type">BranchType</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418948"><span class="hs-identifier hs-type">to</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-51"></span><span>    </span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418949"><span class="hs-identifier hs-type">from</span></a></span><span> </span><span class="annot"><span class="hs-operator hs-type">~</span></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#SOAC"><span class="hs-identifier hs-type">SOAC</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418949"><span class="hs-identifier hs-type">from</span></a></span><span>
+</span><span id="line-52"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.SOACS.SOAC.html#SOAC"><span class="hs-identifier hs-type">SOAC</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418948"><span class="hs-identifier hs-type">to</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418948"><span class="hs-identifier hs-type">to</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-54"></span><span>  </span><span class="annot"><a href="Futhark.Analysis.Rephrase.html#Rephraser"><span class="hs-identifier hs-type">Rephraser</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418950"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418949"><span class="hs-identifier hs-type">from</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684418948"><span class="hs-identifier hs-type">to</span></a></span></span></span></span><span>
+</span><span id="line-55"></span><span id="injectSOACS"><span class="annot"><span class="annottext">injectSOACS :: forall (m :: * -&gt; *) from to.
+(Monad m, SameScope from to, ExpDec from ~ ExpDec to,
+ BodyDec from ~ BodyDec to, RetType from ~ RetType to,
+ BranchType from ~ BranchType to, Op from ~ SOAC from) =&gt;
+(SOAC to -&gt; Op to) -&gt; Rephraser m from to
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#injectSOACS"><span class="hs-identifier hs-var hs-var">injectSOACS</span></a></span></span><span> </span><span id="local-6989586621684418738"><span class="annot"><span class="annottext">SOAC to -&gt; Op to
+</span><a href="#local-6989586621684418738"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><span class="annottext">Rephraser :: forall (m :: * -&gt; *) from to.
+(ExpDec from -&gt; m (ExpDec to))
+-&gt; (LetDec from -&gt; m (LetDec to))
+-&gt; (FParamInfo from -&gt; m (FParamInfo to))
+-&gt; (LParamInfo from -&gt; m (LParamInfo to))
+-&gt; (BodyDec from -&gt; m (BodyDec to))
+-&gt; (RetType from -&gt; m (RetType to))
+-&gt; (BranchType from -&gt; m (BranchType to))
+-&gt; (Op from -&gt; m (Op to))
+-&gt; Rephraser m from to
+</span><a href="Futhark.Analysis.Rephrase.html#Rephraser"><span class="hs-identifier hs-type">Rephraser</span></a></span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">rephraseExpDec :: ExpDec from -&gt; m (ExpDec to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseExpDec"><span class="hs-identifier hs-var">rephraseExpDec</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ExpDec from -&gt; m (ExpDec to)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-58"></span><span>      </span><span class="annot"><span class="annottext">rephraseBodyDec :: BodyDec from -&gt; m (BodyDec to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseBodyDec"><span class="hs-identifier hs-var">rephraseBodyDec</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BodyDec from -&gt; m (BodyDec to)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-59"></span><span>      </span><span class="annot"><span class="annottext">rephraseLetBoundDec :: LetDec from -&gt; m (LetDec to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseLetBoundDec"><span class="hs-identifier hs-var">rephraseLetBoundDec</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LetDec from -&gt; m (LetDec to)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-60"></span><span>      </span><span class="annot"><span class="annottext">rephraseFParamDec :: FParamInfo from -&gt; m (FParamInfo to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseFParamDec"><span class="hs-identifier hs-var">rephraseFParamDec</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FParamInfo from -&gt; m (FParamInfo to)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-61"></span><span>      </span><span class="annot"><span class="annottext">rephraseLParamDec :: LParamInfo from -&gt; m (LParamInfo to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseLParamDec"><span class="hs-identifier hs-var">rephraseLParamDec</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LParamInfo from -&gt; m (LParamInfo to)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-62"></span><span>      </span><span class="annot"><span class="annottext">rephraseOp :: Op from -&gt; m (Op to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseOp"><span class="hs-identifier hs-var">rephraseOp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SOAC to -&gt; Op to) -&gt; m (SOAC to) -&gt; m (Op to)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">SOAC to -&gt; Op to
+</span><a href="#local-6989586621684418738"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(m (SOAC to) -&gt; m (Op to))
+-&gt; (SOAC from -&gt; m (SOAC to)) -&gt; SOAC from -&gt; m (Op to)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SOAC from -&gt; m (SOAC to)
+</span><a href="#local-6989586621684418730"><span class="hs-identifier hs-var">onSOAC</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-63"></span><span>      </span><span class="annot"><span class="annottext">rephraseRetType :: RetType from -&gt; m (RetType to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseRetType"><span class="hs-identifier hs-var">rephraseRetType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RetType from -&gt; m (RetType to)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-64"></span><span>      </span><span class="annot"><span class="annottext">rephraseBranchType :: BranchType from -&gt; m (BranchType to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseBranchType"><span class="hs-identifier hs-var">rephraseBranchType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BranchType from -&gt; m (BranchType to)
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-67"></span><span>    </span><span id="local-6989586621684418730"><span class="annot"><span class="annottext">onSOAC :: SOAC from -&gt; m (SOAC to)
+</span><a href="#local-6989586621684418730"><span class="hs-identifier hs-var hs-var">onSOAC</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SOACMapper from to m -&gt; SOAC from -&gt; m (SOAC to)
+forall (m :: * -&gt; *) frep trep.
+(Applicative m, Monad m) =&gt;
+SOACMapper frep trep m -&gt; SOAC frep -&gt; m (SOAC trep)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapSOACM"><span class="hs-identifier hs-var">SOAC.mapSOACM</span></a></span><span> </span><span class="annot"><span class="annottext">SOACMapper from to m
+</span><a href="#local-6989586621684418726"><span class="hs-identifier hs-var">mapper</span></a></span><span>
+</span><span id="line-68"></span><span>    </span><span id="local-6989586621684418726"><span class="annot"><span class="annottext">mapper :: SOACMapper from to m
+</span><a href="#local-6989586621684418726"><span class="hs-identifier hs-var hs-var">mapper</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-69"></span><span>      </span><span class="annot"><span class="annottext">SOACMapper :: forall frep trep (m :: * -&gt; *).
+(SubExp -&gt; m SubExp)
+-&gt; (Lambda frep -&gt; m (Lambda trep))
+-&gt; (VName -&gt; m VName)
+-&gt; SOACMapper frep trep m
+</span><a href="Futhark.IR.SOACS.SOAC.html#SOACMapper"><span class="hs-identifier hs-type">SOAC.SOACMapper</span></a></span><span>
+</span><span id="line-70"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSOACSubExp :: SubExp -&gt; m SubExp
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapOnSOACSubExp"><span class="hs-identifier hs-var">SOAC.mapOnSOACSubExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; m SubExp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-71"></span><span>          </span><span class="annot"><span class="annottext">mapOnSOACVName :: VName -&gt; m VName
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapOnSOACVName"><span class="hs-identifier hs-var">SOAC.mapOnSOACVName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; m VName
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-72"></span><span>          </span><span class="annot"><span class="annottext">mapOnSOACLambda :: Lambda from -&gt; m (Lambda to)
+</span><a href="Futhark.IR.SOACS.SOAC.html#mapOnSOACLambda"><span class="hs-identifier hs-var">SOAC.mapOnSOACLambda</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Rephraser m from to -&gt; Lambda from -&gt; m (Lambda to)
+forall (m :: * -&gt; *) from to.
+Monad m =&gt;
+Rephraser m from to -&gt; Lambda from -&gt; m (Lambda to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseLambda"><span class="hs-identifier hs-var">rephraseLambda</span></a></span><span> </span><span class="annot"><span class="annottext">(Rephraser m from to -&gt; Lambda from -&gt; m (Lambda to))
+-&gt; Rephraser m from to -&gt; Lambda from -&gt; m (Lambda to)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(SOAC to -&gt; Op to) -&gt; Rephraser m from to
+forall (m :: * -&gt; *) from to.
+(Monad m, SameScope from to, ExpDec from ~ ExpDec to,
+ BodyDec from ~ BodyDec to, RetType from ~ RetType to,
+ BranchType from ~ BranchType to, Op from ~ SOAC from) =&gt;
+(SOAC to -&gt; Op to) -&gt; Rephraser m from to
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#injectSOACS"><span class="hs-identifier hs-var">injectSOACS</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC to -&gt; Op to
+</span><a href="#local-6989586621684418738"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-73"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#soacsStmToGPU"><span class="hs-identifier hs-type">soacsStmToGPU</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span>
+</span><span id="line-76"></span><span id="soacsStmToGPU"><span class="annot"><span class="annottext">soacsStmToGPU :: Stm SOACS -&gt; Stm GPU
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#soacsStmToGPU"><span class="hs-identifier hs-var hs-var">soacsStmToGPU</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Identity (Stm GPU) -&gt; Stm GPU
+forall a. Identity a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">runIdentity</span></span><span> </span><span class="annot"><span class="annottext">(Identity (Stm GPU) -&gt; Stm GPU)
+-&gt; (Stm SOACS -&gt; Identity (Stm GPU)) -&gt; Stm SOACS -&gt; Stm GPU
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Rephraser Identity SOACS GPU -&gt; Stm SOACS -&gt; Identity (Stm GPU)
+forall (m :: * -&gt; *) from to.
+Monad m =&gt;
+Rephraser m from to -&gt; Stm from -&gt; m (Stm to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseStm"><span class="hs-identifier hs-var">rephraseStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SOAC GPU -&gt; Op GPU) -&gt; Rephraser Identity SOACS GPU
+forall (m :: * -&gt; *) from to.
+(Monad m, SameScope from to, ExpDec from ~ ExpDec to,
+ BodyDec from ~ BodyDec to, RetType from ~ RetType to,
+ BranchType from ~ BranchType to, Op from ~ SOAC from) =&gt;
+(SOAC to -&gt; Op to) -&gt; Rephraser m from to
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#injectSOACS"><span class="hs-identifier hs-var">injectSOACS</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC GPU -&gt; Op GPU
+forall rep op. op -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#soacsLambdaToGPU"><span class="hs-identifier hs-type">soacsLambdaToGPU</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span>
+</span><span id="line-79"></span><span id="soacsLambdaToGPU"><span class="annot"><span class="annottext">soacsLambdaToGPU :: Lambda SOACS -&gt; Lambda GPU
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#soacsLambdaToGPU"><span class="hs-identifier hs-var hs-var">soacsLambdaToGPU</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Identity (Lambda GPU) -&gt; Lambda GPU
+forall a. Identity a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">runIdentity</span></span><span> </span><span class="annot"><span class="annottext">(Identity (Lambda GPU) -&gt; Lambda GPU)
+-&gt; (Lambda SOACS -&gt; Identity (Lambda GPU))
+-&gt; Lambda SOACS
+-&gt; Lambda GPU
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Rephraser Identity SOACS GPU
+-&gt; Lambda SOACS -&gt; Identity (Lambda GPU)
+forall (m :: * -&gt; *) from to.
+Monad m =&gt;
+Rephraser m from to -&gt; Lambda from -&gt; m (Lambda to)
+</span><a href="Futhark.Analysis.Rephrase.html#rephraseLambda"><span class="hs-identifier hs-var">rephraseLambda</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(SOAC GPU -&gt; Op GPU) -&gt; Rephraser Identity SOACS GPU
+forall (m :: * -&gt; *) from to.
+(Monad m, SameScope from to, ExpDec from ~ ExpDec to,
+ BodyDec from ~ BodyDec to, RetType from ~ RetType to,
+ BranchType from ~ BranchType to, Op from ~ SOAC from) =&gt;
+(SOAC to -&gt; Op to) -&gt; Rephraser m from to
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#injectSOACS"><span class="hs-identifier hs-var">injectSOACS</span></a></span><span> </span><span class="annot"><span class="annottext">SOAC GPU -&gt; Op GPU
+forall rep op. op -&gt; HostOp rep op
+</span><a href="Futhark.IR.GPU.Op.html#OtherOp"><span class="hs-identifier hs-var">OtherOp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#scopeForSOACs"><span class="hs-identifier hs-type">scopeForSOACs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span>
+</span><span id="line-82"></span><span id="scopeForSOACs"><span class="annot"><span class="annottext">scopeForSOACs :: Scope GPU -&gt; Scope SOACS
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#scopeForSOACs"><span class="hs-identifier hs-var hs-var">scopeForSOACs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope GPU -&gt; Scope SOACS
+forall fromrep torep.
+SameScope fromrep torep =&gt;
+Scope fromrep -&gt; Scope torep
+</span><a href="Futhark.IR.Prop.Scope.html#castScope"><span class="hs-identifier hs-var">castScope</span></a></span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span class="annot"><a href="Futhark.Pass.ExtractKernels.ToGPU.html#scopeForGPU"><span class="hs-identifier hs-type">scopeForGPU</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html#SOACS"><span class="hs-identifier hs-type">SOACS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Scope.html#Scope"><span class="hs-identifier hs-type">Scope</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPU.html#GPU"><span class="hs-identifier hs-type">GPU</span></a></span><span>
+</span><span id="line-85"></span><span id="scopeForGPU"><span class="annot"><span class="annottext">scopeForGPU :: Scope SOACS -&gt; Scope GPU
+</span><a href="Futhark.Pass.ExtractKernels.ToGPU.html#scopeForGPU"><span class="hs-identifier hs-var hs-var">scopeForGPU</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Scope SOACS -&gt; Scope GPU
+forall fromrep torep.
+SameScope fromrep torep =&gt;
+Scope fromrep -&gt; Scope torep
+</span><a href="Futhark.IR.Prop.Scope.html#castScope"><span class="hs-identifier hs-var">castScope</span></a></span><span>
+</span><span id="line-86"></span></pre></body></html>

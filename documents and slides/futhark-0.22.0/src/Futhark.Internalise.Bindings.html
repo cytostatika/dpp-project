@@ -1,0 +1,1072 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE Strict #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | Internalising bindings.</span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Internalise.Bindings</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Internalise.Bindings.html#internaliseAttrs"><span class="hs-identifier">internaliseAttrs</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.Bindings.html#internaliseAttr"><span class="hs-identifier">internaliseAttr</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.Bindings.html#bindingFParams"><span class="hs-identifier">bindingFParams</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.Bindings.html#bindingLoopParams"><span class="hs-identifier">bindingLoopParams</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.Bindings.html#bindingLambdaParams"><span class="hs-identifier">bindingLambdaParams</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-11"></span><span>    </span><span class="annot"><a href="Futhark.Internalise.Bindings.html#stmPat"><span class="hs-identifier">stmPat</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-14"></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">mapM</span></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bifunctor</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.IR.SOACS.html"><span class="hs-identifier">Futhark.IR.SOACS</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html"><span class="hs-identifier">Futhark.Internalise.Monad</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Internalise.TypesValues.html"><span class="hs-identifier">Futhark.Internalise.TypesValues</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.html"><span class="hs-identifier">Futhark.Util</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Language.Futhark.html"><span class="hs-identifier">Language.Futhark</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">E</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Prop.html#matchDims"><span class="hs-identifier">matchDims</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="annot"><a href="Futhark.Internalise.Bindings.html#internaliseAttr"><span class="hs-identifier hs-type">internaliseAttr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#AttrInfo"><span class="hs-identifier hs-type">E.AttrInfo</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Attr"><span class="hs-identifier hs-type">I.Attr</span></a></span><span>
+</span><span id="line-26"></span><span id="internaliseAttr"><span class="annot"><span class="annottext">internaliseAttr :: AttrInfo VName -&gt; InternaliseM Attr
+</span><a href="Futhark.Internalise.Bindings.html#internaliseAttr"><span class="hs-identifier hs-var hs-var">internaliseAttr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#AttrAtom"><span class="hs-identifier hs-type">E.AttrAtom</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#AtomName"><span class="hs-identifier hs-type">E.AtomName</span></a></span><span> </span><span id="local-6989586621684513595"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684513595"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-27"></span><span>  </span><span class="annot"><span class="annottext">Attr -&gt; InternaliseM Attr
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Attr -&gt; InternaliseM Attr) -&gt; Attr -&gt; InternaliseM Attr
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Name -&gt; Attr
+</span><a href="Futhark.IR.Syntax.Core.html#AttrName"><span class="hs-identifier hs-var">I.AttrName</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684513595"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-28"></span><span class="annot"><a href="Futhark.Internalise.Bindings.html#internaliseAttr"><span class="hs-identifier hs-var">internaliseAttr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#AttrAtom"><span class="hs-identifier hs-type">E.AttrAtom</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#AtomInt"><span class="hs-identifier hs-type">E.AtomInt</span></a></span><span> </span><span id="local-6989586621684513592"><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621684513592"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-29"></span><span>  </span><span class="annot"><span class="annottext">Attr -&gt; InternaliseM Attr
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Attr -&gt; InternaliseM Attr) -&gt; Attr -&gt; InternaliseM Attr
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Attr
+</span><a href="Futhark.IR.Syntax.Core.html#AttrInt"><span class="hs-identifier hs-var">I.AttrInt</span></a></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><a href="#local-6989586621684513592"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-30"></span><span class="annot"><a href="Futhark.Internalise.Bindings.html#internaliseAttr"><span class="hs-identifier hs-var">internaliseAttr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#AttrComp"><span class="hs-identifier hs-type">E.AttrComp</span></a></span><span> </span><span id="local-6989586621684513589"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684513589"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621684513588"><span class="annot"><span class="annottext">[AttrInfo VName]
+</span><a href="#local-6989586621684513588"><span class="hs-identifier hs-var">attrs</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-31"></span><span>  </span><span class="annot"><span class="annottext">Name -&gt; [Attr] -&gt; Attr
+</span><a href="Futhark.IR.Syntax.Core.html#AttrComp"><span class="hs-identifier hs-var">I.AttrComp</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684513589"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">([Attr] -&gt; Attr) -&gt; InternaliseM [Attr] -&gt; InternaliseM Attr
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(AttrInfo VName -&gt; InternaliseM Attr)
+-&gt; [AttrInfo VName] -&gt; InternaliseM [Attr]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">AttrInfo VName -&gt; InternaliseM Attr
+</span><a href="Futhark.Internalise.Bindings.html#internaliseAttr"><span class="hs-identifier hs-var">internaliseAttr</span></a></span><span> </span><span class="annot"><span class="annottext">[AttrInfo VName]
+</span><a href="#local-6989586621684513588"><span class="hs-identifier hs-var">attrs</span></a></span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="annot"><a href="Futhark.Internalise.Bindings.html#internaliseAttrs"><span class="hs-identifier hs-type">internaliseAttrs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Syntax.html#AttrInfo"><span class="hs-identifier hs-type">E.AttrInfo</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Attrs"><span class="hs-identifier hs-type">I.Attrs</span></a></span><span>
+</span><span id="line-34"></span><span id="internaliseAttrs"><span class="annot"><span class="annottext">internaliseAttrs :: [AttrInfo VName] -&gt; InternaliseM Attrs
+</span><a href="Futhark.Internalise.Bindings.html#internaliseAttrs"><span class="hs-identifier hs-var hs-var">internaliseAttrs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">([Attr] -&gt; Attrs) -&gt; InternaliseM [Attr] -&gt; InternaliseM Attrs
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Attrs] -&gt; Attrs
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([Attrs] -&gt; Attrs) -&gt; ([Attr] -&gt; [Attrs]) -&gt; [Attr] -&gt; Attrs
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Attr -&gt; Attrs) -&gt; [Attr] -&gt; [Attrs]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Attr -&gt; Attrs
+</span><a href="Futhark.IR.Syntax.Core.html#oneAttr"><span class="hs-identifier hs-var">I.oneAttr</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InternaliseM [Attr] -&gt; InternaliseM Attrs)
+-&gt; ([AttrInfo VName] -&gt; InternaliseM [Attr])
+-&gt; [AttrInfo VName]
+-&gt; InternaliseM Attrs
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(AttrInfo VName -&gt; InternaliseM Attr)
+-&gt; [AttrInfo VName] -&gt; InternaliseM [Attr]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">AttrInfo VName -&gt; InternaliseM Attr
+</span><a href="Futhark.Internalise.Bindings.html#internaliseAttr"><span class="hs-identifier hs-var">internaliseAttr</span></a></span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span id="local-6989586621684513757"><span class="annot"><a href="Futhark.Internalise.Bindings.html#bindingFParams"><span class="hs-identifier hs-type">bindingFParams</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-37"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#TypeParam"><span class="hs-identifier hs-type">E.TypeParam</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-38"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#Pat"><span class="hs-identifier hs-type">E.Pat</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-39"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SOACS.html#FParam"><span class="hs-identifier hs-type">I.FParam</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SOACS.html#FParam"><span class="hs-identifier hs-type">I.FParam</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513757"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-40"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513757"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-41"></span><span id="bindingFParams"><span class="annot"><span class="annottext">bindingFParams :: forall a.
+[TypeParam]
+-&gt; [Pat]
+-&gt; ([FParam] -&gt; [[FParam]] -&gt; InternaliseM a)
+-&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Bindings.html#bindingFParams"><span class="hs-identifier hs-var hs-var">bindingFParams</span></a></span></span><span> </span><span id="local-6989586621684513563"><span class="annot"><span class="annottext">[TypeParam]
+</span><a href="#local-6989586621684513563"><span class="hs-identifier hs-var">tparams</span></a></span></span><span> </span><span id="local-6989586621684513562"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684513562"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span id="local-6989586621684513561"><span class="annot"><span class="annottext">[FParam] -&gt; [[FParam]] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513561"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-42"></span><span>  </span><span id="local-6989586621684513560"><span class="annot"><span class="annottext">[[(Ident, [AttrInfo VName])]]
+</span><a href="#local-6989586621684513560"><span class="hs-identifier hs-var">flattened_params</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; InternaliseM [(Ident, [AttrInfo VName])])
+-&gt; [Pat] -&gt; InternaliseM [[(Ident, [AttrInfo VName])]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; InternaliseM [(Ident, [AttrInfo VName])]
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Pat -&gt; m [(Ident, [AttrInfo VName])]
+</span><a href="Futhark.Internalise.Bindings.html#flattenPat"><span class="hs-identifier hs-var">flattenPat</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684513562"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-43"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684513557"><span class="annot"><span class="annottext">params_idents :: [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513557"><span class="hs-identifier hs-var hs-var">params_idents</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[[(Ident, [AttrInfo VName])]] -&gt; [(Ident, [AttrInfo VName])]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">[[(Ident, [AttrInfo VName])]]
+</span><a href="#local-6989586621684513560"><span class="hs-identifier hs-var">flattened_params</span></a></span><span>
+</span><span id="line-44"></span><span>  </span><span id="local-6989586621684513555"><span class="annot"><span class="annottext">[[TypeBase Shape Uniqueness]]
+</span><a href="#local-6989586621684513555"><span class="hs-identifier hs-var">params_ts</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-45"></span><span>    </span><span class="annot"><span class="annottext">[TypeBase (DimDecl VName) ()]
+-&gt; InternaliseM [[TypeBase Shape Uniqueness]]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseParamTypes"><span class="hs-identifier hs-var">internaliseParamTypes</span></a></span><span> </span><span class="annot"><span class="annottext">([TypeBase (DimDecl VName) ()]
+ -&gt; InternaliseM [[TypeBase Shape Uniqueness]])
+-&gt; [TypeBase (DimDecl VName) ()]
+-&gt; InternaliseM [[TypeBase Shape Uniqueness]]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-46"></span><span>      </span><span class="annot"><span class="annottext">((Ident, [AttrInfo VName]) -&gt; TypeBase (DimDecl VName) ())
+-&gt; [(Ident, [AttrInfo VName])] -&gt; [TypeBase (DimDecl VName) ()]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) Aliasing
+ -&gt; () -&gt; TypeBase (DimDecl VName) ())
+-&gt; ()
+-&gt; TypeBase (DimDecl VName) Aliasing
+-&gt; TypeBase (DimDecl VName) ()
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+-&gt; () -&gt; TypeBase (DimDecl VName) ()
+forall dim asf ast. TypeBase dim asf -&gt; ast -&gt; TypeBase dim ast
+</span><a href="Language.Futhark.Prop.html#setAliases"><span class="hs-identifier hs-var">E.setAliases</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) Aliasing -&gt; TypeBase (DimDecl VName) ())
+-&gt; ((Ident, [AttrInfo VName]) -&gt; TypeBase (DimDecl VName) Aliasing)
+-&gt; (Ident, [AttrInfo VName])
+-&gt; TypeBase (DimDecl VName) ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall a. Info a -&gt; a
+</span><a href="Language.Futhark.Syntax.html#unInfo"><span class="hs-identifier hs-var hs-var">E.unInfo</span></a></span><span> </span><span class="annot"><span class="annottext">(Info (TypeBase (DimDecl VName) Aliasing)
+ -&gt; TypeBase (DimDecl VName) Aliasing)
+-&gt; ((Ident, [AttrInfo VName])
+    -&gt; Info (TypeBase (DimDecl VName) Aliasing))
+-&gt; (Ident, [AttrInfo VName])
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Ident -&gt; Info (TypeBase (DimDecl VName) Aliasing)
+forall (f :: * -&gt; *) vn.
+IdentBase f vn -&gt; f (TypeBase (DimDecl VName) Aliasing)
+</span><a href="Language.Futhark.Syntax.html#identType"><span class="hs-identifier hs-var hs-var">E.identType</span></a></span><span> </span><span class="annot"><span class="annottext">(Ident -&gt; Info (TypeBase (DimDecl VName) Aliasing))
+-&gt; ((Ident, [AttrInfo VName]) -&gt; Ident)
+-&gt; (Ident, [AttrInfo VName])
+-&gt; Info (TypeBase (DimDecl VName) Aliasing)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Ident, [AttrInfo VName]) -&gt; Ident
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513557"><span class="hs-identifier hs-var">params_idents</span></a></span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684513548"><span class="annot"><span class="annottext">num_param_idents :: [Int]
+</span><a href="#local-6989586621684513548"><span class="hs-identifier hs-var hs-var">num_param_idents</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">([(Ident, [AttrInfo VName])] -&gt; Int)
+-&gt; [[(Ident, [AttrInfo VName])]] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[[(Ident, [AttrInfo VName])]]
+</span><a href="#local-6989586621684513560"><span class="hs-identifier hs-var">flattened_params</span></a></span><span>
+</span><span id="line-48"></span><span>      </span><span id="local-6989586621684513542"><span class="annot"><span class="annottext">num_param_ts :: [Int]
+</span><a href="#local-6989586621684513542"><span class="hs-identifier hs-var hs-var">num_param_ts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">([[TypeBase Shape Uniqueness]] -&gt; Int)
+-&gt; [[[TypeBase Shape Uniqueness]]] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Int] -&gt; Int
+forall (t :: * -&gt; *) a. (Foldable t, Num a) =&gt; t a -&gt; a
+</span><span class="hs-identifier hs-var">sum</span></span><span> </span><span class="annot"><span class="annottext">([Int] -&gt; Int)
+-&gt; ([[TypeBase Shape Uniqueness]] -&gt; [Int])
+-&gt; [[TypeBase Shape Uniqueness]]
+-&gt; Int
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">([TypeBase Shape Uniqueness] -&gt; Int)
+-&gt; [[TypeBase Shape Uniqueness]] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">[TypeBase Shape Uniqueness] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([[[TypeBase Shape Uniqueness]]] -&gt; [Int])
+-&gt; [[[TypeBase Shape Uniqueness]]] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Int]
+-&gt; [[TypeBase Shape Uniqueness]] -&gt; [[[TypeBase Shape Uniqueness]]]
+forall a. [Int] -&gt; [a] -&gt; [[a]]
+</span><a href="Futhark.Util.html#chunks"><span class="hs-identifier hs-var">chunks</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684513548"><span class="hs-identifier hs-var">num_param_idents</span></a></span><span> </span><span class="annot"><span class="annottext">[[TypeBase Shape Uniqueness]]
+</span><a href="#local-6989586621684513555"><span class="hs-identifier hs-var">params_ts</span></a></span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684513538"><span class="annot"><span class="annottext">shape_params :: [Param (TypeBase shape u)]
+</span><a href="#local-6989586621684513538"><span class="hs-identifier hs-var hs-var">shape_params</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Attrs -&gt; VName -&gt; TypeBase shape u -&gt; Param (TypeBase shape u)
+forall dec. Attrs -&gt; VName -&gt; dec -&gt; Param dec
+</span><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-var">I.Param</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513536"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase shape u -&gt; Param (TypeBase shape u))
+-&gt; TypeBase shape u -&gt; Param (TypeBase shape u)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; TypeBase shape u
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">I.Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int64"><span class="hs-identifier hs-var">I.int64</span></a></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeParamDim"><span class="hs-identifier hs-type">E.TypeParamDim</span></a></span><span> </span><span id="local-6989586621684513536"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513536"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[TypeParam]
+</span><a href="#local-6989586621684513563"><span class="hs-identifier hs-var">tparams</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-51"></span><span>      </span><span id="local-6989586621684513530"><span class="annot"><span class="annottext">shape_subst :: Map VName [SubExp]
+</span><a href="#local-6989586621684513530"><span class="hs-identifier hs-var hs-var">shape_subst</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, [SubExp])] -&gt; Map VName [SubExp]
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Param (TypeBase Any Any) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">I.paramName</span></a></span><span> </span><span class="annot"><span class="annottext">Param (TypeBase Any Any)
+</span><a href="#local-6989586621684513527"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">I.Var</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; VName -&gt; SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Param (TypeBase Any Any) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">I.paramName</span></a></span><span> </span><span class="annot"><span class="annottext">Param (TypeBase Any Any)
+</span><a href="#local-6989586621684513527"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span id="local-6989586621684513527"><span class="annot"><span class="annottext">Param (TypeBase Any Any)
+</span><a href="#local-6989586621684513527"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Any Any)]
+forall {shape} {u}. [Param (TypeBase shape u)]
+</span><a href="#local-6989586621684513538"><span class="hs-identifier hs-var">shape_params</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-52"></span><span>  </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+-&gt; [TypeBase Shape Uniqueness]
+-&gt; ([[Param (TypeBase Shape Uniqueness)]] -&gt; InternaliseM a)
+-&gt; InternaliseM a
+forall t a.
+Show t =&gt;
+[(Ident, [AttrInfo VName])]
+-&gt; [t] -&gt; ([[Param t]] -&gt; InternaliseM a) -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Bindings.html#bindingFlatPat"><span class="hs-identifier hs-var">bindingFlatPat</span></a></span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513557"><span class="hs-identifier hs-var">params_idents</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[[TypeBase Shape Uniqueness]] -&gt; [TypeBase Shape Uniqueness]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">[[TypeBase Shape Uniqueness]]
+</span><a href="#local-6989586621684513555"><span class="hs-identifier hs-var">params_ts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(([[Param (TypeBase Shape Uniqueness)]] -&gt; InternaliseM a)
+ -&gt; InternaliseM a)
+-&gt; ([[Param (TypeBase Shape Uniqueness)]] -&gt; InternaliseM a)
+-&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684513524"><span class="annot"><span class="annottext">[[Param (TypeBase Shape Uniqueness)]]
+</span><a href="#local-6989586621684513524"><span class="hs-identifier hs-var">valueparams</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684513522"><span class="annot"><span class="annottext">[Maybe (Param (TypeBase shape u))]
+</span><a href="#local-6989586621684513522"><span class="hs-identifier hs-var">certparams</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684513521"><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+</span><a href="#local-6989586621684513521"><span class="hs-identifier hs-var">valueparams'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(Maybe (Param (TypeBase shape u)),
+  Param (TypeBase Shape Uniqueness))]
+-&gt; ([Maybe (Param (TypeBase shape u))],
+    [Param (TypeBase Shape Uniqueness)])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">([(Maybe (Param (TypeBase shape u)),
+   Param (TypeBase Shape Uniqueness))]
+ -&gt; ([Maybe (Param (TypeBase shape u))],
+     [Param (TypeBase Shape Uniqueness)]))
+-&gt; [(Maybe (Param (TypeBase shape u)),
+     Param (TypeBase Shape Uniqueness))]
+-&gt; ([Maybe (Param (TypeBase shape u))],
+    [Param (TypeBase Shape Uniqueness)])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Param (TypeBase Shape Uniqueness)
+ -&gt; (Maybe (Param (TypeBase shape u)),
+     Param (TypeBase Shape Uniqueness)))
+-&gt; [Param (TypeBase Shape Uniqueness)]
+-&gt; [(Maybe (Param (TypeBase shape u)),
+     Param (TypeBase Shape Uniqueness))]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param (TypeBase Shape Uniqueness)
+-&gt; (Maybe (Param (TypeBase shape u)),
+    Param (TypeBase Shape Uniqueness))
+forall {shape} {u} {shape} {u}.
+Param (TypeBase shape u)
+-&gt; (Maybe (Param (TypeBase shape u)), Param (TypeBase shape u))
+</span><a href="#local-6989586621684513519"><span class="hs-identifier hs-var">fixAccParam</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[[Param (TypeBase Shape Uniqueness)]]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">[[Param (TypeBase Shape Uniqueness)]]
+</span><a href="#local-6989586621684513524"><span class="hs-identifier hs-var">valueparams</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span><span>    </span><span class="annot"><span class="annottext">Scope SOACS -&gt; InternaliseM a -&gt; InternaliseM a
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">I.localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)] -&gt; Scope SOACS
+forall rep dec. (FParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfFParams"><span class="hs-identifier hs-var">I.scopeOfFParams</span></a></span><span> </span><span class="annot"><span class="annottext">([Param (TypeBase Shape Uniqueness)] -&gt; Scope SOACS)
+-&gt; [Param (TypeBase Shape Uniqueness)] -&gt; Scope SOACS
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Maybe (Param (TypeBase Shape Uniqueness))]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+forall a. [Maybe a] -&gt; [a]
+</span><span class="hs-identifier hs-var">catMaybes</span></span><span> </span><span class="annot"><span class="annottext">[Maybe (Param (TypeBase Shape Uniqueness))]
+forall {shape} {u}. [Maybe (Param (TypeBase shape u))]
+</span><a href="#local-6989586621684513522"><span class="hs-identifier hs-var">certparams</span></a></span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+forall {shape} {u}. [Param (TypeBase shape u)]
+</span><a href="#local-6989586621684513538"><span class="hs-identifier hs-var">shape_params</span></a></span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+</span><a href="#local-6989586621684513521"><span class="hs-identifier hs-var">valueparams'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InternaliseM a -&gt; InternaliseM a)
+-&gt; InternaliseM a -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-55"></span><span>      </span><span class="annot"><span class="annottext">Map VName [SubExp] -&gt; InternaliseM a -&gt; InternaliseM a
+forall a. Map VName [SubExp] -&gt; InternaliseM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Monad.html#substitutingVars"><span class="hs-identifier hs-var">substitutingVars</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName [SubExp]
+</span><a href="#local-6989586621684513530"><span class="hs-identifier hs-var">shape_subst</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseM a -&gt; InternaliseM a)
+-&gt; InternaliseM a -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-56"></span><span>        </span><span class="annot"><span class="annottext">[FParam] -&gt; [[FParam]] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513561"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Maybe (Param (TypeBase Shape Uniqueness))]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+forall a. [Maybe a] -&gt; [a]
+</span><span class="hs-identifier hs-var">catMaybes</span></span><span> </span><span class="annot"><span class="annottext">[Maybe (Param (TypeBase Shape Uniqueness))]
+forall {shape} {u}. [Maybe (Param (TypeBase shape u))]
+</span><a href="#local-6989586621684513522"><span class="hs-identifier hs-var">certparams</span></a></span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+forall {shape} {u}. [Param (TypeBase shape u)]
+</span><a href="#local-6989586621684513538"><span class="hs-identifier hs-var">shape_params</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([[FParam]] -&gt; InternaliseM a) -&gt; [[FParam]] -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Int]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+-&gt; [[Param (TypeBase Shape Uniqueness)]]
+forall a. [Int] -&gt; [a] -&gt; [[a]]
+</span><a href="Futhark.Util.html#chunks"><span class="hs-identifier hs-var">chunks</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621684513542"><span class="hs-identifier hs-var">num_param_ts</span></a></span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+</span><a href="#local-6989586621684513521"><span class="hs-identifier hs-var">valueparams'</span></a></span><span>
+</span><span id="line-57"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-58"></span><span>    </span><span id="local-6989586621684513519"><span class="annot"><span class="annottext">fixAccParam :: Param (TypeBase shape u)
+-&gt; (Maybe (Param (TypeBase shape u)), Param (TypeBase shape u))
+</span><a href="#local-6989586621684513519"><span class="hs-identifier hs-var hs-var">fixAccParam</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-type">I.Param</span></a></span><span> </span><span id="local-6989586621684513514"><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684513514"><span class="hs-identifier hs-var">attrs</span></a></span></span><span> </span><span id="local-6989586621684513513"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513513"><span class="hs-identifier hs-var">pv</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Acc"><span class="hs-identifier hs-type">I.Acc</span></a></span><span> </span><span id="local-6989586621684513511"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513511"><span class="hs-identifier hs-var">acc</span></a></span></span><span> </span><span id="local-6989586621684513510"><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684513510"><span class="hs-identifier hs-var">ispace</span></a></span></span><span> </span><span id="local-6989586621684513509"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684513509"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684513508"><span class="annot"><span class="annottext">u
+</span><a href="#local-6989586621684513508"><span class="hs-identifier hs-var">u</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-59"></span><span>      </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Param (TypeBase shape u) -&gt; Maybe (Param (TypeBase shape u))
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Attrs -&gt; VName -&gt; TypeBase shape u -&gt; Param (TypeBase shape u)
+forall dec. Attrs -&gt; VName -&gt; dec -&gt; Param dec
+</span><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-var">I.Param</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684513514"><span class="hs-identifier hs-var">attrs</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513511"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase shape u -&gt; Param (TypeBase shape u))
+-&gt; TypeBase shape u -&gt; Param (TypeBase shape u)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; TypeBase shape u
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">I.Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Primitive.html#Unit"><span class="hs-identifier hs-var">I.Unit</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-60"></span><span>        </span><span class="annot"><span class="annottext">Attrs -&gt; VName -&gt; TypeBase shape u -&gt; Param (TypeBase shape u)
+forall dec. Attrs -&gt; VName -&gt; dec -&gt; Param dec
+</span><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-var">I.Param</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684513514"><span class="hs-identifier hs-var">attrs</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513513"><span class="hs-identifier hs-var">pv</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Shape -&gt; [Type] -&gt; u -&gt; TypeBase shape u
+forall shape u. VName -&gt; Shape -&gt; [Type] -&gt; u -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Acc"><span class="hs-identifier hs-var">I.Acc</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513511"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="annot"><span class="annottext">Shape
+</span><a href="#local-6989586621684513510"><span class="hs-identifier hs-var">ispace</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684513509"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">u
+</span><a href="#local-6989586621684513508"><span class="hs-identifier hs-var">u</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span>      </span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><a href="#local-6989586621684513519"><span class="hs-identifier hs-var">fixAccParam</span></a></span><span> </span><span id="local-6989586621684513506"><span class="annot"><span class="annottext">Param (TypeBase shape u)
+</span><a href="#local-6989586621684513506"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe (Param (TypeBase shape u))
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Param (TypeBase shape u)
+</span><a href="#local-6989586621684513506"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span id="local-6989586621684513690"><span class="annot"><a href="Futhark.Internalise.Bindings.html#bindingLoopParams"><span class="hs-identifier hs-type">bindingLoopParams</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-65"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#TypeParam"><span class="hs-identifier hs-type">E.TypeParam</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-66"></span><span>  </span><span class="annot"><a href="Language.Futhark.html#Pat"><span class="hs-identifier hs-type">E.Pat</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">I.Type</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SOACS.html#FParam"><span class="hs-identifier hs-type">I.FParam</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SOACS.html#FParam"><span class="hs-identifier hs-type">I.FParam</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513690"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513690"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-70"></span><span id="bindingLoopParams"><span class="annot"><span class="annottext">bindingLoopParams :: forall a.
+[TypeParam]
+-&gt; Pat
+-&gt; [Type]
+-&gt; ([FParam] -&gt; [FParam] -&gt; InternaliseM a)
+-&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Bindings.html#bindingLoopParams"><span class="hs-identifier hs-var hs-var">bindingLoopParams</span></a></span></span><span> </span><span id="local-6989586621684513493"><span class="annot"><span class="annottext">[TypeParam]
+</span><a href="#local-6989586621684513493"><span class="hs-identifier hs-var">tparams</span></a></span></span><span> </span><span id="local-6989586621684513492"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513492"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684513491"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684513491"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684513490"><span class="annot"><span class="annottext">[FParam] -&gt; [FParam] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513490"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-71"></span><span>  </span><span id="local-6989586621684513489"><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513489"><span class="hs-identifier hs-var">pat_idents</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Pat -&gt; InternaliseM [(Ident, [AttrInfo VName])]
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Pat -&gt; m [(Ident, [AttrInfo VName])]
+</span><a href="Futhark.Internalise.Bindings.html#flattenPat"><span class="hs-identifier hs-var">flattenPat</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513492"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-72"></span><span>  </span><span id="local-6989586621684513488"><span class="annot"><span class="annottext">[TypeBase Shape Uniqueness]
+</span><a href="#local-6989586621684513488"><span class="hs-identifier hs-var">pat_ts</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) ()
+-&gt; [Type] -&gt; InternaliseM [TypeBase Shape Uniqueness]
+forall shape u.
+TypeBase (DimDecl VName) ()
+-&gt; [TypeBase shape u] -&gt; InternaliseM [TypeBase Shape Uniqueness]
+</span><a href="Futhark.Internalise.TypesValues.html#internaliseLoopParamType"><span class="hs-identifier hs-var">internaliseLoopParamType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pat -&gt; TypeBase (DimDecl VName) ()
+</span><a href="Language.Futhark.Prop.html#patternStructType"><span class="hs-identifier hs-var">E.patternStructType</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513492"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684513491"><span class="hs-identifier hs-var">ts</span></a></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684513484"><span class="annot"><span class="annottext">shape_params :: [Param (TypeBase shape u)]
+</span><a href="#local-6989586621684513484"><span class="hs-identifier hs-var hs-var">shape_params</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Attrs -&gt; VName -&gt; TypeBase shape u -&gt; Param (TypeBase shape u)
+forall dec. Attrs -&gt; VName -&gt; dec -&gt; Param dec
+</span><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-var">I.Param</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513483"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase shape u -&gt; Param (TypeBase shape u))
+-&gt; TypeBase shape u -&gt; Param (TypeBase shape u)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PrimType -&gt; TypeBase shape u
+forall shape u. PrimType -&gt; TypeBase shape u
+</span><a href="Futhark.IR.Syntax.Core.html#Prim"><span class="hs-identifier hs-var">I.Prim</span></a></span><span> </span><span class="annot"><span class="annottext">PrimType
+</span><a href="Futhark.IR.Prop.Types.html#int64"><span class="hs-identifier hs-var">I.int64</span></a></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="Language.Futhark.Syntax.html#TypeParamDim"><span class="hs-identifier hs-type">E.TypeParamDim</span></a></span><span> </span><span id="local-6989586621684513483"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513483"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[TypeParam]
+</span><a href="#local-6989586621684513493"><span class="hs-identifier hs-var">tparams</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-75"></span><span>      </span><span id="local-6989586621684513481"><span class="annot"><span class="annottext">shape_subst :: Map VName [SubExp]
+</span><a href="#local-6989586621684513481"><span class="hs-identifier hs-var hs-var">shape_subst</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, [SubExp])] -&gt; Map VName [SubExp]
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Param (TypeBase Any Any) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">I.paramName</span></a></span><span> </span><span class="annot"><span class="annottext">Param (TypeBase Any Any)
+</span><a href="#local-6989586621684513480"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">I.Var</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; VName -&gt; SubExp
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Param (TypeBase Any Any) -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">I.paramName</span></a></span><span> </span><span class="annot"><span class="annottext">Param (TypeBase Any Any)
+</span><a href="#local-6989586621684513480"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span id="local-6989586621684513480"><span class="annot"><span class="annottext">Param (TypeBase Any Any)
+</span><a href="#local-6989586621684513480"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Any Any)]
+forall {shape} {u}. [Param (TypeBase shape u)]
+</span><a href="#local-6989586621684513484"><span class="hs-identifier hs-var">shape_params</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-76"></span><span>
+</span><span id="line-77"></span><span>  </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+-&gt; [TypeBase Shape Uniqueness]
+-&gt; ([[Param (TypeBase Shape Uniqueness)]] -&gt; InternaliseM a)
+-&gt; InternaliseM a
+forall t a.
+Show t =&gt;
+[(Ident, [AttrInfo VName])]
+-&gt; [t] -&gt; ([[Param t]] -&gt; InternaliseM a) -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Bindings.html#bindingFlatPat"><span class="hs-identifier hs-var">bindingFlatPat</span></a></span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513489"><span class="hs-identifier hs-var">pat_idents</span></a></span><span> </span><span class="annot"><span class="annottext">[TypeBase Shape Uniqueness]
+</span><a href="#local-6989586621684513488"><span class="hs-identifier hs-var">pat_ts</span></a></span><span> </span><span class="annot"><span class="annottext">(([[Param (TypeBase Shape Uniqueness)]] -&gt; InternaliseM a)
+ -&gt; InternaliseM a)
+-&gt; ([[Param (TypeBase Shape Uniqueness)]] -&gt; InternaliseM a)
+-&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684513479"><span class="annot"><span class="annottext">[[Param (TypeBase Shape Uniqueness)]]
+</span><a href="#local-6989586621684513479"><span class="hs-identifier hs-var">valueparams</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-78"></span><span>    </span><span class="annot"><span class="annottext">Scope SOACS -&gt; InternaliseM a -&gt; InternaliseM a
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">I.localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)] -&gt; Scope SOACS
+forall rep dec. (FParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfFParams"><span class="hs-identifier hs-var">I.scopeOfFParams</span></a></span><span> </span><span class="annot"><span class="annottext">([Param (TypeBase Shape Uniqueness)] -&gt; Scope SOACS)
+-&gt; [Param (TypeBase Shape Uniqueness)] -&gt; Scope SOACS
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+forall {shape} {u}. [Param (TypeBase shape u)]
+</span><a href="#local-6989586621684513484"><span class="hs-identifier hs-var">shape_params</span></a></span><span> </span><span class="annot"><span class="annottext">[Param (TypeBase Shape Uniqueness)]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">[[Param (TypeBase Shape Uniqueness)]]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">[[Param (TypeBase Shape Uniqueness)]]
+</span><a href="#local-6989586621684513479"><span class="hs-identifier hs-var">valueparams</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InternaliseM a -&gt; InternaliseM a)
+-&gt; InternaliseM a -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-79"></span><span>      </span><span class="annot"><span class="annottext">Map VName [SubExp] -&gt; InternaliseM a -&gt; InternaliseM a
+forall a. Map VName [SubExp] -&gt; InternaliseM a -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Monad.html#substitutingVars"><span class="hs-identifier hs-var">substitutingVars</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName [SubExp]
+</span><a href="#local-6989586621684513481"><span class="hs-identifier hs-var">shape_subst</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseM a -&gt; InternaliseM a)
+-&gt; InternaliseM a -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[FParam] -&gt; [FParam] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513490"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">[FParam]
+forall {shape} {u}. [Param (TypeBase shape u)]
+</span><a href="#local-6989586621684513484"><span class="hs-identifier hs-var">shape_params</span></a></span><span> </span><span class="annot"><span class="annottext">([FParam] -&gt; InternaliseM a) -&gt; [FParam] -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[[Param (TypeBase Shape Uniqueness)]]
+-&gt; [Param (TypeBase Shape Uniqueness)]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">[[Param (TypeBase Shape Uniqueness)]]
+</span><a href="#local-6989586621684513479"><span class="hs-identifier hs-var">valueparams</span></a></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span id="local-6989586621684513683"><span class="annot"><a href="Futhark.Internalise.Bindings.html#bindingLambdaParams"><span class="hs-identifier hs-type">bindingLambdaParams</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-82"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.html#Pat"><span class="hs-identifier hs-type">E.Pat</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">I.Type</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.SOACS.html#LParam"><span class="hs-identifier hs-type">I.LParam</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513683"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-85"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513683"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-86"></span><span id="bindingLambdaParams"><span class="annot"><span class="annottext">bindingLambdaParams :: forall a.
+[Pat] -&gt; [Type] -&gt; ([LParam] -&gt; InternaliseM a) -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Bindings.html#bindingLambdaParams"><span class="hs-identifier hs-var hs-var">bindingLambdaParams</span></a></span></span><span> </span><span id="local-6989586621684513462"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684513462"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span id="local-6989586621684513461"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684513461"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684513460"><span class="annot"><span class="annottext">[LParam] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513460"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-87"></span><span>  </span><span id="local-6989586621684513459"><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513459"><span class="hs-identifier hs-var">params_idents</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[[(Ident, [AttrInfo VName])]] -&gt; [(Ident, [AttrInfo VName])]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">([[(Ident, [AttrInfo VName])]] -&gt; [(Ident, [AttrInfo VName])])
+-&gt; InternaliseM [[(Ident, [AttrInfo VName])]]
+-&gt; InternaliseM [(Ident, [AttrInfo VName])]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; InternaliseM [(Ident, [AttrInfo VName])])
+-&gt; [Pat] -&gt; InternaliseM [[(Ident, [AttrInfo VName])]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; InternaliseM [(Ident, [AttrInfo VName])]
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Pat -&gt; m [(Ident, [AttrInfo VName])]
+</span><a href="Futhark.Internalise.Bindings.html#flattenPat"><span class="hs-identifier hs-var">flattenPat</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684513462"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span>  </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+-&gt; [Type] -&gt; ([[Param Type]] -&gt; InternaliseM a) -&gt; InternaliseM a
+forall t a.
+Show t =&gt;
+[(Ident, [AttrInfo VName])]
+-&gt; [t] -&gt; ([[Param t]] -&gt; InternaliseM a) -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Bindings.html#bindingFlatPat"><span class="hs-identifier hs-var">bindingFlatPat</span></a></span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513459"><span class="hs-identifier hs-var">params_idents</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684513461"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">(([[Param Type]] -&gt; InternaliseM a) -&gt; InternaliseM a)
+-&gt; ([[Param Type]] -&gt; InternaliseM a) -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684513458"><span class="annot"><span class="annottext">[[Param Type]]
+</span><a href="#local-6989586621684513458"><span class="hs-identifier hs-var">params'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-90"></span><span>    </span><span class="annot"><span class="annottext">Scope SOACS -&gt; InternaliseM a -&gt; InternaliseM a
+forall rep (m :: * -&gt; *) a.
+LocalScope rep m =&gt;
+Scope rep -&gt; m a -&gt; m a
+</span><a href="Futhark.IR.Prop.Scope.html#localScope"><span class="hs-identifier hs-var">I.localScope</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param Type] -&gt; Scope SOACS
+forall rep dec. (LParamInfo rep ~ dec) =&gt; [Param dec] -&gt; Scope rep
+</span><a href="Futhark.IR.Prop.Scope.html#scopeOfLParams"><span class="hs-identifier hs-var">I.scopeOfLParams</span></a></span><span> </span><span class="annot"><span class="annottext">([Param Type] -&gt; Scope SOACS) -&gt; [Param Type] -&gt; Scope SOACS
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[[Param Type]] -&gt; [Param Type]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">[[Param Type]]
+</span><a href="#local-6989586621684513458"><span class="hs-identifier hs-var">params'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InternaliseM a -&gt; InternaliseM a)
+-&gt; InternaliseM a -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[LParam] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513460"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">([LParam] -&gt; InternaliseM a) -&gt; [LParam] -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[[Param Type]] -&gt; [Param Type]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">[[Param Type]]
+</span><a href="#local-6989586621684513458"><span class="hs-identifier hs-var">params'</span></a></span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span id="local-6989586621684513677"><span class="annot"><a href="Futhark.Internalise.Bindings.html#processFlatPat"><span class="hs-identifier hs-type">processFlatPat</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-93"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="annot"><a href="#local-6989586621684513677"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-94"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.html#Ident"><span class="hs-identifier hs-type">E.Ident</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Syntax.html#AttrInfo"><span class="hs-identifier hs-type">E.AttrInfo</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-95"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684513677"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-96"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-type">I.Param</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513677"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#VarSubsts"><span class="hs-identifier hs-type">VarSubsts</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-97"></span><span id="processFlatPat"><span class="annot"><span class="annottext">processFlatPat :: forall t.
+Show t =&gt;
+[(Ident, [AttrInfo VName])]
+-&gt; [t] -&gt; InternaliseM ([[Param t]], Map VName [SubExp])
+</span><a href="Futhark.Internalise.Bindings.html#processFlatPat"><span class="hs-identifier hs-var hs-var">processFlatPat</span></a></span></span><span> </span><span id="local-6989586621684513446"><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513446"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621684513445"><span class="annot"><span class="annottext">[t]
+</span><a href="#local-6989586621684513445"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[([Param t], (VName, [SubExp]))]
+-&gt; [(Ident, [AttrInfo VName])]
+-&gt; [t]
+-&gt; InternaliseM ([[Param t]], Map VName [SubExp])
+forall {dec}.
+[([Param dec], (VName, [SubExp]))]
+-&gt; [(Ident, [AttrInfo VName])]
+-&gt; [dec]
+-&gt; InternaliseM ([[Param dec]], Map VName [SubExp])
+</span><a href="#local-6989586621684513444"><span class="hs-identifier hs-var">processFlatPat'</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513446"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">[t]
+</span><a href="#local-6989586621684513445"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-98"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-99"></span><span>    </span><span id="local-6989586621684513444"><span class="annot"><span class="annottext">processFlatPat' :: [([Param dec], (VName, [SubExp]))]
+-&gt; [(Ident, [AttrInfo VName])]
+-&gt; [dec]
+-&gt; InternaliseM ([[Param dec]], Map VName [SubExp])
+</span><a href="#local-6989586621684513444"><span class="hs-identifier hs-var hs-var">processFlatPat'</span></a></span></span><span> </span><span id="local-6989586621684513438"><span class="annot"><span class="annottext">[([Param dec], (VName, [SubExp]))]
+</span><a href="#local-6989586621684513438"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[dec]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-100"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684513437"><span class="annot"><span class="annottext">[[Param dec]]
+</span><a href="#local-6989586621684513437"><span class="hs-identifier hs-var">vs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684513436"><span class="annot"><span class="annottext">[(VName, [SubExp])]
+</span><a href="#local-6989586621684513436"><span class="hs-identifier hs-var">substs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[([Param dec], (VName, [SubExp]))]
+-&gt; ([[Param dec]], [(VName, [SubExp])])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">[([Param dec], (VName, [SubExp]))]
+</span><a href="#local-6989586621684513438"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-101"></span><span>      </span><span class="annot"><span class="annottext">([[Param dec]], Map VName [SubExp])
+-&gt; InternaliseM ([[Param dec]], Map VName [SubExp])
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[[Param dec]] -&gt; [[Param dec]]
+forall a. [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">reverse</span></span><span> </span><span class="annot"><span class="annottext">[[Param dec]]
+</span><a href="#local-6989586621684513437"><span class="hs-identifier hs-var">vs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[(VName, [SubExp])] -&gt; Map VName [SubExp]
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">[(VName, [SubExp])]
+</span><a href="#local-6989586621684513436"><span class="hs-identifier hs-var">substs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>    </span><span class="annot"><a href="#local-6989586621684513444"><span class="hs-identifier hs-var">processFlatPat'</span></a></span><span> </span><span id="local-6989586621684513434"><span class="annot"><span class="annottext">[([Param dec], (VName, [SubExp]))]
+</span><a href="#local-6989586621684513434"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684513433"><span class="annot"><span class="annottext">Ident
+</span><a href="#local-6989586621684513433"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684513432"><span class="annot"><span class="annottext">[AttrInfo VName]
+</span><a href="#local-6989586621684513432"><span class="hs-identifier hs-var">attrs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684513431"><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513431"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684513430"><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513430"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-103"></span><span>      </span><span id="local-6989586621684513429"><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684513429"><span class="hs-identifier hs-var">attrs'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[AttrInfo VName] -&gt; InternaliseM Attrs
+</span><a href="Futhark.Internalise.Bindings.html#internaliseAttrs"><span class="hs-identifier hs-var">internaliseAttrs</span></a></span><span> </span><span class="annot"><span class="annottext">[AttrInfo VName]
+</span><a href="#local-6989586621684513432"><span class="hs-identifier hs-var">attrs</span></a></span><span>
+</span><span id="line-104"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621684513428"><span class="annot"><span class="annottext">[Param dec]
+</span><a href="#local-6989586621684513428"><span class="hs-identifier hs-var">ps</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684513427"><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513427"><span class="hs-identifier hs-var">rest_ts</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Attrs -&gt; [dec] -&gt; [VName] -&gt; ([Param dec], [dec])
+forall {dec}. Attrs -&gt; [dec] -&gt; [VName] -&gt; ([Param dec], [dec])
+</span><a href="#local-6989586621684513426"><span class="hs-identifier hs-var">handleMapping</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684513429"><span class="hs-identifier hs-var">attrs'</span></a></span><span> </span><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513430"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">([VName] -&gt; ([Param dec], [dec]))
+-&gt; InternaliseM [VName] -&gt; InternaliseM ([Param dec], [dec])
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Ident -&gt; InternaliseM [VName]
+</span><a href="#local-6989586621684513425"><span class="hs-identifier hs-var">internaliseBindee</span></a></span><span> </span><span class="annot"><span class="annottext">Ident
+</span><a href="#local-6989586621684513433"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-105"></span><span>      </span><span class="annot"><span class="annottext">[([Param dec], (VName, [SubExp]))]
+-&gt; [(Ident, [AttrInfo VName])]
+-&gt; [dec]
+-&gt; InternaliseM ([[Param dec]], Map VName [SubExp])
+</span><a href="#local-6989586621684513444"><span class="hs-identifier hs-var">processFlatPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Param dec]
+</span><a href="#local-6989586621684513428"><span class="hs-identifier hs-var">ps</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ident -&gt; VName
+forall (f :: * -&gt; *) vn. IdentBase f vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#identName"><span class="hs-identifier hs-var hs-var">E.identName</span></a></span><span> </span><span class="annot"><span class="annottext">Ident
+</span><a href="#local-6989586621684513433"><span class="hs-identifier hs-var">p</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(Param dec -&gt; SubExp) -&gt; [Param dec] -&gt; [SubExp]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; SubExp
+</span><a href="Futhark.IR.Syntax.Core.html#Var"><span class="hs-identifier hs-var">I.Var</span></a></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; SubExp) -&gt; (Param dec -&gt; VName) -&gt; Param dec -&gt; SubExp
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Param dec -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">I.paramName</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Param dec]
+</span><a href="#local-6989586621684513428"><span class="hs-identifier hs-var">ps</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Param dec], (VName, [SubExp]))
+-&gt; [([Param dec], (VName, [SubExp]))]
+-&gt; [([Param dec], (VName, [SubExp]))]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[([Param dec], (VName, [SubExp]))]
+</span><a href="#local-6989586621684513434"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513431"><span class="hs-identifier hs-var">rest</span></a></span><span> </span><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513427"><span class="hs-identifier hs-var">rest_ts</span></a></span><span>
+</span><span id="line-106"></span><span>
+</span><span id="line-107"></span><span>    </span><span id="local-6989586621684513426"><span class="annot"><span class="annottext">handleMapping :: Attrs -&gt; [dec] -&gt; [VName] -&gt; ([Param dec], [dec])
+</span><a href="#local-6989586621684513426"><span class="hs-identifier hs-var hs-var">handleMapping</span></a></span></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684513405"><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513405"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-108"></span><span>      </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513405"><span class="hs-identifier hs-var">ts</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span>    </span><span class="annot"><a href="#local-6989586621684513426"><span class="hs-identifier hs-var">handleMapping</span></a></span><span> </span><span id="local-6989586621684513404"><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684513404"><span class="hs-identifier hs-var">attrs</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684513403"><span class="annot"><span class="annottext">dec
+</span><a href="#local-6989586621684513403"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684513402"><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513402"><span class="hs-identifier hs-var">ts</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684513401"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513401"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span> </span><span id="local-6989586621684513400"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684513400"><span class="hs-identifier hs-var">rs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-110"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684513399"><span class="annot"><span class="annottext">[Param dec]
+</span><a href="#local-6989586621684513399"><span class="hs-identifier hs-var">ps</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684513398"><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513398"><span class="hs-identifier hs-var">ts'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Attrs -&gt; [dec] -&gt; [VName] -&gt; ([Param dec], [dec])
+</span><a href="#local-6989586621684513426"><span class="hs-identifier hs-var">handleMapping</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684513404"><span class="hs-identifier hs-var">attrs</span></a></span><span> </span><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513402"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684513400"><span class="hs-identifier hs-var">rs</span></a></span><span>
+</span><span id="line-111"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Attrs -&gt; VName -&gt; dec -&gt; Param dec
+forall dec. Attrs -&gt; VName -&gt; dec -&gt; Param dec
+</span><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-var">I.Param</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684513404"><span class="hs-identifier hs-var">attrs</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513401"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">dec
+</span><a href="#local-6989586621684513403"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Param dec -&gt; [Param dec] -&gt; [Param dec]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[Param dec]
+</span><a href="#local-6989586621684513399"><span class="hs-identifier hs-var">ps</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[dec]
+</span><a href="#local-6989586621684513398"><span class="hs-identifier hs-var">ts'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>    </span><span class="annot"><a href="#local-6989586621684513426"><span class="hs-identifier hs-var">handleMapping</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-113"></span><span>      </span><span class="annot"><span class="annottext">[Char] -&gt; ([Param dec], [dec])
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; ([Param dec], [dec])) -&gt; [Char] -&gt; ([Param dec], [dec])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;handleMapping: insufficient identifiers in pattern.&quot;</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; [Char] -&gt; [Char]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span> </span><span class="annot"><span class="annottext">([(Ident, [AttrInfo VName])], [t]) -&gt; [Char]
+forall a. Show a =&gt; a -&gt; [Char]
+</span><span class="hs-identifier hs-var">show</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513446"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[t]
+</span><a href="#local-6989586621684513445"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>
+</span><span id="line-115"></span><span>    </span><span class="annot"><a href="#local-6989586621684513425"><span class="hs-identifier hs-type">internaliseBindee</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.Futhark.html#Ident"><span class="hs-identifier hs-type">E.Ident</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-116"></span><span>    </span><span id="local-6989586621684513425"><span class="annot"><span class="annottext">internaliseBindee :: Ident -&gt; InternaliseM [VName]
+</span><a href="#local-6989586621684513425"><span class="hs-identifier hs-var hs-var">internaliseBindee</span></a></span></span><span> </span><span id="local-6989586621684513395"><span class="annot"><span class="annottext">Ident
+</span><a href="#local-6989586621684513395"><span class="hs-identifier hs-var">bindee</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-117"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684513394"><span class="annot"><span class="annottext">name :: VName
+</span><a href="#local-6989586621684513394"><span class="hs-identifier hs-var hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ident -&gt; VName
+forall (f :: * -&gt; *) vn. IdentBase f vn -&gt; vn
+</span><a href="Language.Futhark.Syntax.html#identName"><span class="hs-identifier hs-var hs-var">E.identName</span></a></span><span> </span><span class="annot"><span class="annottext">Ident
+</span><a href="#local-6989586621684513395"><span class="hs-identifier hs-var">bindee</span></a></span><span>
+</span><span id="line-118"></span><span>      </span><span id="local-6989586621684513393"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684513393"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing -&gt; InternaliseM Int
+forall als. TypeBase (DimDecl VName) als -&gt; InternaliseM Int
+</span><a href="Futhark.Internalise.TypesValues.html#internalisedTypeSize"><span class="hs-identifier hs-var">internalisedTypeSize</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) Aliasing -&gt; InternaliseM Int)
+-&gt; TypeBase (DimDecl VName) Aliasing -&gt; InternaliseM Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall a. Info a -&gt; a
+</span><a href="Language.Futhark.Syntax.html#unInfo"><span class="hs-identifier hs-var hs-var">E.unInfo</span></a></span><span> </span><span class="annot"><span class="annottext">(Info (TypeBase (DimDecl VName) Aliasing)
+ -&gt; TypeBase (DimDecl VName) Aliasing)
+-&gt; Info (TypeBase (DimDecl VName) Aliasing)
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Ident -&gt; Info (TypeBase (DimDecl VName) Aliasing)
+forall (f :: * -&gt; *) vn.
+IdentBase f vn -&gt; f (TypeBase (DimDecl VName) Aliasing)
+</span><a href="Language.Futhark.Syntax.html#identType"><span class="hs-identifier hs-var hs-var">E.identType</span></a></span><span> </span><span class="annot"><span class="annottext">Ident
+</span><a href="#local-6989586621684513395"><span class="hs-identifier hs-var">bindee</span></a></span><span>
+</span><span id="line-119"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684513393"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-120"></span><span>        </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; InternaliseM [VName]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513394"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-121"></span><span>        </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; InternaliseM VName -&gt; InternaliseM [VName]
+forall (m :: * -&gt; *) a. Applicative m =&gt; Int -&gt; m a -&gt; m [a]
+</span><span class="hs-identifier hs-var">replicateM</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621684513393"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">(InternaliseM VName -&gt; InternaliseM [VName])
+-&gt; InternaliseM VName -&gt; InternaliseM [VName]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; InternaliseM VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">([Char] -&gt; InternaliseM VName) -&gt; [Char] -&gt; InternaliseM VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; [Char]
+</span><a href="Language.Futhark.Core.html#baseString"><span class="hs-identifier hs-var">baseString</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513394"><span class="hs-identifier hs-var">name</span></a></span><span>
+</span><span id="line-122"></span><span>
+</span><span id="line-123"></span><span id="local-6989586621684513710"><span id="local-6989586621684513711"><span class="annot"><a href="Futhark.Internalise.Bindings.html#bindingFlatPat"><span class="hs-identifier hs-type">bindingFlatPat</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-124"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="annot"><a href="#local-6989586621684513711"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.html#Ident"><span class="hs-identifier hs-type">E.Ident</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Syntax.html#AttrInfo"><span class="hs-identifier hs-type">E.AttrInfo</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-126"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621684513711"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-127"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Param"><span class="hs-identifier hs-type">I.Param</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513711"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">]</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513710"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-128"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513710"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-129"></span><span id="bindingFlatPat"><span class="annot"><span class="annottext">bindingFlatPat :: forall t a.
+Show t =&gt;
+[(Ident, [AttrInfo VName])]
+-&gt; [t] -&gt; ([[Param t]] -&gt; InternaliseM a) -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Bindings.html#bindingFlatPat"><span class="hs-identifier hs-var hs-var">bindingFlatPat</span></a></span></span><span> </span><span id="local-6989586621684513382"><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513382"><span class="hs-identifier hs-var">idents</span></a></span></span><span> </span><span id="local-6989586621684513381"><span class="annot"><span class="annottext">[t]
+</span><a href="#local-6989586621684513381"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684513380"><span class="annot"><span class="annottext">[[Param t]] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513380"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-130"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621684513379"><span class="annot"><span class="annottext">[[Param t]]
+</span><a href="#local-6989586621684513379"><span class="hs-identifier hs-var">ps</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684513378"><span class="annot"><span class="annottext">Map VName [SubExp]
+</span><a href="#local-6989586621684513378"><span class="hs-identifier hs-var">substs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+-&gt; [t] -&gt; InternaliseM ([[Param t]], Map VName [SubExp])
+forall t.
+Show t =&gt;
+[(Ident, [AttrInfo VName])]
+-&gt; [t] -&gt; InternaliseM ([[Param t]], Map VName [SubExp])
+</span><a href="Futhark.Internalise.Bindings.html#processFlatPat"><span class="hs-identifier hs-var">processFlatPat</span></a></span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513382"><span class="hs-identifier hs-var">idents</span></a></span><span> </span><span class="annot"><span class="annottext">[t]
+</span><a href="#local-6989586621684513381"><span class="hs-identifier hs-var">ts</span></a></span><span>
+</span><span id="line-131"></span><span>  </span><span class="annot"><span class="annottext">(InternaliseEnv -&gt; InternaliseEnv)
+-&gt; InternaliseM a -&gt; InternaliseM a
+forall r (m :: * -&gt; *) a. MonadReader r m =&gt; (r -&gt; r) -&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">local</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621684513376"><span class="annot"><span class="annottext">InternaliseEnv
+</span><a href="#local-6989586621684513376"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">InternaliseEnv
+</span><a href="#local-6989586621684513376"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">envSubsts :: Map VName [SubExp]
+</span><a href="Futhark.Internalise.Monad.html#envSubsts"><span class="hs-identifier hs-var">envSubsts</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map VName [SubExp]
+</span><a href="#local-6989586621684513378"><span class="hs-identifier hs-var">substs</span></a></span><span> </span><span class="annot"><span class="annottext">Map VName [SubExp] -&gt; Map VName [SubExp] -&gt; Map VName [SubExp]
+forall k a. Ord k =&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-operator hs-var">`M.union`</span></span><span> </span><span class="annot"><span class="annottext">InternaliseEnv -&gt; Map VName [SubExp]
+</span><a href="Futhark.Internalise.Monad.html#envSubsts"><span class="hs-identifier hs-var hs-var">envSubsts</span></a></span><span> </span><span class="annot"><span class="annottext">InternaliseEnv
+</span><a href="#local-6989586621684513376"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InternaliseM a -&gt; InternaliseM a)
+-&gt; InternaliseM a -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-132"></span><span>    </span><span class="annot"><span class="annottext">[[Param t]] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513380"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">[[Param t]]
+</span><a href="#local-6989586621684513379"><span class="hs-identifier hs-var">ps</span></a></span><span>
+</span><span id="line-133"></span><span>
+</span><span id="line-134"></span><span class="hs-comment">-- | Flatten a pattern.  Returns a list of identifiers.</span><span>
+</span><span id="line-135"></span><span id="local-6989586621684513742"><span class="annot"><a href="Futhark.Internalise.Bindings.html#flattenPat"><span class="hs-identifier hs-type">flattenPat</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Futhark.MonadFreshNames.html#MonadFreshNames"><span class="hs-identifier hs-type">MonadFreshNames</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513742"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Language.Futhark.html#Pat"><span class="hs-identifier hs-type">E.Pat</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621684513742"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.html#Ident"><span class="hs-identifier hs-type">E.Ident</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Syntax.html#AttrInfo"><span class="hs-identifier hs-type">E.AttrInfo</span></a></span><span> </span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">]</span></span><span>
+</span><span id="line-136"></span><span id="flattenPat"><span class="annot"><span class="annottext">flattenPat :: forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Pat -&gt; m [(Ident, [AttrInfo VName])]
+</span><a href="Futhark.Internalise.Bindings.html#flattenPat"><span class="hs-identifier hs-var hs-var">flattenPat</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pat -&gt; m [(Ident, [AttrInfo VName])]
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Pat -&gt; m [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span>
+</span><span id="line-137"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-138"></span><span>    </span><span id="local-6989586621684513371"><span class="annot"><span class="annottext">flattenPat' :: Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var hs-var">flattenPat'</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatParens"><span class="hs-identifier hs-type">E.PatParens</span></a></span><span> </span><span id="local-6989586621684513340"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513340"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-139"></span><span>      </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513340"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-140"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatAttr"><span class="hs-identifier hs-type">E.PatAttr</span></a></span><span> </span><span id="local-6989586621684513338"><span class="annot"><span class="annottext">AttrInfo VName
+</span><a href="#local-6989586621684513338"><span class="hs-identifier hs-var">attr</span></a></span></span><span> </span><span id="local-6989586621684513337"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513337"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-141"></span><span>      </span><span class="annot"><span class="annottext">((Ident, [AttrInfo VName]) -&gt; (Ident, [AttrInfo VName]))
+-&gt; [(Ident, [AttrInfo VName])] -&gt; [(Ident, [AttrInfo VName])]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">([AttrInfo VName] -&gt; [AttrInfo VName])
+-&gt; (Ident, [AttrInfo VName]) -&gt; (Ident, [AttrInfo VName])
+forall (p :: * -&gt; * -&gt; *) b c a.
+Bifunctor p =&gt;
+(b -&gt; c) -&gt; p a b -&gt; p a c
+</span><span class="hs-identifier hs-var">second</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AttrInfo VName
+</span><a href="#local-6989586621684513338"><span class="hs-identifier hs-var">attr</span></a></span><span> </span><span class="annot"><span class="annottext">AttrInfo VName -&gt; [AttrInfo VName] -&gt; [AttrInfo VName]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(Ident, [AttrInfo VName])] -&gt; [(Ident, [AttrInfo VName])])
+-&gt; f [(Ident, [AttrInfo VName])] -&gt; f [(Ident, [AttrInfo VName])]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513337"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-142"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Wildcard"><span class="hs-identifier hs-type">E.Wildcard</span></a></span><span> </span><span id="local-6989586621684513334"><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><a href="#local-6989586621684513334"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621684513333"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513333"><span class="hs-identifier hs-var">loc</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-143"></span><span>      </span><span id="local-6989586621684513332"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513332"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; f VName
+forall (m :: * -&gt; *). MonadFreshNames m =&gt; [Char] -&gt; m VName
+</span><a href="Futhark.MonadFreshNames.html#newVName"><span class="hs-identifier hs-var">newVName</span></a></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;nameless&quot;</span></span><span>
+</span><span id="line-144"></span><span>      </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; f [(Ident, [AttrInfo VName])])
+-&gt; Pat -&gt; f [(Ident, [AttrInfo VName])]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Info (TypeBase (DimDecl VName) Aliasing) -&gt; SrcLoc -&gt; Pat
+forall (f :: * -&gt; *) vn.
+vn
+-&gt; f (TypeBase (DimDecl VName) Aliasing) -&gt; SrcLoc -&gt; PatBase f vn
+</span><a href="Language.Futhark.Syntax.html#Id"><span class="hs-identifier hs-var">E.Id</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513332"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><a href="#local-6989586621684513334"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513333"><span class="hs-identifier hs-var">loc</span></a></span><span>
+</span><span id="line-145"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Id"><span class="hs-identifier hs-type">E.Id</span></a></span><span> </span><span id="local-6989586621684513330"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513330"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-type">Info</span></a></span><span> </span><span id="local-6989586621684513328"><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+</span><a href="#local-6989586621684513328"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684513327"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513327"><span class="hs-identifier hs-var">loc</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-146"></span><span>      </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])] -&gt; f [(Ident, [AttrInfo VName])]
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName
+-&gt; Info (TypeBase (DimDecl VName) Aliasing) -&gt; SrcLoc -&gt; Ident
+forall (f :: * -&gt; *) vn.
+vn
+-&gt; f (TypeBase (DimDecl VName) Aliasing)
+-&gt; SrcLoc
+-&gt; IdentBase f vn
+</span><a href="Language.Futhark.Syntax.html#Ident"><span class="hs-identifier hs-var">E.Ident</span></a></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684513330"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+-&gt; Info (TypeBase (DimDecl VName) Aliasing)
+forall a. a -&gt; Info a
+</span><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-var">Info</span></a></span><span> </span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+</span><a href="#local-6989586621684513328"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513327"><span class="hs-identifier hs-var">loc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[AttrInfo VName]
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-147"></span><span>    </span><span class="hs-comment">-- XXX: treat empty tuples and records as unit.</span><span>
+</span><span id="line-148"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#TuplePat"><span class="hs-identifier hs-type">E.TuplePat</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span id="local-6989586621684513324"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513324"><span class="hs-identifier hs-var">loc</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-149"></span><span>      </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing) -&gt; SrcLoc -&gt; Pat
+forall (f :: * -&gt; *) vn.
+f (TypeBase (DimDecl VName) Aliasing) -&gt; SrcLoc -&gt; PatBase f vn
+</span><a href="Language.Futhark.Syntax.html#Wildcard"><span class="hs-identifier hs-var">E.Wildcard</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+-&gt; Info (TypeBase (DimDecl VName) Aliasing)
+forall a. a -&gt; Info a
+</span><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-var">Info</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) Aliasing
+ -&gt; Info (TypeBase (DimDecl VName) Aliasing))
+-&gt; TypeBase (DimDecl VName) Aliasing
+-&gt; Info (TypeBase (DimDecl VName) Aliasing)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ScalarTypeBase (DimDecl VName) Aliasing
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall dim as. ScalarTypeBase dim as -&gt; TypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-var">E.Scalar</span></a></span><span> </span><span class="annot"><span class="annottext">(ScalarTypeBase (DimDecl VName) Aliasing
+ -&gt; TypeBase (DimDecl VName) Aliasing)
+-&gt; ScalarTypeBase (DimDecl VName) Aliasing
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name (TypeBase (DimDecl VName) Aliasing)
+-&gt; ScalarTypeBase (DimDecl VName) Aliasing
+forall dim as. Map Name (TypeBase dim as) -&gt; ScalarTypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#Record"><span class="hs-identifier hs-var">E.Record</span></a></span><span> </span><span class="annot"><span class="annottext">Map Name (TypeBase (DimDecl VName) Aliasing)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513324"><span class="hs-identifier hs-var">loc</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-150"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#RecordPat"><span class="hs-identifier hs-type">E.RecordPat</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span id="local-6989586621684513320"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513320"><span class="hs-identifier hs-var">loc</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-151"></span><span>      </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing) -&gt; SrcLoc -&gt; Pat
+forall (f :: * -&gt; *) vn.
+f (TypeBase (DimDecl VName) Aliasing) -&gt; SrcLoc -&gt; PatBase f vn
+</span><a href="Language.Futhark.Syntax.html#Wildcard"><span class="hs-identifier hs-var">E.Wildcard</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TypeBase (DimDecl VName) Aliasing
+-&gt; Info (TypeBase (DimDecl VName) Aliasing)
+forall a. a -&gt; Info a
+</span><a href="Language.Futhark.Syntax.html#Info"><span class="hs-identifier hs-var">Info</span></a></span><span> </span><span class="annot"><span class="annottext">(TypeBase (DimDecl VName) Aliasing
+ -&gt; Info (TypeBase (DimDecl VName) Aliasing))
+-&gt; TypeBase (DimDecl VName) Aliasing
+-&gt; Info (TypeBase (DimDecl VName) Aliasing)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ScalarTypeBase (DimDecl VName) Aliasing
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall dim as. ScalarTypeBase dim as -&gt; TypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#Scalar"><span class="hs-identifier hs-var">E.Scalar</span></a></span><span> </span><span class="annot"><span class="annottext">(ScalarTypeBase (DimDecl VName) Aliasing
+ -&gt; TypeBase (DimDecl VName) Aliasing)
+-&gt; ScalarTypeBase (DimDecl VName) Aliasing
+-&gt; TypeBase (DimDecl VName) Aliasing
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name (TypeBase (DimDecl VName) Aliasing)
+-&gt; ScalarTypeBase (DimDecl VName) Aliasing
+forall dim as. Map Name (TypeBase dim as) -&gt; ScalarTypeBase dim as
+</span><a href="Language.Futhark.Syntax.html#Record"><span class="hs-identifier hs-var">E.Record</span></a></span><span> </span><span class="annot"><span class="annottext">Map Name (TypeBase (DimDecl VName) Aliasing)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513320"><span class="hs-identifier hs-var">loc</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-152"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#TuplePat"><span class="hs-identifier hs-type">E.TuplePat</span></a></span><span> </span><span id="local-6989586621684513319"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684513319"><span class="hs-identifier hs-var">pats</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-153"></span><span>      </span><span class="annot"><span class="annottext">[[(Ident, [AttrInfo VName])]] -&gt; [(Ident, [AttrInfo VName])]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">([[(Ident, [AttrInfo VName])]] -&gt; [(Ident, [AttrInfo VName])])
+-&gt; f [[(Ident, [AttrInfo VName])]] -&gt; f [(Ident, [AttrInfo VName])]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; f [(Ident, [AttrInfo VName])])
+-&gt; [Pat] -&gt; f [[(Ident, [AttrInfo VName])]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684513319"><span class="hs-identifier hs-var">pats</span></a></span><span>
+</span><span id="line-154"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#RecordPat"><span class="hs-identifier hs-type">E.RecordPat</span></a></span><span> </span><span id="local-6989586621684513318"><span class="annot"><span class="annottext">[(Name, Pat)]
+</span><a href="#local-6989586621684513318"><span class="hs-identifier hs-var">fs</span></a></span></span><span> </span><span id="local-6989586621684513317"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513317"><span class="hs-identifier hs-var">loc</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-155"></span><span>      </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; f [(Ident, [AttrInfo VName])])
+-&gt; Pat -&gt; f [(Ident, [AttrInfo VName])]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[Pat] -&gt; SrcLoc -&gt; Pat
+forall (f :: * -&gt; *) vn. [PatBase f vn] -&gt; SrcLoc -&gt; PatBase f vn
+</span><a href="Language.Futhark.Syntax.html#TuplePat"><span class="hs-identifier hs-var">E.TuplePat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((Name, Pat) -&gt; Pat) -&gt; [(Name, Pat)] -&gt; [Pat]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(Name, Pat) -&gt; Pat
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">([(Name, Pat)] -&gt; [Pat]) -&gt; [(Name, Pat)] -&gt; [Pat]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Map Name Pat -&gt; [(Name, Pat)]
+forall a. Map Name a -&gt; [(Name, a)]
+</span><a href="Language.Futhark.Prop.html#sortFields"><span class="hs-identifier hs-var">sortFields</span></a></span><span> </span><span class="annot"><span class="annottext">(Map Name Pat -&gt; [(Name, Pat)]) -&gt; Map Name Pat -&gt; [(Name, Pat)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(Name, Pat)] -&gt; Map Name Pat
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">M.fromList</span></span><span> </span><span class="annot"><span class="annottext">[(Name, Pat)]
+</span><a href="#local-6989586621684513318"><span class="hs-identifier hs-var">fs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513317"><span class="hs-identifier hs-var">loc</span></a></span><span>
+</span><span id="line-156"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatAscription"><span class="hs-identifier hs-type">E.PatAscription</span></a></span><span> </span><span id="local-6989586621684513314"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513314"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="annot"><span class="annottext">TypeDeclBase Info VName
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-157"></span><span>      </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513314"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-158"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatLit"><span class="hs-identifier hs-type">E.PatLit</span></a></span><span> </span><span class="annot"><span class="annottext">PatLit
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684513312"><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><a href="#local-6989586621684513312"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621684513311"><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513311"><span class="hs-identifier hs-var">loc</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-159"></span><span>      </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; f [(Ident, [AttrInfo VName])])
+-&gt; Pat -&gt; f [(Ident, [AttrInfo VName])]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing) -&gt; SrcLoc -&gt; Pat
+forall (f :: * -&gt; *) vn.
+f (TypeBase (DimDecl VName) Aliasing) -&gt; SrcLoc -&gt; PatBase f vn
+</span><a href="Language.Futhark.Syntax.html#Wildcard"><span class="hs-identifier hs-var">E.Wildcard</span></a></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><a href="#local-6989586621684513312"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><a href="#local-6989586621684513311"><span class="hs-identifier hs-var">loc</span></a></span><span>
+</span><span id="line-160"></span><span>    </span><span class="annot"><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.Futhark.Syntax.html#PatConstr"><span class="hs-identifier hs-type">E.PatConstr</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Info (TypeBase (DimDecl VName) Aliasing)
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621684513309"><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684513309"><span class="hs-identifier hs-var">ps</span></a></span></span><span> </span><span class="annot"><span class="annottext">SrcLoc
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-161"></span><span>      </span><span class="annot"><span class="annottext">[[(Ident, [AttrInfo VName])]] -&gt; [(Ident, [AttrInfo VName])]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span> </span><span class="annot"><span class="annottext">([[(Ident, [AttrInfo VName])]] -&gt; [(Ident, [AttrInfo VName])])
+-&gt; f [[(Ident, [AttrInfo VName])]] -&gt; f [(Ident, [AttrInfo VName])]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">(Pat -&gt; f [(Ident, [AttrInfo VName])])
+-&gt; [Pat] -&gt; f [[(Ident, [AttrInfo VName])]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+</span><span class="hs-identifier hs-var">mapM</span></span><span> </span><span class="annot"><span class="annottext">Pat -&gt; f [(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513371"><span class="hs-identifier hs-var">flattenPat'</span></a></span><span> </span><span class="annot"><span class="annottext">[Pat]
+</span><a href="#local-6989586621684513309"><span class="hs-identifier hs-var">ps</span></a></span><span>
+</span><span id="line-162"></span><span>
+</span><span id="line-163"></span><span id="local-6989586621684513621"><span class="annot"><a href="Futhark.Internalise.Bindings.html#stmPat"><span class="hs-identifier hs-type">stmPat</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-164"></span><span>  </span><span class="annot"><a href="Language.Futhark.html#Pat"><span class="hs-identifier hs-type">E.Pat</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-165"></span><span>  </span><span class="hs-special">[</span><span class="annot"><a href="Futhark.IR.Syntax.Core.html#Type"><span class="hs-identifier hs-type">I.Type</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-166"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="Language.Futhark.Core.html#VName"><span class="hs-identifier hs-type">VName</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513621"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-167"></span><span>  </span><span class="annot"><a href="Futhark.Internalise.Monad.html#InternaliseM"><span class="hs-identifier hs-type">InternaliseM</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684513621"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-168"></span><span id="stmPat"><span class="annot"><span class="annottext">stmPat :: forall a.
+Pat -&gt; [Type] -&gt; ([VName] -&gt; InternaliseM a) -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Bindings.html#stmPat"><span class="hs-identifier hs-var hs-var">stmPat</span></a></span></span><span> </span><span id="local-6989586621684513301"><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513301"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684513300"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684513300"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621684513299"><span class="annot"><span class="annottext">[VName] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513299"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-169"></span><span>  </span><span id="local-6989586621684513298"><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513298"><span class="hs-identifier hs-var">pat'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Pat -&gt; InternaliseM [(Ident, [AttrInfo VName])]
+forall (m :: * -&gt; *).
+MonadFreshNames m =&gt;
+Pat -&gt; m [(Ident, [AttrInfo VName])]
+</span><a href="Futhark.Internalise.Bindings.html#flattenPat"><span class="hs-identifier hs-var">flattenPat</span></a></span><span> </span><span class="annot"><span class="annottext">Pat
+</span><a href="#local-6989586621684513301"><span class="hs-identifier hs-var">pat</span></a></span><span>
+</span><span id="line-170"></span><span>  </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+-&gt; [Type] -&gt; ([[Param Type]] -&gt; InternaliseM a) -&gt; InternaliseM a
+forall t a.
+Show t =&gt;
+[(Ident, [AttrInfo VName])]
+-&gt; [t] -&gt; ([[Param t]] -&gt; InternaliseM a) -&gt; InternaliseM a
+</span><a href="Futhark.Internalise.Bindings.html#bindingFlatPat"><span class="hs-identifier hs-var">bindingFlatPat</span></a></span><span> </span><span class="annot"><span class="annottext">[(Ident, [AttrInfo VName])]
+</span><a href="#local-6989586621684513298"><span class="hs-identifier hs-var">pat'</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621684513300"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">(([[Param Type]] -&gt; InternaliseM a) -&gt; InternaliseM a)
+-&gt; ([[Param Type]] -&gt; InternaliseM a) -&gt; InternaliseM a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; InternaliseM a
+</span><a href="#local-6989586621684513299"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">([VName] -&gt; InternaliseM a)
+-&gt; ([[Param Type]] -&gt; [VName]) -&gt; [[Param Type]] -&gt; InternaliseM a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Param Type -&gt; VName) -&gt; [Param Type] -&gt; [VName]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Param Type -&gt; VName
+forall dec. Param dec -&gt; VName
+</span><a href="Futhark.IR.Syntax.Core.html#paramName"><span class="hs-identifier hs-var hs-var">I.paramName</span></a></span><span> </span><span class="annot"><span class="annottext">([Param Type] -&gt; [VName])
+-&gt; ([[Param Type]] -&gt; [Param Type]) -&gt; [[Param Type]] -&gt; [VName]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[[Param Type]] -&gt; [Param Type]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">concat</span></span><span>
+</span><span id="line-171"></span></pre></body></html>

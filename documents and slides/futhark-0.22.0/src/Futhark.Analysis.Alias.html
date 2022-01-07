@@ -1,0 +1,533 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | Alias analysis of a full Futhark program.  Takes as input a</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- program with an arbitrary rep and produces one with aliases.  This</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- module does not implement the aliasing logic itself, and derives</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- its information from definitions in</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- &quot;Futhark.IR.Prop.Aliases&quot; and</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- &quot;Futhark.IR.Aliases&quot;.  The alias information computed</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- here will include transitive aliases (note that this is not what</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- the building blocks do).</span><span>
+</span><span id="line-11"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.Analysis.Alias</span><span>
+</span><span id="line-12"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.Analysis.Alias.html#aliasAnalysis"><span class="hs-identifier">aliasAnalysis</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Ad-hoc utilities</span></span><span>
+</span><span id="line-15"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseFun"><span class="hs-identifier">analyseFun</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseStms"><span class="hs-identifier">analyseStms</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseExp"><span class="hs-identifier">analyseExp</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseBody"><span class="hs-identifier">analyseBody</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseLambda"><span class="hs-identifier">analyseLambda</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">foldl'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.Aliases.html"><span class="hs-identifier">Futhark.IR.Aliases</span></a></span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- | Perform alias analysis on a Futhark program.</span><span>
+</span><span id="line-28"></span><span id="local-6989586621684353102"><span class="annot"><a href="Futhark.Analysis.Alias.html#aliasAnalysis"><span class="hs-identifier hs-type">aliasAnalysis</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353102"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353102"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-30"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353102"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-31"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353102"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-32"></span><span id="aliasAnalysis"><span class="annot"><span class="annottext">aliasAnalysis :: forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+Prog rep -&gt; Prog (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#aliasAnalysis"><span class="hs-identifier hs-var hs-var">aliasAnalysis</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-type">Prog</span></a></span><span> </span><span id="local-6989586621684352968"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684352968"><span class="hs-identifier hs-var">consts</span></a></span></span><span> </span><span id="local-6989586621684352967"><span class="annot"><span class="annottext">[FunDef rep]
+</span><a href="#local-6989586621684352967"><span class="hs-identifier hs-var">funs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-33"></span><span>  </span><span class="annot"><span class="annottext">Stms (Aliases rep) -&gt; [FunDef (Aliases rep)] -&gt; Prog (Aliases rep)
+forall rep. Stms rep -&gt; [FunDef rep] -&gt; Prog rep
+</span><a href="Futhark.IR.Syntax.html#Prog"><span class="hs-identifier hs-var">Prog</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Stms (Aliases rep), AliasesAndConsumed) -&gt; Stms (Aliases rep)
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AliasTable -&gt; Stms rep -&gt; (Stms (Aliases rep), AliasesAndConsumed)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Stms rep -&gt; (Stms (Aliases rep), AliasesAndConsumed)
+</span><a href="Futhark.Analysis.Alias.html#analyseStms"><span class="hs-identifier hs-var">analyseStms</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684352968"><span class="hs-identifier hs-var">consts</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(FunDef rep -&gt; FunDef (Aliases rep))
+-&gt; [FunDef rep] -&gt; [FunDef (Aliases rep)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">FunDef rep -&gt; FunDef (Aliases rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+FunDef rep -&gt; FunDef (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseFun"><span class="hs-identifier hs-var">analyseFun</span></a></span><span> </span><span class="annot"><span class="annottext">[FunDef rep]
+</span><a href="#local-6989586621684352967"><span class="hs-identifier hs-var">funs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span id="local-6989586621684353080"><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseFun"><span class="hs-identifier hs-type">analyseFun</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-36"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353080"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353080"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-37"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353080"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-38"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353080"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-39"></span><span id="analyseFun"><span class="annot"><span class="annottext">analyseFun :: forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+FunDef rep -&gt; FunDef (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseFun"><span class="hs-identifier hs-var hs-var">analyseFun</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-type">FunDef</span></a></span><span> </span><span id="local-6989586621684352959"><span class="annot"><span class="annottext">Maybe EntryPoint
+</span><a href="#local-6989586621684352959"><span class="hs-identifier hs-var">entry</span></a></span></span><span> </span><span id="local-6989586621684352958"><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684352958"><span class="hs-identifier hs-var">attrs</span></a></span></span><span> </span><span id="local-6989586621684352957"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684352957"><span class="hs-identifier hs-var">fname</span></a></span></span><span> </span><span id="local-6989586621684352956"><span class="annot"><span class="annottext">[RetType rep]
+</span><a href="#local-6989586621684352956"><span class="hs-identifier hs-var">restype</span></a></span></span><span> </span><span id="local-6989586621684352955"><span class="annot"><span class="annottext">[FParam rep]
+</span><a href="#local-6989586621684352955"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span id="local-6989586621684352954"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684352954"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-40"></span><span>  </span><span class="annot"><span class="annottext">Maybe EntryPoint
+-&gt; Attrs
+-&gt; Name
+-&gt; [RetType (Aliases rep)]
+-&gt; [FParam (Aliases rep)]
+-&gt; BodyT (Aliases rep)
+-&gt; FunDef (Aliases rep)
+forall rep.
+Maybe EntryPoint
+-&gt; Attrs
+-&gt; Name
+-&gt; [RetType rep]
+-&gt; [FParam rep]
+-&gt; BodyT rep
+-&gt; FunDef rep
+</span><a href="Futhark.IR.Syntax.html#FunDef"><span class="hs-identifier hs-var">FunDef</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe EntryPoint
+</span><a href="#local-6989586621684352959"><span class="hs-identifier hs-var">entry</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684352958"><span class="hs-identifier hs-var">attrs</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621684352957"><span class="hs-identifier hs-var">fname</span></a></span><span> </span><span class="annot"><span class="annottext">[RetType rep]
+[RetType (Aliases rep)]
+</span><a href="#local-6989586621684352956"><span class="hs-identifier hs-var">restype</span></a></span><span> </span><span class="annot"><span class="annottext">[FParam rep]
+[FParam (Aliases rep)]
+</span><a href="#local-6989586621684352955"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT (Aliases rep)
+</span><a href="#local-6989586621684352953"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-41"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-42"></span><span>    </span><span id="local-6989586621684352953"><span class="annot"><span class="annottext">body' :: BodyT (Aliases rep)
+</span><a href="#local-6989586621684352953"><span class="hs-identifier hs-var hs-var">body'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; BodyT rep -&gt; BodyT (Aliases rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Body rep -&gt; Body (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseBody"><span class="hs-identifier hs-var">analyseBody</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684352954"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span id="local-6989586621684353070"><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseBody"><span class="hs-identifier hs-type">analyseBody</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353070"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-46"></span><span>    </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353070"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-48"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#AliasTable"><span class="hs-identifier hs-type">AliasTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-49"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353070"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-50"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353070"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-51"></span><span id="analyseBody"><span class="annot"><span class="annottext">analyseBody :: forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Body rep -&gt; Body (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseBody"><span class="hs-identifier hs-var hs-var">analyseBody</span></a></span></span><span> </span><span id="local-6989586621684352939"><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352939"><span class="hs-identifier hs-var">atable</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span id="local-6989586621684352937"><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684352937"><span class="hs-identifier hs-var">rep</span></a></span></span><span> </span><span id="local-6989586621684352936"><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684352936"><span class="hs-identifier hs-var">stms</span></a></span></span><span> </span><span id="local-6989586621684352935"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684352935"><span class="hs-identifier hs-var">result</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-52"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684352929"><span class="annot"><span class="annottext">Stms (Aliases rep)
+</span><a href="#local-6989586621684352929"><span class="hs-identifier hs-var">stms'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684352928"><span class="annot"><span class="annottext">AliasesAndConsumed
+</span><a href="#local-6989586621684352928"><span class="hs-identifier hs-var">_atable'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; Stms rep -&gt; (Stms (Aliases rep), AliasesAndConsumed)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Stms rep -&gt; (Stms (Aliases rep), AliasesAndConsumed)
+</span><a href="Futhark.Analysis.Alias.html#analyseStms"><span class="hs-identifier hs-var">analyseStms</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352939"><span class="hs-identifier hs-var">atable</span></a></span><span> </span><span class="annot"><span class="annottext">Stms rep
+</span><a href="#local-6989586621684352936"><span class="hs-identifier hs-var">stms</span></a></span><span>
+</span><span id="line-53"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">BodyDec rep -&gt; Stms (Aliases rep) -&gt; Result -&gt; Body (Aliases rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+BodyDec rep -&gt; Stms (Aliases rep) -&gt; Result -&gt; Body (Aliases rep)
+</span><a href="Futhark.IR.Aliases.html#mkAliasedBody"><span class="hs-identifier hs-var">mkAliasedBody</span></a></span><span> </span><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684352937"><span class="hs-identifier hs-var">rep</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (Aliases rep)
+</span><a href="#local-6989586621684352929"><span class="hs-identifier hs-var">stms'</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684352935"><span class="hs-identifier hs-var">result</span></a></span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span id="local-6989586621684353084"><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseStms"><span class="hs-identifier hs-type">analyseStms</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353084"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353084"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#AliasTable"><span class="hs-identifier hs-type">AliasTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-58"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353084"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Stms"><span class="hs-identifier hs-type">Stms</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353084"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Aliases.html#AliasesAndConsumed"><span class="hs-identifier hs-type">AliasesAndConsumed</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-60"></span><span id="analyseStms"><span class="annot"><span class="annottext">analyseStms :: forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Stms rep -&gt; (Stms (Aliases rep), AliasesAndConsumed)
+</span><a href="Futhark.Analysis.Alias.html#analyseStms"><span class="hs-identifier hs-var hs-var">analyseStms</span></a></span></span><span> </span><span id="local-6989586621684352914"><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352914"><span class="hs-identifier hs-var">orig_aliases</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-61"></span><span>  </span><span class="annot"><span class="annottext">((Stms (Aliases rep), AliasesAndConsumed)
+ -&gt; Stm rep -&gt; (Stms (Aliases rep), AliasesAndConsumed))
+-&gt; (Stms (Aliases rep), AliasesAndConsumed)
+-&gt; [Stm rep]
+-&gt; (Stms (Aliases rep), AliasesAndConsumed)
+forall (t :: * -&gt; *) b a.
+Foldable t =&gt;
+(b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><span class="hs-identifier hs-var">foldl'</span></span><span> </span><span class="annot"><span class="annottext">(Stms (Aliases rep), AliasesAndConsumed)
+-&gt; Stm rep -&gt; (Stms (Aliases rep), AliasesAndConsumed)
+forall {rep}.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+(Stms (Aliases rep), AliasesAndConsumed)
+-&gt; Stm rep -&gt; (Stms (Aliases rep), AliasesAndConsumed)
+</span><a href="#local-6989586621684352913"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms (Aliases rep)
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352914"><span class="hs-identifier hs-var">orig_aliases</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Stm rep] -&gt; (Stms (Aliases rep), AliasesAndConsumed))
+-&gt; (Stms rep -&gt; [Stm rep])
+-&gt; Stms rep
+-&gt; (Stms (Aliases rep), AliasesAndConsumed)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Stms rep -&gt; [Stm rep]
+forall rep. Stms rep -&gt; [Stm rep]
+</span><a href="Futhark.IR.Syntax.html#stmsToList"><span class="hs-identifier hs-var">stmsToList</span></a></span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-63"></span><span>    </span><span id="local-6989586621684352913"><span class="annot"><span class="annottext">f :: (Stms (Aliases rep), AliasesAndConsumed)
+-&gt; Stm rep -&gt; (Stms (Aliases rep), AliasesAndConsumed)
+</span><a href="#local-6989586621684352913"><span class="hs-identifier hs-var hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621684352904"><span class="annot"><span class="annottext">Stms (Aliases rep)
+</span><a href="#local-6989586621684352904"><span class="hs-identifier hs-var">stms</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684352903"><span class="annot"><span class="annottext">AliasesAndConsumed
+</span><a href="#local-6989586621684352903"><span class="hs-identifier hs-var">aliases</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684352902"><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684352902"><span class="hs-identifier hs-var">stm</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-64"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684352887"><span class="annot"><span class="annottext">stm' :: Stm (Aliases rep)
+</span><a href="#local-6989586621684352887"><span class="hs-identifier hs-var hs-var">stm'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; Stm rep -&gt; Stm (Aliases rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Stm rep -&gt; Stm (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseStm"><span class="hs-identifier hs-var">analyseStm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AliasesAndConsumed -&gt; AliasTable
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">AliasesAndConsumed
+</span><a href="#local-6989586621684352903"><span class="hs-identifier hs-var">aliases</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stm rep
+</span><a href="#local-6989586621684352902"><span class="hs-identifier hs-var">stm</span></a></span><span>
+</span><span id="line-65"></span><span>          </span><span id="local-6989586621684352869"><span class="annot"><span class="annottext">atable' :: AliasesAndConsumed
+</span><a href="#local-6989586621684352869"><span class="hs-identifier hs-var hs-var">atable'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AliasesAndConsumed -&gt; Stm (Aliases rep) -&gt; AliasesAndConsumed
+forall rep.
+Aliased rep =&gt;
+AliasesAndConsumed -&gt; Stm rep -&gt; AliasesAndConsumed
+</span><a href="Futhark.IR.Aliases.html#trackAliases"><span class="hs-identifier hs-var">trackAliases</span></a></span><span> </span><span class="annot"><span class="annottext">AliasesAndConsumed
+</span><a href="#local-6989586621684352903"><span class="hs-identifier hs-var">aliases</span></a></span><span> </span><span class="annot"><span class="annottext">Stm (Aliases rep)
+</span><a href="#local-6989586621684352887"><span class="hs-identifier hs-var">stm'</span></a></span><span>
+</span><span id="line-66"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Stms (Aliases rep)
+</span><a href="#local-6989586621684352904"><span class="hs-identifier hs-var">stms</span></a></span><span> </span><span class="annot"><span class="annottext">Stms (Aliases rep) -&gt; Stms (Aliases rep) -&gt; Stms (Aliases rep)
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Stm (Aliases rep) -&gt; Stms (Aliases rep)
+forall rep. Stm rep -&gt; Stms rep
+</span><a href="Futhark.IR.Syntax.html#oneStm"><span class="hs-identifier hs-var">oneStm</span></a></span><span> </span><span class="annot"><span class="annottext">Stm (Aliases rep)
+</span><a href="#local-6989586621684352887"><span class="hs-identifier hs-var">stm'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">AliasesAndConsumed
+</span><a href="#local-6989586621684352869"><span class="hs-identifier hs-var">atable'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span id="local-6989586621684353050"><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseStm"><span class="hs-identifier hs-type">analyseStm</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-69"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353050"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353050"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-70"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#AliasTable"><span class="hs-identifier hs-type">AliasTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-71"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353050"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-72"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Stm"><span class="hs-identifier hs-type">Stm</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353050"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-73"></span><span id="analyseStm"><span class="annot"><span class="annottext">analyseStm :: forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Stm rep -&gt; Stm (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseStm"><span class="hs-identifier hs-var hs-var">analyseStm</span></a></span></span><span> </span><span id="local-6989586621684352855"><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352855"><span class="hs-identifier hs-var">aliases</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span id="local-6989586621684352853"><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684352853"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-type">StmAux</span></a></span><span> </span><span id="local-6989586621684352851"><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684352851"><span class="hs-identifier hs-var">cs</span></a></span></span><span> </span><span id="local-6989586621684352850"><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684352850"><span class="hs-identifier hs-var">attrs</span></a></span></span><span> </span><span id="local-6989586621684352849"><span class="annot"><span class="annottext">ExpDec rep
+</span><a href="#local-6989586621684352849"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684352848"><span class="annot"><span class="annottext">Exp rep
+</span><a href="#local-6989586621684352848"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-74"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684352842"><span class="annot"><span class="annottext">e' :: Exp (Aliases rep)
+</span><a href="#local-6989586621684352842"><span class="hs-identifier hs-var hs-var">e'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; Exp rep -&gt; Exp (Aliases rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Exp rep -&gt; Exp (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseExp"><span class="hs-identifier hs-var">analyseExp</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352855"><span class="hs-identifier hs-var">aliases</span></a></span><span> </span><span class="annot"><span class="annottext">Exp rep
+</span><a href="#local-6989586621684352848"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-75"></span><span>      </span><span id="local-6989586621684352831"><span class="annot"><span class="annottext">pat' :: PatT (VarAliases, LetDec rep)
+</span><a href="#local-6989586621684352831"><span class="hs-identifier hs-var hs-var">pat'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Pat rep -&gt; Exp (Aliases rep) -&gt; PatT (VarAliases, LetDec rep)
+forall rep dec.
+(ASTRep rep, CanBeAliased (Op rep), Typed dec) =&gt;
+PatT dec -&gt; Exp (Aliases rep) -&gt; PatT (VarAliases, dec)
+</span><a href="Futhark.IR.Aliases.html#addAliasesToPat"><span class="hs-identifier hs-var">addAliasesToPat</span></a></span><span> </span><span class="annot"><span class="annottext">Pat rep
+</span><a href="#local-6989586621684352853"><span class="hs-identifier hs-var">pat</span></a></span><span> </span><span class="annot"><span class="annottext">Exp (Aliases rep)
+</span><a href="#local-6989586621684352842"><span class="hs-identifier hs-var">e'</span></a></span><span>
+</span><span id="line-76"></span><span>      </span><span id="local-6989586621684352822"><span class="annot"><span class="annottext">rep' :: (VarAliases, ExpDec rep)
+</span><a href="#local-6989586621684352822"><span class="hs-identifier hs-var hs-var">rep'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Names -&gt; VarAliases
+</span><a href="Futhark.IR.Aliases.html#AliasDec"><span class="hs-identifier hs-var">AliasDec</span></a></span><span> </span><span class="annot"><span class="annottext">(Names -&gt; VarAliases) -&gt; Names -&gt; VarAliases
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Exp (Aliases rep) -&gt; Names
+forall rep. Aliased rep =&gt; Exp rep -&gt; Names
+</span><a href="Futhark.IR.Prop.Aliases.html#consumedInExp"><span class="hs-identifier hs-var">consumedInExp</span></a></span><span> </span><span class="annot"><span class="annottext">Exp (Aliases rep)
+</span><a href="#local-6989586621684352842"><span class="hs-identifier hs-var">e'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ExpDec rep
+</span><a href="#local-6989586621684352849"><span class="hs-identifier hs-var">dec</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Pat (Aliases rep)
+-&gt; StmAux (ExpDec (Aliases rep))
+-&gt; Exp (Aliases rep)
+-&gt; Stm (Aliases rep)
+forall rep. Pat rep -&gt; StmAux (ExpDec rep) -&gt; Exp rep -&gt; Stm rep
+</span><a href="Futhark.IR.Syntax.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">PatT (VarAliases, LetDec rep)
+Pat (Aliases rep)
+</span><a href="#local-6989586621684352831"><span class="hs-identifier hs-var">pat'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Certs
+-&gt; Attrs
+-&gt; (VarAliases, ExpDec rep)
+-&gt; StmAux (VarAliases, ExpDec rep)
+forall dec. Certs -&gt; Attrs -&gt; dec -&gt; StmAux dec
+</span><a href="Futhark.IR.Syntax.html#StmAux"><span class="hs-identifier hs-var">StmAux</span></a></span><span> </span><span class="annot"><span class="annottext">Certs
+</span><a href="#local-6989586621684352851"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">Attrs
+</span><a href="#local-6989586621684352850"><span class="hs-identifier hs-var">attrs</span></a></span><span> </span><span class="annot"><span class="annottext">(VarAliases, ExpDec rep)
+</span><a href="#local-6989586621684352822"><span class="hs-identifier hs-var">rep'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Exp (Aliases rep)
+</span><a href="#local-6989586621684352842"><span class="hs-identifier hs-var">e'</span></a></span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span id="local-6989586621684353033"><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseExp"><span class="hs-identifier hs-type">analyseExp</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353033"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353033"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-81"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#AliasTable"><span class="hs-identifier hs-type">AliasTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-82"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353033"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-83"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Exp"><span class="hs-identifier hs-type">Exp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684353033"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- Would be better to put this in a BranchType annotation, but that</span><span>
+</span><span id="line-85"></span><span class="hs-comment">-- requires a lot of other work.</span><span>
+</span><span id="line-86"></span><span id="analyseExp"><span class="annot"><span class="annottext">analyseExp :: forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Exp rep -&gt; Exp (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseExp"><span class="hs-identifier hs-var hs-var">analyseExp</span></a></span></span><span> </span><span id="local-6989586621684352814"><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352814"><span class="hs-identifier hs-var">aliases</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-type">If</span></a></span><span> </span><span id="local-6989586621684352812"><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684352812"><span class="hs-identifier hs-var">cond</span></a></span></span><span> </span><span id="local-6989586621684352811"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684352811"><span class="hs-identifier hs-var">tb</span></a></span></span><span> </span><span id="local-6989586621684352810"><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684352810"><span class="hs-identifier hs-var">fb</span></a></span></span><span> </span><span id="local-6989586621684352809"><span class="annot"><span class="annottext">IfDec (BranchType rep)
+</span><a href="#local-6989586621684352809"><span class="hs-identifier hs-var">dec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-87"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684352802"><span class="annot"><span class="annottext">[VarAliases]
+</span><a href="#local-6989586621684352802"><span class="hs-identifier hs-var">tb_als</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684352801"><span class="annot"><span class="annottext">VarAliases
+</span><a href="#local-6989586621684352801"><span class="hs-identifier hs-var">tb_cons</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684352800"><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684352800"><span class="hs-identifier hs-var">tb_dec</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684352799"><span class="annot"><span class="annottext">Stms (Aliases rep)
+</span><a href="#local-6989586621684352799"><span class="hs-identifier hs-var">tb_stms</span></a></span></span><span> </span><span id="local-6989586621684352798"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684352798"><span class="hs-identifier hs-var">tb_res</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; BodyT rep -&gt; BodyT (Aliases rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Body rep -&gt; Body (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseBody"><span class="hs-identifier hs-var">analyseBody</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352814"><span class="hs-identifier hs-var">aliases</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684352811"><span class="hs-identifier hs-var">tb</span></a></span><span>
+</span><span id="line-88"></span><span>      </span><span class="annot"><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-type">Body</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621684352791"><span class="annot"><span class="annottext">[VarAliases]
+</span><a href="#local-6989586621684352791"><span class="hs-identifier hs-var">fb_als</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684352790"><span class="annot"><span class="annottext">VarAliases
+</span><a href="#local-6989586621684352790"><span class="hs-identifier hs-var">fb_cons</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621684352789"><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684352789"><span class="hs-identifier hs-var">fb_dec</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621684352788"><span class="annot"><span class="annottext">Stms (Aliases rep)
+</span><a href="#local-6989586621684352788"><span class="hs-identifier hs-var">fb_stms</span></a></span></span><span> </span><span id="local-6989586621684352787"><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684352787"><span class="hs-identifier hs-var">fb_res</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; BodyT rep -&gt; BodyT (Aliases rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Body rep -&gt; Body (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseBody"><span class="hs-identifier hs-var">analyseBody</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352814"><span class="hs-identifier hs-var">aliases</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT rep
+</span><a href="#local-6989586621684352810"><span class="hs-identifier hs-var">fb</span></a></span><span>
+</span><span id="line-89"></span><span>      </span><span id="local-6989586621684352784"><span class="annot"><span class="annottext">cons :: VarAliases
+</span><a href="#local-6989586621684352784"><span class="hs-identifier hs-var hs-var">cons</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VarAliases
+</span><a href="#local-6989586621684352801"><span class="hs-identifier hs-var">tb_cons</span></a></span><span> </span><span class="annot"><span class="annottext">VarAliases -&gt; VarAliases -&gt; VarAliases
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">VarAliases
+</span><a href="#local-6989586621684352790"><span class="hs-identifier hs-var">fb_cons</span></a></span><span>
+</span><span id="line-90"></span><span>      </span><span id="local-6989586621684352780"><span class="annot"><span class="annottext">isConsumed :: VName -&gt; Bool
+</span><a href="#local-6989586621684352780"><span class="hs-identifier hs-var hs-var">isConsumed</span></a></span></span><span> </span><span id="local-6989586621684352779"><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684352779"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-91"></span><span>        </span><span class="annot"><span class="annottext">(VName -&gt; Bool) -&gt; [VName] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">any</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VName -&gt; Names -&gt; Bool
+</span><a href="Futhark.IR.Prop.Names.html#nameIn"><span class="hs-operator hs-var">`nameIn`</span></a></span><span> </span><span class="annot"><span class="annottext">VarAliases -&gt; Names
+</span><a href="Futhark.IR.Aliases.html#unAliases"><span class="hs-identifier hs-var hs-var">unAliases</span></a></span><span> </span><span class="annot"><span class="annottext">VarAliases
+</span><a href="#local-6989586621684352784"><span class="hs-identifier hs-var">cons</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([VName] -&gt; Bool) -&gt; [VName] -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-92"></span><span>          </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684352779"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">VName -&gt; [VName] -&gt; [VName]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">Names -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Names.html#namesToList"><span class="hs-identifier hs-var">namesToList</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Names -&gt; VName -&gt; AliasTable -&gt; Names
+forall k a. Ord k =&gt; a -&gt; k -&gt; Map k a -&gt; a
+</span><span class="hs-identifier hs-var">M.findWithDefault</span></span><span> </span><span class="annot"><span class="annottext">Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="annot"><span class="annottext">VName
+</span><a href="#local-6989586621684352779"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352814"><span class="hs-identifier hs-var">aliases</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>      </span><span id="local-6989586621684352773"><span class="annot"><span class="annottext">notConsumed :: VarAliases -&gt; VarAliases
+</span><a href="#local-6989586621684352773"><span class="hs-identifier hs-var hs-var">notConsumed</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-94"></span><span>        </span><span class="annot"><span class="annottext">Names -&gt; VarAliases
+</span><a href="Futhark.IR.Aliases.html#AliasDec"><span class="hs-identifier hs-var">AliasDec</span></a></span><span> </span><span class="annot"><span class="annottext">(Names -&gt; VarAliases)
+-&gt; (VarAliases -&gt; Names) -&gt; VarAliases -&gt; VarAliases
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[VName] -&gt; Names
+</span><a href="Futhark.IR.Prop.Names.html#namesFromList"><span class="hs-identifier hs-var">namesFromList</span></a></span><span>
+</span><span id="line-95"></span><span>          </span><span class="annot"><span class="annottext">([VName] -&gt; Names)
+-&gt; (VarAliases -&gt; [VName]) -&gt; VarAliases -&gt; Names
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(VName -&gt; Bool) -&gt; [VName] -&gt; [VName]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; (VName -&gt; Bool) -&gt; VName -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">VName -&gt; Bool
+</span><a href="#local-6989586621684352780"><span class="hs-identifier hs-var">isConsumed</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span>          </span><span class="annot"><span class="annottext">([VName] -&gt; [VName])
+-&gt; (VarAliases -&gt; [VName]) -&gt; VarAliases -&gt; [VName]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Names -&gt; [VName]
+</span><a href="Futhark.IR.Prop.Names.html#namesToList"><span class="hs-identifier hs-var">namesToList</span></a></span><span>
+</span><span id="line-97"></span><span>          </span><span class="annot"><span class="annottext">(Names -&gt; [VName])
+-&gt; (VarAliases -&gt; Names) -&gt; VarAliases -&gt; [VName]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">VarAliases -&gt; Names
+</span><a href="Futhark.IR.Aliases.html#unAliases"><span class="hs-identifier hs-var hs-var">unAliases</span></a></span><span>
+</span><span id="line-98"></span><span>      </span><span id="local-6989586621684352770"><span class="annot"><span class="annottext">tb_als' :: [VarAliases]
+</span><a href="#local-6989586621684352770"><span class="hs-identifier hs-var hs-var">tb_als'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VarAliases -&gt; VarAliases) -&gt; [VarAliases] -&gt; [VarAliases]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">VarAliases -&gt; VarAliases
+</span><a href="#local-6989586621684352773"><span class="hs-identifier hs-var">notConsumed</span></a></span><span> </span><span class="annot"><span class="annottext">[VarAliases]
+</span><a href="#local-6989586621684352802"><span class="hs-identifier hs-var">tb_als</span></a></span><span>
+</span><span id="line-99"></span><span>      </span><span id="local-6989586621684352769"><span class="annot"><span class="annottext">fb_als' :: [VarAliases]
+</span><a href="#local-6989586621684352769"><span class="hs-identifier hs-var hs-var">fb_als'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VarAliases -&gt; VarAliases) -&gt; [VarAliases] -&gt; [VarAliases]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">VarAliases -&gt; VarAliases
+</span><a href="#local-6989586621684352773"><span class="hs-identifier hs-var">notConsumed</span></a></span><span> </span><span class="annot"><span class="annottext">[VarAliases]
+</span><a href="#local-6989586621684352791"><span class="hs-identifier hs-var">fb_als</span></a></span><span>
+</span><span id="line-100"></span><span>      </span><span id="local-6989586621684352768"><span class="annot"><span class="annottext">tb' :: BodyT (Aliases rep)
+</span><a href="#local-6989586621684352768"><span class="hs-identifier hs-var hs-var">tb'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BodyDec (Aliases rep)
+-&gt; Stms (Aliases rep) -&gt; Result -&gt; BodyT (Aliases rep)
+forall rep. BodyDec rep -&gt; Stms rep -&gt; Result -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-var">Body</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VarAliases]
+</span><a href="#local-6989586621684352770"><span class="hs-identifier hs-var">tb_als'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VarAliases
+</span><a href="#local-6989586621684352801"><span class="hs-identifier hs-var">tb_cons</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684352800"><span class="hs-identifier hs-var">tb_dec</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms (Aliases rep)
+</span><a href="#local-6989586621684352799"><span class="hs-identifier hs-var">tb_stms</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684352798"><span class="hs-identifier hs-var">tb_res</span></a></span><span>
+</span><span id="line-101"></span><span>      </span><span id="local-6989586621684352767"><span class="annot"><span class="annottext">fb' :: BodyT (Aliases rep)
+</span><a href="#local-6989586621684352767"><span class="hs-identifier hs-var hs-var">fb'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BodyDec (Aliases rep)
+-&gt; Stms (Aliases rep) -&gt; Result -&gt; BodyT (Aliases rep)
+forall rep. BodyDec rep -&gt; Stms rep -&gt; Result -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#Body"><span class="hs-identifier hs-var">Body</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VarAliases]
+</span><a href="#local-6989586621684352769"><span class="hs-identifier hs-var">fb_als'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VarAliases
+</span><a href="#local-6989586621684352790"><span class="hs-identifier hs-var">fb_cons</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">BodyDec rep
+</span><a href="#local-6989586621684352789"><span class="hs-identifier hs-var">fb_dec</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Stms (Aliases rep)
+</span><a href="#local-6989586621684352788"><span class="hs-identifier hs-var">fb_stms</span></a></span><span> </span><span class="annot"><span class="annottext">Result
+</span><a href="#local-6989586621684352787"><span class="hs-identifier hs-var">fb_res</span></a></span><span>
+</span><span id="line-102"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">SubExp
+-&gt; BodyT (Aliases rep)
+-&gt; BodyT (Aliases rep)
+-&gt; IfDec (BranchType (Aliases rep))
+-&gt; ExpT (Aliases rep)
+forall rep.
+SubExp
+-&gt; BodyT rep -&gt; BodyT rep -&gt; IfDec (BranchType rep) -&gt; ExpT rep
+</span><a href="Futhark.IR.Syntax.html#If"><span class="hs-identifier hs-var">If</span></a></span><span> </span><span class="annot"><span class="annottext">SubExp
+</span><a href="#local-6989586621684352812"><span class="hs-identifier hs-var">cond</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT (Aliases rep)
+</span><a href="#local-6989586621684352768"><span class="hs-identifier hs-var">tb'</span></a></span><span> </span><span class="annot"><span class="annottext">BodyT (Aliases rep)
+</span><a href="#local-6989586621684352767"><span class="hs-identifier hs-var">fb'</span></a></span><span> </span><span class="annot"><span class="annottext">IfDec (BranchType rep)
+IfDec (BranchType (Aliases rep))
+</span><a href="#local-6989586621684352809"><span class="hs-identifier hs-var">dec</span></a></span><span>
+</span><span id="line-103"></span><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseExp"><span class="hs-identifier hs-var">analyseExp</span></a></span><span> </span><span id="local-6989586621684352766"><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352766"><span class="hs-identifier hs-var">aliases</span></a></span></span><span> </span><span id="local-6989586621684352765"><span class="annot"><span class="annottext">ExpT rep
+</span><a href="#local-6989586621684352765"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Mapper rep (Aliases rep) Identity -&gt; ExpT rep -&gt; ExpT (Aliases rep)
+forall frep trep. Mapper frep trep Identity -&gt; Exp frep -&gt; Exp trep
+</span><a href="Futhark.IR.Traversals.html#mapExp"><span class="hs-identifier hs-var">mapExp</span></a></span><span> </span><span class="annot"><span class="annottext">Mapper rep (Aliases rep) Identity
+</span><a href="#local-6989586621684352763"><span class="hs-identifier hs-var">analyse</span></a></span><span> </span><span class="annot"><span class="annottext">ExpT rep
+</span><a href="#local-6989586621684352765"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-104"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-105"></span><span>    </span><span id="local-6989586621684352763"><span class="annot"><span class="annottext">analyse :: Mapper rep (Aliases rep) Identity
+</span><a href="#local-6989586621684352763"><span class="hs-identifier hs-var hs-var">analyse</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-106"></span><span>      </span><span class="annot"><span class="annottext">Mapper :: forall frep trep (m :: * -&gt; *).
+(SubExp -&gt; m SubExp)
+-&gt; (Scope trep -&gt; Body frep -&gt; m (Body trep))
+-&gt; (VName -&gt; m VName)
+-&gt; (RetType frep -&gt; m (RetType trep))
+-&gt; (BranchType frep -&gt; m (BranchType trep))
+-&gt; (FParam frep -&gt; m (FParam trep))
+-&gt; (LParam frep -&gt; m (LParam trep))
+-&gt; (Op frep -&gt; m (Op trep))
+-&gt; Mapper frep trep m
+</span><a href="Futhark.IR.Traversals.html#Mapper"><span class="hs-identifier hs-type">Mapper</span></a></span><span>
+</span><span id="line-107"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">mapOnSubExp :: SubExp -&gt; Identity SubExp
+</span><a href="Futhark.IR.Traversals.html#mapOnSubExp"><span class="hs-identifier hs-var">mapOnSubExp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; Identity SubExp
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-108"></span><span>          </span><span class="annot"><span class="annottext">mapOnVName :: VName -&gt; Identity VName
+</span><a href="Futhark.IR.Traversals.html#mapOnVName"><span class="hs-identifier hs-var">mapOnVName</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">VName -&gt; Identity VName
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-109"></span><span>          </span><span class="annot"><span class="annottext">mapOnBody :: Scope (Aliases rep) -&gt; BodyT rep -&gt; Identity (BodyT (Aliases rep))
+</span><a href="Futhark.IR.Traversals.html#mapOnBody"><span class="hs-identifier hs-var">mapOnBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(BodyT rep -&gt; Identity (BodyT (Aliases rep)))
+-&gt; Scope (Aliases rep)
+-&gt; BodyT rep
+-&gt; Identity (BodyT (Aliases rep))
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">((BodyT rep -&gt; Identity (BodyT (Aliases rep)))
+ -&gt; Scope (Aliases rep)
+ -&gt; BodyT rep
+ -&gt; Identity (BodyT (Aliases rep)))
+-&gt; (BodyT rep -&gt; Identity (BodyT (Aliases rep)))
+-&gt; Scope (Aliases rep)
+-&gt; BodyT rep
+-&gt; Identity (BodyT (Aliases rep))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BodyT (Aliases rep) -&gt; Identity (BodyT (Aliases rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(BodyT (Aliases rep) -&gt; Identity (BodyT (Aliases rep)))
+-&gt; (BodyT rep -&gt; BodyT (Aliases rep))
+-&gt; BodyT rep
+-&gt; Identity (BodyT (Aliases rep))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; BodyT rep -&gt; BodyT (Aliases rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Body rep -&gt; Body (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseBody"><span class="hs-identifier hs-var">analyseBody</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352766"><span class="hs-identifier hs-var">aliases</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-110"></span><span>          </span><span class="annot"><span class="annottext">mapOnRetType :: RetType rep -&gt; Identity (RetType (Aliases rep))
+</span><a href="Futhark.IR.Traversals.html#mapOnRetType"><span class="hs-identifier hs-var">mapOnRetType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RetType rep -&gt; Identity (RetType (Aliases rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-111"></span><span>          </span><span class="annot"><span class="annottext">mapOnBranchType :: BranchType rep -&gt; Identity (BranchType (Aliases rep))
+</span><a href="Futhark.IR.Traversals.html#mapOnBranchType"><span class="hs-identifier hs-var">mapOnBranchType</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BranchType rep -&gt; Identity (BranchType (Aliases rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-112"></span><span>          </span><span class="annot"><span class="annottext">mapOnFParam :: FParam rep -&gt; Identity (FParam (Aliases rep))
+</span><a href="Futhark.IR.Traversals.html#mapOnFParam"><span class="hs-identifier hs-var">mapOnFParam</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FParam rep -&gt; Identity (FParam (Aliases rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-113"></span><span>          </span><span class="annot"><span class="annottext">mapOnLParam :: LParam rep -&gt; Identity (LParam (Aliases rep))
+</span><a href="Futhark.IR.Traversals.html#mapOnLParam"><span class="hs-identifier hs-var">mapOnLParam</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LParam rep -&gt; Identity (LParam (Aliases rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span class="hs-special">,</span><span>
+</span><span id="line-114"></span><span>          </span><span class="annot"><span class="annottext">mapOnOp :: Op rep -&gt; Identity (Op (Aliases rep))
+</span><a href="Futhark.IR.Traversals.html#mapOnOp"><span class="hs-identifier hs-var">mapOnOp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">OpWithAliases (Op rep) -&gt; Identity (OpWithAliases (Op rep))
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(OpWithAliases (Op rep) -&gt; Identity (OpWithAliases (Op rep)))
+-&gt; (Op rep -&gt; OpWithAliases (Op rep))
+-&gt; Op rep
+-&gt; Identity (OpWithAliases (Op rep))
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; Op rep -&gt; OpWithAliases (Op rep)
+forall op. CanBeAliased op =&gt; AliasTable -&gt; op -&gt; OpWithAliases op
+</span><a href="Futhark.IR.Prop.Aliases.html#addOpAliases"><span class="hs-identifier hs-var">addOpAliases</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352766"><span class="hs-identifier hs-var">aliases</span></a></span><span>
+</span><span id="line-115"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span id="local-6989586621684352994"><span class="annot"><a href="Futhark.Analysis.Alias.html#analyseLambda"><span class="hs-identifier hs-type">analyseLambda</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-118"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Prop.html#ASTRep"><span class="hs-identifier hs-type">ASTRep</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684352994"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#CanBeAliased"><span class="hs-identifier hs-type">CanBeAliased</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Rep.html#Op"><span class="hs-identifier hs-type">Op</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684352994"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-119"></span><span>  </span><span class="annot"><a href="Futhark.IR.Prop.Aliases.html#AliasTable"><span class="hs-identifier hs-type">AliasTable</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-120"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684352994"><span class="hs-identifier hs-type">rep</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-121"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Lambda"><span class="hs-identifier hs-type">Lambda</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.IR.Aliases.html#Aliases"><span class="hs-identifier hs-type">Aliases</span></a></span><span> </span><span class="annot"><a href="#local-6989586621684352994"><span class="hs-identifier hs-type">rep</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-122"></span><span id="analyseLambda"><span class="annot"><span class="annottext">analyseLambda :: forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Lambda rep -&gt; Lambda (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseLambda"><span class="hs-identifier hs-var hs-var">analyseLambda</span></a></span></span><span> </span><span id="local-6989586621684352730"><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352730"><span class="hs-identifier hs-var">aliases</span></a></span></span><span> </span><span id="local-6989586621684352729"><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684352729"><span class="hs-identifier hs-var">lam</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-123"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684352723"><span class="annot"><span class="annottext">body :: Body (Aliases rep)
+</span><a href="#local-6989586621684352723"><span class="hs-identifier hs-var hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AliasTable -&gt; Body rep -&gt; Body (Aliases rep)
+forall rep.
+(ASTRep rep, CanBeAliased (Op rep)) =&gt;
+AliasTable -&gt; Body rep -&gt; Body (Aliases rep)
+</span><a href="Futhark.Analysis.Alias.html#analyseBody"><span class="hs-identifier hs-var">analyseBody</span></a></span><span> </span><span class="annot"><span class="annottext">AliasTable
+</span><a href="#local-6989586621684352730"><span class="hs-identifier hs-var">aliases</span></a></span><span> </span><span class="annot"><span class="annottext">(Body rep -&gt; Body (Aliases rep)) -&gt; Body rep -&gt; Body (Aliases rep)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; Body rep
+forall rep. LambdaT rep -&gt; BodyT rep
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var hs-var">lambdaBody</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684352729"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-124"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684352729"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-125"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">lambdaBody :: Body (Aliases rep)
+</span><a href="Futhark.IR.Syntax.html#lambdaBody"><span class="hs-identifier hs-var">lambdaBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Body (Aliases rep)
+</span><a href="#local-6989586621684352723"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-126"></span><span>          </span><span class="annot"><span class="annottext">lambdaParams :: [LParam (Aliases rep)]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var">lambdaParams</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Lambda rep -&gt; [LParam rep]
+forall rep. LambdaT rep -&gt; [LParam rep]
+</span><a href="Futhark.IR.Syntax.html#lambdaParams"><span class="hs-identifier hs-var hs-var">lambdaParams</span></a></span><span> </span><span class="annot"><span class="annottext">Lambda rep
+</span><a href="#local-6989586621684352729"><span class="hs-identifier hs-var">lam</span></a></span><span>
+</span><span id="line-127"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-128"></span></pre></body></html>

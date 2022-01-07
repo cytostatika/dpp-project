@@ -1,0 +1,323 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE FlexibleContexts #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | Code generation for 'SegMap' is quite straightforward.  The only</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- trick is virtualisation in case the physical number of threads is</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- not sufficient to cover the logical thread space.  This is handled</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- by having actual workgroups run a loop to imitate multiple workgroups.</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Futhark.CodeGen.ImpGen.GPU.SegMap</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.SegMap.html#compileSegMap"><span class="hs-identifier">compileSegMap</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-9"></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Except</span></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpCode.GPU.html"><span class="hs-identifier">Futhark.CodeGen.ImpCode.GPU</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Imp</span></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen</span></a></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.Base.html"><span class="hs-identifier">Futhark.CodeGen.ImpGen.GPU.Base</span></a></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html"><span class="hs-identifier">Futhark.IR.GPUMem</span></a></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Futhark.Util.IntegralExp.html"><span class="hs-identifier">Futhark.Util.IntegralExp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Futhark.Util.IntegralExp.html#divUp"><span class="hs-identifier">divUp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">quot</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">rem</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- | Compile 'SegMap' instance code.</span><span>
+</span><span id="line-19"></span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.SegMap.html#compileSegMap"><span class="hs-identifier hs-type">compileSegMap</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-20"></span><span>  </span><span class="annot"><a href="Futhark.IR.Syntax.html#Pat"><span class="hs-identifier hs-type">Pat</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-21"></span><span>  </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegLevel"><span class="hs-identifier hs-type">SegLevel</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-22"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#SegSpace"><span class="hs-identifier hs-type">SegSpace</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-23"></span><span>  </span><span class="annot"><a href="Futhark.IR.SegOp.html#KernelBody"><span class="hs-identifier hs-type">KernelBody</span></a></span><span> </span><span class="annot"><a href="Futhark.IR.GPUMem.html#GPUMem"><span class="hs-identifier hs-type">GPUMem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-24"></span><span>  </span><span class="annot"><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#CallKernelGen"><span class="hs-identifier hs-type">CallKernelGen</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span id="compileSegMap"><span class="annot"><span class="annottext">compileSegMap :: Pat GPUMem
+-&gt; SegLevel -&gt; SegSpace -&gt; KernelBody GPUMem -&gt; CallKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.SegMap.html#compileSegMap"><span class="hs-identifier hs-var hs-var">compileSegMap</span></a></span></span><span> </span><span id="local-6989586621684543077"><span class="annot"><span class="annottext">Pat GPUMem
+</span><a href="#local-6989586621684543077"><span class="hs-identifier hs-var">pat</span></a></span></span><span> </span><span id="local-6989586621684543076"><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684543076"><span class="hs-identifier hs-var">lvl</span></a></span></span><span> </span><span id="local-6989586621684543075"><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684543075"><span class="hs-identifier hs-var">space</span></a></span></span><span> </span><span id="local-6989586621684543074"><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684543074"><span class="hs-identifier hs-var">kbody</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-26"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621684543073"><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684543073"><span class="hs-identifier hs-var">is</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621684543072"><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684543072"><span class="hs-identifier hs-var">dims</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; ([VName], [SubExp])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><span class="hs-identifier hs-var">unzip</span></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; ([VName], [SubExp]))
+-&gt; [(VName, SubExp)] -&gt; ([VName], [SubExp])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegSpace -&gt; [(VName, SubExp)]
+</span><a href="Futhark.IR.SegOp.html#unSegSpace"><span class="hs-identifier hs-var hs-var">unSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684543075"><span class="hs-identifier hs-var">space</span></a></span><span>
+</span><span id="line-27"></span><span>      </span><span id="local-6989586621684543069"><span class="annot"><span class="annottext">dims' :: [TExp Int64]
+</span><a href="#local-6989586621684543069"><span class="hs-identifier hs-var hs-var">dims'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TExp Int64) -&gt; [SubExp] -&gt; [TExp Int64]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TExp Int64
+forall a. ToExp a =&gt; a -&gt; TExp Int64
+</span><a href="Futhark.CodeGen.ImpGen.html#toInt64Exp"><span class="hs-identifier hs-var">toInt64Exp</span></a></span><span> </span><span class="annot"><span class="annottext">[SubExp]
+</span><a href="#local-6989586621684543072"><span class="hs-identifier hs-var">dims</span></a></span><span>
+</span><span id="line-28"></span><span>      </span><span id="local-6989586621684543067"><span class="annot"><span class="annottext">num_groups' :: Count NumGroups (TExp Int64)
+</span><a href="#local-6989586621684543067"><span class="hs-identifier hs-var hs-var">num_groups'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TExp Int64
+forall a. ToExp a =&gt; a -&gt; TExp Int64
+</span><a href="Futhark.CodeGen.ImpGen.html#toInt64Exp"><span class="hs-identifier hs-var">toInt64Exp</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TExp Int64)
+-&gt; Count NumGroups SubExp -&gt; Count NumGroups (TExp Int64)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SegLevel -&gt; Count NumGroups SubExp
+</span><a href="Futhark.IR.GPU.Op.html#segNumGroups"><span class="hs-identifier hs-var hs-var">segNumGroups</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684543076"><span class="hs-identifier hs-var">lvl</span></a></span><span>
+</span><span id="line-29"></span><span>      </span><span id="local-6989586621684543064"><span class="annot"><span class="annottext">group_size' :: Count GroupSize (TExp Int64)
+</span><a href="#local-6989586621684543064"><span class="hs-identifier hs-var hs-var">group_size'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SubExp -&gt; TExp Int64
+forall a. ToExp a =&gt; a -&gt; TExp Int64
+</span><a href="Futhark.CodeGen.ImpGen.html#toInt64Exp"><span class="hs-identifier hs-var">toInt64Exp</span></a></span><span> </span><span class="annot"><span class="annottext">(SubExp -&gt; TExp Int64)
+-&gt; Count GroupSize SubExp -&gt; Count GroupSize (TExp Int64)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">SegLevel -&gt; Count GroupSize SubExp
+</span><a href="Futhark.IR.GPU.Op.html#segGroupSize"><span class="hs-identifier hs-var hs-var">segGroupSize</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684543076"><span class="hs-identifier hs-var">lvl</span></a></span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span>  </span><span class="annot"><span class="annottext">Code HostOp -&gt; CallKernelGen ()
+forall op rep r. Code op -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#emit"><span class="hs-identifier hs-var">emit</span></a></span><span> </span><span class="annot"><span class="annottext">(Code HostOp -&gt; CallKernelGen ())
+-&gt; Code HostOp -&gt; CallKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; Maybe Exp -&gt; Code HostOp
+forall a. String -&gt; Maybe Exp -&gt; Code a
+</span><a href="Futhark.CodeGen.ImpCode.html#DebugPrint"><span class="hs-identifier hs-var">Imp.DebugPrint</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;\n# SegMap&quot;</span></span><span> </span><span class="annot"><span class="annottext">Maybe Exp
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-32"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684543076"><span class="hs-identifier hs-var">lvl</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-33"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegThread"><span class="hs-identifier hs-type">SegThread</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-34"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684543059"><span class="annot"><span class="annottext">virt_num_groups :: TPrimExp Int32 VName
+</span><a href="#local-6989586621684543059"><span class="hs-identifier hs-var hs-var">virt_num_groups</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-35"></span><span>            </span><span class="annot"><span class="annottext">TExp Int64 -&gt; TPrimExp Int32 VName
+forall t v. IntExp t =&gt; TPrimExp t v -&gt; TPrimExp Int32 v
+</span><a href="Futhark.Analysis.PrimExp.html#sExt32"><span class="hs-identifier hs-var">sExt32</span></a></span><span> </span><span class="annot"><span class="annottext">(TExp Int64 -&gt; TPrimExp Int32 VName)
+-&gt; TExp Int64 -&gt; TPrimExp Int32 VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[TExp Int64] -&gt; TExp Int64
+forall (t :: * -&gt; *) a. (Foldable t, Num a) =&gt; t a -&gt; a
+</span><span class="hs-identifier hs-var">product</span></span><span> </span><span class="annot"><span class="annottext">[TExp Int64]
+</span><a href="#local-6989586621684543069"><span class="hs-identifier hs-var">dims'</span></a></span><span> </span><span class="annot"><span class="annottext">TExp Int64 -&gt; TExp Int64 -&gt; TExp Int64
+forall e. IntegralExp e =&gt; e -&gt; e -&gt; e
+</span><a href="Futhark.Util.IntegralExp.html#divUp"><span class="hs-operator hs-var">`divUp`</span></a></span><span> </span><span class="annot"><span class="annottext">Count GroupSize (TExp Int64) -&gt; TExp Int64
+forall u e. Count u e -&gt; e
+</span><a href="Futhark.IR.GPU.Sizes.html#unCount"><span class="hs-identifier hs-var hs-var">unCount</span></a></span><span> </span><span class="annot"><span class="annottext">Count GroupSize (TExp Int64)
+</span><a href="#local-6989586621684543064"><span class="hs-identifier hs-var">group_size'</span></a></span><span>
+</span><span id="line-36"></span><span>      </span><span class="annot"><span class="annottext">String
+-&gt; Count NumGroups (TExp Int64)
+-&gt; Count GroupSize (TExp Int64)
+-&gt; VName
+-&gt; InKernelGen ()
+-&gt; CallKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#sKernelThread"><span class="hs-identifier hs-var">sKernelThread</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;segmap&quot;</span></span><span> </span><span class="annot"><span class="annottext">Count NumGroups (TExp Int64)
+</span><a href="#local-6989586621684543067"><span class="hs-identifier hs-var">num_groups'</span></a></span><span> </span><span class="annot"><span class="annottext">Count GroupSize (TExp Int64)
+</span><a href="#local-6989586621684543064"><span class="hs-identifier hs-var">group_size'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; VName
+</span><a href="Futhark.IR.SegOp.html#segFlat"><span class="hs-identifier hs-var hs-var">segFlat</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684543075"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InKernelGen () -&gt; CallKernelGen ())
+-&gt; InKernelGen () -&gt; CallKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-37"></span><span>        </span><span class="annot"><span class="annottext">SegVirt
+-&gt; TPrimExp Int32 VName
+-&gt; (TPrimExp Int32 VName -&gt; InKernelGen ())
+-&gt; InKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#virtualiseGroups"><span class="hs-identifier hs-var">virtualiseGroups</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegLevel -&gt; SegVirt
+</span><a href="Futhark.IR.GPU.Op.html#segVirt"><span class="hs-identifier hs-var hs-var">segVirt</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684543076"><span class="hs-identifier hs-var">lvl</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 VName
+</span><a href="#local-6989586621684543059"><span class="hs-identifier hs-var">virt_num_groups</span></a></span><span> </span><span class="annot"><span class="annottext">((TPrimExp Int32 VName -&gt; InKernelGen ()) -&gt; InKernelGen ())
+-&gt; (TPrimExp Int32 VName -&gt; InKernelGen ()) -&gt; InKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684543051"><span class="annot"><span class="annottext">TPrimExp Int32 VName
+</span><a href="#local-6989586621684543051"><span class="hs-identifier hs-var">group_id</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-38"></span><span>          </span><span id="local-6989586621684543050"><span class="annot"><span class="annottext">TPrimExp Int32 VName
+</span><a href="#local-6989586621684543050"><span class="hs-identifier hs-var">local_tid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">KernelConstants -&gt; TPrimExp Int32 VName
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#kernelLocalThreadId"><span class="hs-identifier hs-var hs-var">kernelLocalThreadId</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelConstants -&gt; TPrimExp Int32 VName)
+-&gt; (KernelEnv -&gt; KernelConstants)
+-&gt; KernelEnv
+-&gt; TPrimExp Int32 VName
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">KernelEnv -&gt; KernelConstants
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#kernelConstants"><span class="hs-identifier hs-var hs-var">kernelConstants</span></a></span><span> </span><span class="annot"><span class="annottext">(KernelEnv -&gt; TPrimExp Int32 VName)
+-&gt; ImpM GPUMem KernelEnv KernelOp KernelEnv
+-&gt; ImpM GPUMem KernelEnv KernelOp (TPrimExp Int32 VName)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">ImpM GPUMem KernelEnv KernelOp KernelEnv
+forall rep r op. ImpM rep r op r
+</span><a href="Futhark.CodeGen.ImpGen.html#askEnv"><span class="hs-identifier hs-var">askEnv</span></a></span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span>          </span><span id="local-6989586621684543045"><span class="annot"><span class="annottext">TExp Int64
+</span><a href="#local-6989586621684543045"><span class="hs-identifier hs-var">global_tid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-41"></span><span>            </span><span class="annot"><span class="annottext">String -&gt; TExp Int64 -&gt; ImpM GPUMem KernelEnv KernelOp (TExp Int64)
+forall t rep r op. String -&gt; TExp t -&gt; ImpM rep r op (TExp t)
+</span><a href="Futhark.CodeGen.ImpGen.html#dPrimVE"><span class="hs-identifier hs-var">dPrimVE</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;global_tid&quot;</span></span><span> </span><span class="annot"><span class="annottext">(TExp Int64 -&gt; ImpM GPUMem KernelEnv KernelOp (TExp Int64))
+-&gt; TExp Int64 -&gt; ImpM GPUMem KernelEnv KernelOp (TExp Int64)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-42"></span><span>              </span><span class="annot"><span class="annottext">TPrimExp Int32 VName -&gt; TExp Int64
+forall t v. IntExp t =&gt; TPrimExp t v -&gt; TPrimExp Int64 v
+</span><a href="Futhark.Analysis.PrimExp.html#sExt64"><span class="hs-identifier hs-var">sExt64</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 VName
+</span><a href="#local-6989586621684543051"><span class="hs-identifier hs-var">group_id</span></a></span><span> </span><span class="annot"><span class="annottext">TExp Int64 -&gt; TExp Int64 -&gt; TExp Int64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">TExp Int64 -&gt; TExp Int64
+forall t v. IntExp t =&gt; TPrimExp t v -&gt; TPrimExp Int64 v
+</span><a href="Futhark.Analysis.PrimExp.html#sExt64"><span class="hs-identifier hs-var">sExt64</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Count GroupSize (TExp Int64) -&gt; TExp Int64
+forall u e. Count u e -&gt; e
+</span><a href="Futhark.IR.GPU.Sizes.html#unCount"><span class="hs-identifier hs-var hs-var">unCount</span></a></span><span> </span><span class="annot"><span class="annottext">Count GroupSize (TExp Int64)
+</span><a href="#local-6989586621684543064"><span class="hs-identifier hs-var">group_size'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>                </span><span class="annot"><span class="annottext">TExp Int64 -&gt; TExp Int64 -&gt; TExp Int64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 VName -&gt; TExp Int64
+forall t v. IntExp t =&gt; TPrimExp t v -&gt; TPrimExp Int64 v
+</span><a href="Futhark.Analysis.PrimExp.html#sExt64"><span class="hs-identifier hs-var">sExt64</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 VName
+</span><a href="#local-6989586621684543050"><span class="hs-identifier hs-var">local_tid</span></a></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span>          </span><span class="annot"><span class="annottext">[(VName, TExp Int64)] -&gt; TExp Int64 -&gt; InKernelGen ()
+forall rep r op.
+[(VName, TExp Int64)] -&gt; TExp Int64 -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#dIndexSpace"><span class="hs-identifier hs-var">dIndexSpace</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [TExp Int64] -&gt; [(VName, TExp Int64)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684543073"><span class="hs-identifier hs-var">is</span></a></span><span> </span><span class="annot"><span class="annottext">[TExp Int64]
+</span><a href="#local-6989586621684543069"><span class="hs-identifier hs-var">dims'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">TExp Int64
+</span><a href="#local-6989586621684543045"><span class="hs-identifier hs-var">global_tid</span></a></span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span>          </span><span class="annot"><span class="annottext">TExp Bool -&gt; InKernelGen () -&gt; InKernelGen ()
+forall rep r op. TExp Bool -&gt; ImpM rep r op () -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#sWhen"><span class="hs-identifier hs-var">sWhen</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(VName, SubExp)] -&gt; TExp Bool
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#isActive"><span class="hs-identifier hs-var">isActive</span></a></span><span> </span><span class="annot"><span class="annottext">([(VName, SubExp)] -&gt; TExp Bool) -&gt; [(VName, SubExp)] -&gt; TExp Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SegSpace -&gt; [(VName, SubExp)]
+</span><a href="Futhark.IR.SegOp.html#unSegSpace"><span class="hs-identifier hs-var hs-var">unSegSpace</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684543075"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InKernelGen () -&gt; InKernelGen ())
+-&gt; InKernelGen () -&gt; InKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-48"></span><span>            </span><span class="annot"><span class="annottext">Names -&gt; Stms GPUMem -&gt; InKernelGen () -&gt; InKernelGen ()
+forall rep r op.
+Names -&gt; Stms rep -&gt; ImpM rep r op () -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#compileStms"><span class="hs-identifier hs-var">compileStms</span></a></span><span> </span><span class="annot"><span class="annottext">Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Stms GPUMem
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684543074"><span class="hs-identifier hs-var">kbody</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InKernelGen () -&gt; InKernelGen ())
+-&gt; InKernelGen () -&gt; InKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-49"></span><span>              </span><span class="annot"><span class="annottext">(PatElemT LetDecMem -&gt; KernelResult -&gt; InKernelGen ())
+-&gt; [PatElemT LetDecMem] -&gt; [KernelResult] -&gt; InKernelGen ()
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m ()
+</span><span class="hs-identifier hs-var">zipWithM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; PatElem GPUMem -&gt; KernelResult -&gt; InKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#compileThreadResult"><span class="hs-identifier hs-var">compileThreadResult</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684543075"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT LetDecMem -&gt; [PatElemT LetDecMem]
+forall dec. PatT dec -&gt; [PatElemT dec]
+</span><a href="Futhark.IR.Syntax.html#patElems"><span class="hs-identifier hs-var hs-var">patElems</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPUMem
+PatT LetDecMem
+</span><a href="#local-6989586621684543077"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([KernelResult] -&gt; InKernelGen ())
+-&gt; [KernelResult] -&gt; InKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-50"></span><span>                </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; [KernelResult]
+forall rep. KernelBody rep -&gt; [KernelResult]
+</span><a href="Futhark.IR.SegOp.html#kernelBodyResult"><span class="hs-identifier hs-var hs-var">kernelBodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684543074"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-51"></span><span>    </span><span class="annot"><a href="Futhark.IR.GPU.Op.html#SegGroup"><span class="hs-identifier hs-type">SegGroup</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-52"></span><span>      </span><span class="annot"><span class="annottext">String
+-&gt; Count NumGroups (TExp Int64)
+-&gt; Count GroupSize (TExp Int64)
+-&gt; VName
+-&gt; InKernelGen ()
+-&gt; CallKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#sKernelGroup"><span class="hs-identifier hs-var">sKernelGroup</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;segmap_intragroup&quot;</span></span><span> </span><span class="annot"><span class="annottext">Count NumGroups (TExp Int64)
+</span><a href="#local-6989586621684543067"><span class="hs-identifier hs-var">num_groups'</span></a></span><span> </span><span class="annot"><span class="annottext">Count GroupSize (TExp Int64)
+</span><a href="#local-6989586621684543064"><span class="hs-identifier hs-var">group_size'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; VName
+</span><a href="Futhark.IR.SegOp.html#segFlat"><span class="hs-identifier hs-var hs-var">segFlat</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684543075"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InKernelGen () -&gt; CallKernelGen ())
+-&gt; InKernelGen () -&gt; CallKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621684543029"><span class="annot"><span class="annottext">virt_num_groups :: TPrimExp Int32 VName
+</span><a href="#local-6989586621684543029"><span class="hs-identifier hs-var hs-var">virt_num_groups</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TExp Int64 -&gt; TPrimExp Int32 VName
+forall t v. IntExp t =&gt; TPrimExp t v -&gt; TPrimExp Int32 v
+</span><a href="Futhark.Analysis.PrimExp.html#sExt32"><span class="hs-identifier hs-var">sExt32</span></a></span><span> </span><span class="annot"><span class="annottext">(TExp Int64 -&gt; TPrimExp Int32 VName)
+-&gt; TExp Int64 -&gt; TPrimExp Int32 VName
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[TExp Int64] -&gt; TExp Int64
+forall (t :: * -&gt; *) a. (Foldable t, Num a) =&gt; t a -&gt; a
+</span><span class="hs-identifier hs-var">product</span></span><span> </span><span class="annot"><span class="annottext">[TExp Int64]
+</span><a href="#local-6989586621684543069"><span class="hs-identifier hs-var">dims'</span></a></span><span>
+</span><span id="line-54"></span><span>        </span><span class="annot"><span class="annottext">Stms GPUMem -&gt; InKernelGen () -&gt; InKernelGen ()
+forall a. Stms GPUMem -&gt; InKernelGen a -&gt; InKernelGen a
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#precomputeSegOpIDs"><span class="hs-identifier hs-var">precomputeSegOpIDs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Stms GPUMem
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684543074"><span class="hs-identifier hs-var">kbody</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InKernelGen () -&gt; InKernelGen ())
+-&gt; InKernelGen () -&gt; InKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-55"></span><span>          </span><span class="annot"><span class="annottext">SegVirt
+-&gt; TPrimExp Int32 VName
+-&gt; (TPrimExp Int32 VName -&gt; InKernelGen ())
+-&gt; InKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#virtualiseGroups"><span class="hs-identifier hs-var">virtualiseGroups</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegLevel -&gt; SegVirt
+</span><a href="Futhark.IR.GPU.Op.html#segVirt"><span class="hs-identifier hs-var hs-var">segVirt</span></a></span><span> </span><span class="annot"><span class="annottext">SegLevel
+</span><a href="#local-6989586621684543076"><span class="hs-identifier hs-var">lvl</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 VName
+</span><a href="#local-6989586621684543029"><span class="hs-identifier hs-var">virt_num_groups</span></a></span><span> </span><span class="annot"><span class="annottext">((TPrimExp Int32 VName -&gt; InKernelGen ()) -&gt; InKernelGen ())
+-&gt; (TPrimExp Int32 VName -&gt; InKernelGen ()) -&gt; InKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621684543027"><span class="annot"><span class="annottext">TPrimExp Int32 VName
+</span><a href="#local-6989586621684543027"><span class="hs-identifier hs-var">group_id</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-56"></span><span>            </span><span class="annot"><span class="annottext">[(VName, TExp Int64)] -&gt; TExp Int64 -&gt; InKernelGen ()
+forall rep r op.
+[(VName, TExp Int64)] -&gt; TExp Int64 -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#dIndexSpace"><span class="hs-identifier hs-var">dIndexSpace</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[VName] -&gt; [TExp Int64] -&gt; [(VName, TExp Int64)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><span class="hs-identifier hs-var">zip</span></span><span> </span><span class="annot"><span class="annottext">[VName]
+</span><a href="#local-6989586621684543073"><span class="hs-identifier hs-var">is</span></a></span><span> </span><span class="annot"><span class="annottext">[TExp Int64]
+</span><a href="#local-6989586621684543069"><span class="hs-identifier hs-var">dims'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(TExp Int64 -&gt; InKernelGen ()) -&gt; TExp Int64 -&gt; InKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 VName -&gt; TExp Int64
+forall t v. IntExp t =&gt; TPrimExp t v -&gt; TPrimExp Int64 v
+</span><a href="Futhark.Analysis.PrimExp.html#sExt64"><span class="hs-identifier hs-var">sExt64</span></a></span><span> </span><span class="annot"><span class="annottext">TPrimExp Int32 VName
+</span><a href="#local-6989586621684543027"><span class="hs-identifier hs-var">group_id</span></a></span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span>            </span><span class="annot"><span class="annottext">Names -&gt; Stms GPUMem -&gt; InKernelGen () -&gt; InKernelGen ()
+forall rep r op.
+Names -&gt; Stms rep -&gt; ImpM rep r op () -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#compileStms"><span class="hs-identifier hs-var">compileStms</span></a></span><span> </span><span class="annot"><span class="annottext">Names
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; Stms GPUMem
+forall rep. KernelBody rep -&gt; Stms rep
+</span><a href="Futhark.IR.SegOp.html#kernelBodyStms"><span class="hs-identifier hs-var hs-var">kernelBodyStms</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684543074"><span class="hs-identifier hs-var">kbody</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(InKernelGen () -&gt; InKernelGen ())
+-&gt; InKernelGen () -&gt; InKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-59"></span><span>              </span><span class="annot"><span class="annottext">(PatElemT LetDecMem -&gt; KernelResult -&gt; InKernelGen ())
+-&gt; [PatElemT LetDecMem] -&gt; [KernelResult] -&gt; InKernelGen ()
+forall (m :: * -&gt; *) a b c.
+Applicative m =&gt;
+(a -&gt; b -&gt; m c) -&gt; [a] -&gt; [b] -&gt; m ()
+</span><span class="hs-identifier hs-var">zipWithM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SegSpace -&gt; PatElem GPUMem -&gt; KernelResult -&gt; InKernelGen ()
+</span><a href="Futhark.CodeGen.ImpGen.GPU.Base.html#compileGroupResult"><span class="hs-identifier hs-var">compileGroupResult</span></a></span><span> </span><span class="annot"><span class="annottext">SegSpace
+</span><a href="#local-6989586621684543075"><span class="hs-identifier hs-var">space</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatT LetDecMem -&gt; [PatElemT LetDecMem]
+forall dec. PatT dec -&gt; [PatElemT dec]
+</span><a href="Futhark.IR.Syntax.html#patElems"><span class="hs-identifier hs-var hs-var">patElems</span></a></span><span> </span><span class="annot"><span class="annottext">Pat GPUMem
+PatT LetDecMem
+</span><a href="#local-6989586621684543077"><span class="hs-identifier hs-var">pat</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([KernelResult] -&gt; InKernelGen ())
+-&gt; [KernelResult] -&gt; InKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-60"></span><span>                </span><span class="annot"><span class="annottext">KernelBody GPUMem -&gt; [KernelResult]
+forall rep. KernelBody rep -&gt; [KernelResult]
+</span><a href="Futhark.IR.SegOp.html#kernelBodyResult"><span class="hs-identifier hs-var hs-var">kernelBodyResult</span></a></span><span> </span><span class="annot"><span class="annottext">KernelBody GPUMem
+</span><a href="#local-6989586621684543074"><span class="hs-identifier hs-var">kbody</span></a></span><span>
+</span><span id="line-61"></span><span>  </span><span class="annot"><span class="annottext">Code HostOp -&gt; CallKernelGen ()
+forall op rep r. Code op -&gt; ImpM rep r op ()
+</span><a href="Futhark.CodeGen.ImpGen.html#emit"><span class="hs-identifier hs-var">emit</span></a></span><span> </span><span class="annot"><span class="annottext">(Code HostOp -&gt; CallKernelGen ())
+-&gt; Code HostOp -&gt; CallKernelGen ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; Maybe Exp -&gt; Code HostOp
+forall a. String -&gt; Maybe Exp -&gt; Code a
+</span><a href="Futhark.CodeGen.ImpCode.html#DebugPrint"><span class="hs-identifier hs-var">Imp.DebugPrint</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&quot;</span></span><span> </span><span class="annot"><span class="annottext">Maybe Exp
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-62"></span></pre></body></html>
